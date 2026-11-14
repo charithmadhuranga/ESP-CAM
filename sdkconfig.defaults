@@ -1,0 +1,53 @@
+# VisionCam Pro — sdkconfig baseline (docs/adr/0001-toolchain.md)
+#
+# Every symbol below was grepped against the pinned ESP-IDF 6.1.0 Kconfig and
+# then CONFIRMED present in the generated `.pio/build/<env>/config/sdkconfig.h`.
+# Symbol names change between ESP-IDF releases and an unknown symbol in this
+# file is ignored SILENTLY — never assume a line took effect; check the
+# generated header after any toolchain change.
+#
+# Verified 2026-11-15 against framework-espidf 4.60100.0 (IDF 6.1.0).
+
+# --- Flash -------------------------------------------------------------------
+# esp32cam board = 4 MB. IDF's default is 2 MB, which produces:
+#   "Warning! Flash memory size mismatch detected. Expected 4MB, found 2MB!"
+# Source: components/esptool_py/Kconfig.projbuild:123-133
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
+# Flash SPI at 80 MHz. IDF default is 40 MHz
+# (components/spi_flash/esp32/Kconfig.flash_freq:3).
+# REQUIRED: PSRAM at 80 MHz depends on this symbol (see below).
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+
+# --- PSRAM -------------------------------------------------------------------
+# Frames live in PSRAM, so this is mandatory (SPEC 4.1.1).
+# IDF default is "n" (components/esp_psram/esp32/Kconfig.spiram:1-3).
+# Note: esp_psram.c — which defines esp_psram_get_size() — is compiled ONLY
+# when this is set, so leaving it off yields an "undefined reference to
+# esp_psram_get_size" at link time.
+CONFIG_SPIRAM=y
+
+# R2's README requires PSRAM at 80 MHz (SPEC 1A.3 build-system note).
+# IDF default is 40 MHz (Kconfig.spiram choice default), and this option
+# `depends on ESPTOOLPY_FLASHFREQ_80M` — hence the flash line above.
+# Caveat recorded in Kconfig: at 80+80 MHz with 4 MB (32 Mbit) PSRAM one of
+# HSPI/VSPI is occupied by the system; application code must not touch it.
+CONFIG_SPIRAM_SPEED_80M=y
+
+# --- Logging -----------------------------------------------------------------
+# Warn by default; per-module debug is enabled behind a config flag in later
+# phases (AGENTS: never log high-frequency frame data).
+# Confirmed: sets CONFIG_LOG_DEFAULT_LEVEL=2 (WARN) in sdkconfig.h.
+CONFIG_LOG_DEFAULT_LEVEL_WARN=y
+
+# --- Main task ---------------------------------------------------------------
+# The smoke test and later subsystem init need headroom.
+# Confirmed: 8192 in sdkconfig.h.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# --- Partition table ---------------------------------------------------------
+# Custom table, sized for firmware + embedded web assets (plan 01,
+# deliverable 5). Wired in once its headroom has been measured; the default
+# table is used until then.
+# CONFIG_PARTITION_TABLE_CUSTOM=y
+# CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"

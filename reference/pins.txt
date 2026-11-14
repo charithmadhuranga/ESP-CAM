@@ -1,9 +1,12 @@
 # VisionCam Pro — pinned reference checkouts
 # Verified: 2026-11-15. Re-check with: reference/fetch_references.sh --verify
 #
-# Neither checkout carries .git metadata (both were unpacked from source
-# archives), so no commit SHA is available. The pin is therefore a SHA-256
-# over the sorted `sha256sum` output of every file in the tree.
+# Each pin has two independent parts:
+#   1. the upstream commit SHA recorded by SPEC.md section 1A (authoritative
+#      provenance), and
+#   2. a SHA-256 over this checkout, because neither directory carries .git
+#      metadata (both were unpacked from source archives) — so we cannot
+#      `git rev-parse` locally and must fingerprint the tree instead.
 #
 # Hash definition (the locale is part of the pin):
 #   find <path> -type f | LC_ALL=C sort | xargs sha256sum | sha256sum
@@ -14,7 +17,9 @@
 name = ESP32-CAM_MJPEG2SD
 upstream = https://github.com/s60sc/ESP32-CAM_MJPEG2SD
 path = reference/ESP32-CAM_MJPEG2SD-master
-version = master archive (no version tag in tree)
+version = APP_VER 10.10.1 (verified in src/appGlobals.h:29 of this checkout)
+upstream_commit = abe84d89fc74367c21b644cb5101c9b89fd4bfb7
+upstream_commit_source = SPEC.md section 1A reference table (commit date 2026-11-11)
 retrieved_by = owner, on or before 2026-11-12
 licence = AGPL-3.0
 licence_file = LICENSE  ("GNU AFFERO GENERAL PUBLIC LICENSE Version 3, 19 November 2007")
@@ -26,8 +31,10 @@ usage = behavioural reference ONLY — never copied, never vendored, never linke
 name = esp32-camera
 upstream = https://github.com/espressif/esp32-camera
 path = reference/esp32-camera-2.1.9
-version = 2.1.9 (directory name; registry release)
+version = 2.1.9 (directory name = Component Registry release; registry page for 2.1.9 confirms commit below)
 version_discrepancy = library.json inside the tree declares "version": "2.0.0" — upstream lags its own release tag; never trust library.json alone (AGENTS rule 24)
+upstream_commit = b3f7fe802f41f17fd7a104d517c53f1f62c8414d
+upstream_commit_source = SPEC.md section 1A reference table (commit date 2026-11-09); independently confirmed on components.espressif.com on 2026-11-15
 idf_requirement = idf: ">=5.1" (idf_component.yml)
 retrieved_by = owner, on or before 2026-11-12
 licence = Apache-2.0

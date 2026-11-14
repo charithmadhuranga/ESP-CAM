@@ -242,17 +242,17 @@ Every reference-derived claim below was grepped in the actual checkouts and
 | SD 1-bit is R1's **default**, not a fallback | `utilsFS.cpp:28` `static bool use1bitMode = true;` (set false only at `:72`) |
 | Playback refused while capture runs | `mjpeg2sd.cpp:656` and `streamServer.cpp:51` `"Playback refused - capture in progress"` — **SPEC §1A.9 rejects this behaviour** (record divergence) |
 | Motion runs inline with the capture loop | `mjpeg2sd.cpp:489` `checkMotion(fb, isCapturing)` → `motionDetect.cpp:718`; sample size from `frameData[].sampleRate` at `motionDetect.cpp:762` |
+| Motion cadence: **5 checks/s idle, 1 check/2 s while recording** (SPEC §1A.9) | `mjpeg2sd.cpp:27-28` `moveStartChecks = 5`, `moveStopSecs = 2`; rate limiter `doMonitor()` at `mjpeg2sd.cpp:123-131`: `checkRate = capturing ? FPS*moveStopSecs : FPS/moveStartChecks`. Comment on `moveStopSecs` also says *"determines post motion time"* — matching SPEC's post-motion clause |
+| **GPIO4 driven low after SD mount** (SPEC §2.3) | `utilsFS.cpp:81-84`, immediately after `SD_MMC.begin(...)`: `#if defined(CAMERA_MODEL_AI_THINKER)` → `pinMode(4, OUTPUT); digitalWrite(4, 0);` with comment *"sd_mmc library still initialises pin 4 in 1 line mode"* |
+| SD pins: CLK 14, CMD 15, D0 2, D1 4, D2 12, D3 13 | Board-level fact supplied by the owner (2026-11-15); SPEC §2.2 tabulates only camera pins. Explains why 1-bit mode frees GPIO4 and GPIO12 (SPEC line 333) |
 
-**Two claims that did NOT verify as written — do not repeat them as fact:**
-
-1. **Motion cadence "5 samples/s idle, 1 sample/2 s while recording"** (SPEC
-   §1A.9): no standalone timer exists in the pinned commit; motion is driven
-   from the capture loop, so its rate follows the frame rate. Treat the SPEC
-   numbers as a **target to re-derive in Phase 2**, not as R1 behaviour.
-2. **"GPIO4 low after SD mount" workaround**: `lampPin` handling lives in
-   `utils.cpp:634-647` and is config-driven (`lampPin`, `lampActiveHi`), not an
-   unconditional post-mount write. Re-check against the board profile during
-   Phase 0 bring-up; record the actual behaviour observed on hardware.
+> **Method note (honesty record).** Two of the rows above were initially
+> recorded as *unverified* in this file. Both were false negatives caused by
+> my own search method, not by the source: the GPIO4 code was cut off by
+> piping `grep` through `head -15`, and the motion cadence was searched for as
+> a *timer* when the mechanism is a *frame counter* inside `doMonitor()`.
+> Re-run both greps without truncation before ever repeating a negative
+> finding (AGENTS rules 26, 36).
 
 **New finding not called out in SPEC:** `appGlobals.h:58`
 `JSON_BUFF_LEN (32 * 1024) // set big enough to hold all file names in a

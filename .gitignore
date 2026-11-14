@@ -3,6 +3,12 @@
 .pioenvs/
 .piolibdeps/
 
+# ESP-IDF generates this full resolved config on every build; the source of
+# truth is sdkconfig.defaults (verified symbols recorded in
+# docs/adr/0001-toolchain.md).
+sdkconfig.esp32cam
+sdkconfig
+
 # --- Node / web UI ---
 node_modules/
 webui/dist/
