@@ -1,0 +1,27 @@
+## VisionCam Pro — pinned ESP-IDF components
+##
+## AGENTS rule 24: every version is exact. No ranges, no floating "latest".
+## AGENTS rule 33: esp32-camera is a pinned dependency — never forked, and
+## exactly one copy may ever be linked. A configure-time check in the root
+## CMakeLists.txt enforces this.
+##
+## Changing any version here requires a new ADR and a re-run of the Phase 0
+## camera smoke test (docs/adr/0001-toolchain.md).
+
+dependencies:
+  # Camera driver — the runtime dependency (SPEC section 1A.3, R2).
+  # Registry 2.1.9 == upstream commit b3f7fe802f41f17fd7a104d517c53f1f62c8414d;
+  # supports the classic ESP32 and declares idf >= 5.1 (we are on 6.1.0).
+  # NOTE: the upstream library.json inside the source tree says "2.0.0" —
+  # upstream lags its own release tag, so never trust library.json (rule 24).
+  espressif/esp32-camera:
+    version: "2.1.9"
+
+  # MQTT client for Phase 7. Pinned in Phase 0 so the dependency set is
+  # stable early (plan 01, task 0.2 step 8).
+  # Registry path is espressif/mqtt (NOT espressif/esp-mqtt, which 404s);
+  # the GitHub repo is espressif/esp-mqtt. Requires idf >= 5.3 — satisfied.
+  # SPEC section 5's "esp-mqtt client (3.1.1)" refers to the MQTT *protocol*
+  # version, not this component's version.
+  espressif/mqtt:
+    version: "1.1.0"

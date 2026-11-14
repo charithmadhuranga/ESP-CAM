@@ -59,10 +59,12 @@ rather than fought:
 
 ```
 platformio.ini            src_dir = firmware/src, include_dir = firmware/include
-CMakeLists.txt            root ESP-IDF project file (boilerplate, order fixed)
+CMakeLists.txt            root ESP-IDF project file + rule 33 single-copy check
 firmware/include/         board_profile.h — the only place pins exist (rule 6)
 firmware/src/CMakeLists.txt   idf_component_register(...)
-firmware/src/idf_component.yml  pinned components (R2, esp-mqtt)
+firmware/src/idf_component.yml  pinned components (R2 2.1.9, mqtt 1.1.0)
+dependencies.lock         committed exact-version lock (incl. transitive)
+managed_components/       downloaded by the component manager — gitignored
 sdkconfig.defaults        verified symbol baseline (see below)
 partitions.csv            sized for firmware + embedded web assets
 ```
@@ -77,6 +79,46 @@ Notes from the PlatformIO ESP-IDF docs that constrain this layout:
   reordered.
 - Renaming the IDF `main` component (we use `src`) means dependencies must be
   declared explicitly with `REQUIRES` when a component needs one.
+
+## Pinned components (task 0.2 steps 7–8)
+
+`firmware/src/idf_component.yml` is the source of truth; the ESP-IDF
+component manager resolves it into `managed_components/` and locks the
+result in `dependencies.lock` (**committed** — it is the exact-version pin
+for transitive dependencies; `managed_components/` is ignored as build
+input).
+
+| Component | Pinned | Why | Verified |
+|---|---|---|---|
+| `espressif/esp32-camera` | **2.1.9** | R2, the runtime camera driver (SPEC §1A.3). Registry 2.1.9 == upstream commit `b3f7fe802f41f17fd7a104d517c53f1f62c8414d`, matching `reference/pins.txt`. | ✅ downloaded, `esp_camera.c`/`cam_hal.c`/`sensor.c`/`sensors/ov2640.c` compile; `libespressif__esp32-camera.a` produced |
+| `espressif/mqtt` | **1.1.0** | Phase 7 MQTT client. **Registry path is `espressif/mqtt`** — `espressif/esp-mqtt` returns HTTP 404. Requires `idf >= 5.3`; satisfied by 6.1.0. | ✅ downloaded, `libmqtt_outbox`/`libmqtt_utils` archive |
+| `espressif/esp_jpeg` | **1.3.2** (transitive) | Required by esp32-camera. Its manifest declares the *range* `^1.3.1`, so this is the one place a floating range exists — `dependencies.lock` pins the resolved 1.3.2 and must be committed. | ✅ in `dependencies.lock` |
+
+Notes:
+
+- **SPEC §5's "esp-mqtt client (3.1.1)" is the MQTT *protocol* version**, not
+  a component version — no conflict with pinning 1.1.0.
+- The upstream `library.json` inside the esp32-camera source tree still says
+  `2.0.0`; upstream lags its own release tag, so never read a version from
+  `library.json` (rule 24). The manifest `version:` and `dependencies.lock`
+  are authoritative.
+- Neither component is linked into the app **yet** — `firmware/src` does not
+  `REQUIRE` them, which is why RAM/Flash figures are unchanged (13,932 /
+  183,784 B). They are compiled and archived, ready for the camera manager.
+
+### Rule 33: single-copy check (task 0.2 step 7)
+
+The root `CMakeLists.txt` runs a check on **every configure**: it walks
+`BUILD_COMPONENT_TARGETS`, skips anything under `IDF_PATH`, and counts the
+components that provide `esp_camera.h`. Zero copies → fatal (the pin failed
+to resolve); more than one → fatal, listing every offending path.
+
+Both paths were exercised, not assumed:
+
+| Test | Result |
+|---|---|
+| Normal configure | ✅ `count=1`, build SUCCESS |
+| Fixture `components/vc_test_dup/` with a copy of `esp_camera.h` | ✅ **FAILED** with `AGENTS rule 33 violated: 2 copies …` naming both directories; fixture removed, build green again |
 
 ## sdkconfig symbol verification
 
@@ -129,8 +171,9 @@ mode) are added in the same verified way when the camera driver lands.
 
 - Changing the platform or IDF version requires **a new ADR** and a re-run of
   the Phase 0 camera smoke test (per the `visioncam-build-flash` skill).
-- Exactly one `esp32-camera` copy may be linked (rule 33); a build-time check
-  is added in task 0.2 step 7.
+- Exactly one `esp32-camera` copy may be linked (rule 33); the configure-time
+  check lives in the root `CMakeLists.txt` and both its pass and fail paths
+  have been exercised (see above).
 - The Arduino core is **not** present; every R1 Arduino API must be ported
   using SPEC §1A.10.
 
@@ -145,4 +188,9 @@ mode) are added in the same verified way when the camera driver lands.
 | 2026-11-15 | Kconfig symbols above confirmed present in pinned IDF | ✅ all six confirmed in generated `sdkconfig.h` |
 | 2026-11-15 | Exact `platform_packages` framework pin added (rule 24) and rebuilds clean | ✅ `platformio/framework-espidf@4.60100.0` |
 | 2026-11-15 | Firmware size recorded | ✅ RAM 4.3 % (13,932 / 327,680 B), Flash 17.5 % (183,784 B); `firmware.bin` 184,208 B |
+| 2026-11-15 | `idf_component.yml` resolves (task 0.2 step 7–8) | ✅ `managed_components/` created: `espressif__esp32-camera` 2.1.9, `espressif__mqtt` 1.1.0, transitive `espressif__esp_jpeg` 1.3.2; all three compile, build SUCCESS |
+| 2026-11-15 | Registry path for the MQTT component | ✅ `espressif/mqtt` (API 200); `espressif/esp-mqtt` → 404 |
+| 2026-11-15 | Rule 33 single-copy check, pass path | ✅ `count=1`, build SUCCESS |
+| 2026-11-15 | Rule 33 single-copy check, fail path | ✅ injected duplicate in `components/vc_test_dup/` → build FAILED listing both paths; fixture removed, build green |
+| 2026-11-15 | Only one `esp32-camera` archive in the build tree | ✅ `libespressif__esp32-camera.a`; no camera component in IDF 6.1.0 |
 | _pending_ | Smoke firmware flashes and reports PSRAM/heap on hardware | **UNVERIFIED — no board attached** (`/dev/ttyUSB*` absent) |

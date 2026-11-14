@@ -9,6 +9,18 @@
 sdkconfig.esp32cam
 sdkconfig
 
+# --- ESP-IDF component manager ----------------------------------------------
+# managed_components/ is downloaded build input (like node_modules/): the
+# component manager re-fetches it from the registry on configure, so it is
+# never committed.
+#
+# dependencies.lock IS committed — it is the exact-version pin for every
+# dependency, including transitive ones the upstream manifests declare as
+# ranges (esp32-camera@2.1.9 pulls espressif/esp_jpeg@^1.3.1, which would
+# otherwise float). Together with firmware/src/idf_component.yml it satisfies
+# AGENTS rule 24. Never delete it to "clean up".
+managed_components/
+
 # --- Node / web UI ---
 node_modules/
 webui/dist/
