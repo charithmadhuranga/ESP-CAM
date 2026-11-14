@@ -1,0 +1,53 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  // VisionCam Pro project configuration.
+  // AGENTS.md at the repository root is discovered automatically.
+  // Skills are discovered automatically from .opencode/skills/.
+  //
+  // SPEC.md is intentionally NOT an instruction file: at ~137 KB it would be
+  // injected into every session. Read the sections a phase file names, using
+  // the visioncam-* skills as the entry point.
+
+  // Loaded after AGENTS.md, in order. Missing files are skipped, so this
+  // picks up docs/ as it is created.
+  "instructions": [
+    "docs/*.md"
+  ],
+
+  // Named, on-demand context. Attach an alias in the client, then ask the
+  // agent to inspect a path under it.
+  "references": {
+    "mockups": {
+      "path": "../mockup-ui",
+      "description": "The 17 desktop UI artboards (1280x760). Use when building or reviewing a page so the layout matches. [bracketed] values are placeholders, not real data. DESIGN.md overrides these where they differ."
+    },
+    "reference-projects": {
+      "path": "../reference",
+      "description": "Pinned, non-compiled checkouts of the two reference projects: R1 ESP32-CAM_MJPEG2SD (AGPL-3.0, behavioural reference only - never copy code) and R2 espressif/esp32-camera (Apache-2.0, the runtime camera driver). Use with the visioncam-reference-first skill."
+    }
+  },
+
+  // Prompt templates. Run from the TUI, e.g. /phase 3.
+  "commands": {
+    "plan": {
+      "description": "Show the current phase, its deliverables and its exit gate",
+      "template": "Read .opencode/plans/README.md and .opencode/plans/00-analysis.md, then tell me: which phase is active, that phase's deliverables, its exit gate, and any owner decision (D1-D5) still blocking it. Do not start any work."
+    },
+    "phase": {
+      "description": "Load a phase work order and summarise what to do next",
+      "template": "Read .opencode/plans/README.md and the work order for phase $1 in .opencode/plans/ (01-phase-0-baseline.md through 10-phase-9-hardening-release.md). Summarise the goal, entry criteria, ordered tasks and exit gate, then list the first three concrete actions. Load the visioncam-dev skill first. Do not implement anything yet."
+    },
+    "gate": {
+      "description": "Check whether the current phase exit gate is met",
+      "template": "Check the current phase's exit gate against what actually exists in the repository and in docs/TEST_PLAN.md. Report each acceptance item as RUN PASS, RUN FAIL or UNVERIFIED with evidence. Never mark something RUN PASS that was not actually executed. Suggest what must be done next to close the gate."
+    },
+    "verify": {
+      "description": "Build firmware and web UI, run tests, report resource impact",
+      "template": "Run the full verification for this repository: build the web UI (webui), embed assets, build the firmware with PlatformIO, and run any available unit or static tests. Report pass/fail with the actual output, plus firmware size, web asset size and free partition headroom. If hardware is required and unavailable, mark those items UNVERIFIED rather than passing them."
+    },
+    "subsystem": {
+      "description": "Load the reference-first analysis for a subsystem before implementing it",
+      "template": "Before writing any code for $1: load the visioncam-reference-first skill, read the mapped R1/R2 code for that subsystem, write down in your own words what it does, its limits and its failure modes, decide adopt/adapt/defer/reject with the licence check, and append the entry to docs/REFERENCE_ANALYSIS.md. Then tell me what you concluded. Do not implement yet."
+    }
+  }
+}

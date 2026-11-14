@@ -1,0 +1,41 @@
+# VisionCam Pro — pinned reference checkouts
+# Verified: 2026-11-15. Re-check with: reference/fetch_references.sh --verify
+#
+# Neither checkout carries .git metadata (both were unpacked from source
+# archives), so no commit SHA is available. The pin is therefore a SHA-256
+# over the sorted `sha256sum` output of every file in the tree.
+#
+# Hash definition (the locale is part of the pin):
+#   find <path> -type f | LC_ALL=C sort | xargs sha256sum | sha256sum
+# Plain `sort` is locale-dependent (en_US.UTF-8 != C) and yields a different
+# digest, so LC_ALL=C is required for reproducibility.
+
+[R1]
+name = ESP32-CAM_MJPEG2SD
+upstream = https://github.com/s60sc/ESP32-CAM_MJPEG2SD
+path = reference/ESP32-CAM_MJPEG2SD-master
+version = master archive (no version tag in tree)
+retrieved_by = owner, on or before 2026-11-12
+licence = AGPL-3.0
+licence_file = LICENSE  ("GNU AFFERO GENERAL PUBLIC LICENSE Version 3, 19 November 2007")
+files = 46
+tree_sha256 = 20e532c74369188b719ab149bc9ecdae99f35c61a698d50a36c8029ef4701c0c
+usage = behavioural reference ONLY — never copied, never vendored, never linked (AGENTS rule 32, owner decision D1 = A)
+
+[R2]
+name = esp32-camera
+upstream = https://github.com/espressif/esp32-camera
+path = reference/esp32-camera-2.1.9
+version = 2.1.9 (directory name; registry release)
+version_discrepancy = library.json inside the tree declares "version": "2.0.0" — upstream lags its own release tag; never trust library.json alone (AGENTS rule 24)
+idf_requirement = idf: ">=5.1" (idf_component.yml)
+retrieved_by = owner, on or before 2026-11-12
+licence = Apache-2.0
+licence_file = LICENSE  ("Apache License Version 2.0, January 2004")
+files = 118
+tree_sha256 = c9639edbd08a445dad325c46b96cbf7098fd3bf69fcea9b99711d14a14064d10
+usage = pinned runtime dependency — never forked, exactly one copy linked (AGENTS rule 33)
+
+[verification]
+command = reference/fetch_references.sh --verify
+expect = both tree_sha256 values match; otherwise re-read SPEC §1A and .opencode/plans/00-analysis.md §7.1

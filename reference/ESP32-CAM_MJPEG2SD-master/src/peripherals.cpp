@@ -1,0 +1,766 @@
+
+// Optional peripherals, to support:
+// - pin sensors eg PIR / radar
+// - servos, eg camera pan / tilt / steer
+// - DS18B20 temperature sensor
+// - battery voltage measurement
+// - 3 pin joystick 
+// - MY9221 based LED Bar, eg 10 segment Grove LED Bar
+// - 5 wire 28BYJ-48 Unipolar Stepper Motor with ULN2003 Motor Driver
+// - 4 wire Bipolar Stepper Motor with MX1508 H-Bridge Motor Driver
+// - uBlox GNSS M10 global positioning system
+//
+// Peripherals can be hosted directly on the client ESP, or on
+// a separate Auxiliary ESP if the client ESP has limited free
+// pins, eg ESP-Cam module
+// External peripherals should have low data rate and not require fast response,
+// so interrupt driven input pins should be monitored internally by the client.
+// Peripherals that need a clocked data stream such as microphones are not suitable
+//
+// Pin numbers must be > 0.
+//
+// s60sc 2022 - 2026
+//
+
+#include "appGlobals.h"
+
+#if INCLUDE_PERIPH
+#include "driver/ledc.h"
+#include "driver/uart.h"
+
+// peripherals used
+bool pirUse; // true to use PIR for motion detection
+bool ledBarUse; // true to use led bar
+bool voltUse; // true to report on ADC pin eg for for battery
+bool stickUse; // true to use joystick
+bool buzzerUse; // true to use buzzer
+bool stepperUse; // true to use stepper motor
+bool SVactive; // true to use servos
+TaskHandle_t heartBeatHandle = NULL;
+bool RCactive = false;
+
+// Pins used by peripherals
+
+// sensors 
+int pirPin; // if pirUse is true
+int buzzerPin; // if buzzerUse is true
+
+// Camera servos 
+int servoPanPin;
+int servoTiltPin;
+
+// ambient / module temperature reading 
+int ds18b20Pin; // if INCLUDE_DS18B20 true
+
+// batt monitoring 
+// only pin 33 can be used on ESP32-Cam module as it is the only available analog pin
+int voltPin; 
+
+// additional peripheral configuration
+// configure for specific servo model, eg for SG90
+int servoMinAngle; // degrees
+int servoMaxAngle;
+int servoMinPulseWidth; // usecs
+int servoMaxPulseWidth;
+int servoDelay; // control rate of change of servo angle using delay
+int servoCenter = 90; // angle in degrees where servo is centered 
+
+// configure battery monitor
+int voltDivider; // set battVoltageDivider value to be divisor of input voltage from resistor divider
+                 // eg: 100k / 100k would be divisor value 2
+float voltLow; // voltage level at which to send out email alert
+int voltInterval; // interval in minutes to check battery voltage
+
+// buzzer duration
+int buzzerDuration; // time buzzer sounds in seconds 
+
+// RC pins and control
+int servoSteerPin;
+int lightsRCpin;
+int heartbeatRC;
+int maxSteerAngle;
+int maxDutyCycle;
+int minDutyCycle;
+int maxTurnSpeed;
+bool allowReverse;
+bool autoControl;
+int waitTime; 
+int stickzPushPin; // digital pin connected to switch output
+int stickXpin; // analog pin connected to X output
+int stickYpin; // analog pin connected to Y output
+int relayPin;
+bool relayMode;
+
+// MY9221 LED Bar pins
+int ledBarClock;
+int ledBarData;
+
+// Stepper motor driver pins
+#define stepperPins 4 
+uint8_t stepINpins[stepperPins];
+
+static void doStep();
+void setStickTimer(bool restartTimer, uint32_t interval);
+
+
+// individual pin sensor / controller functions
+
+bool getPIRval() {
+  // get PIR or radar sensor status 
+  return digitalRead(pirPin); 
+}
+
+void buzzerAlert(bool buzzerOn) {
+  // control active buzzer operation
+  if (buzzerUse) {
+    if (buzzerOn) {
+      // turn buzzer on
+      pinMode(buzzerPin, OUTPUT);
+      digitalWrite(buzzerPin, HIGH); 
+    } else digitalWrite(buzzerPin, LOW); // turn buzzer off
+  }
+}
+
+// Control a Pan-Tilt-Camera stand using two servos connected to pins specified above
+// Or control an RC servo
+// Only tested for SG90 9g and DS-M005 2g style servos
+// Typically, wiring is:
+// - orange: 3V3 signal
+// - red: 3V3 or 5V
+// - brown: GND
+
+// Pulse width values
+// SG90:    min 544, max 2400
+// DS-M005: min 500, max 2500
+//
+#define PWM_FREQ 50 // hertz
+#define DUTY_BIT_DEPTH 12 // max for ESP32-C3 is 14
+
+TaskHandle_t servoHandle = NULL;
+static int newTiltVal, newPanVal, newSteerVal;
+static int oldPanVal, oldTiltVal, oldSteerVal; 
+
+static int dutyCycle (int angle) {
+  // calculate duty cycle for given angle
+  angle = constrain(angle, servoMinAngle, servoMaxAngle);
+  int pulseWidth = map(angle, servoMinAngle, servoMaxAngle, servoMinPulseWidth, servoMaxPulseWidth);
+  return powf(2, DUTY_BIT_DEPTH) * pulseWidth * PWM_FREQ / USECS;
+}
+
+static int changeAngle(uint8_t servoPin, int newVal, int oldVal, bool useDelay = true) {
+  // change angle of given servo
+  if (newVal != oldVal) {
+    int incr = newVal - oldVal > 0 ? 1 : -1;
+    for (int angle = oldVal; angle != newVal + incr; angle += incr) {
+      ledcWrite(servoPin, dutyCycle(angle));
+      if (useDelay) delay(servoDelay); // set rate of change
+    }
+  }
+  return newVal;
+}
+
+static void servoTask(void* pvParameters) {
+  // update servo position from user input
+  while (true) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    if (newSteerVal != oldSteerVal) oldSteerVal = changeAngle(servoSteerPin, newSteerVal, oldSteerVal, false);
+    if (newPanVal != oldPanVal) oldPanVal = changeAngle(servoPanPin, newPanVal, oldPanVal);
+    if (newTiltVal != oldTiltVal) oldTiltVal = changeAngle(servoTiltPin, newTiltVal, oldTiltVal);
+  }
+}
+
+void setCamPan(int panVal) {
+  // change camera pan angle
+  newPanVal = panVal;
+  if (servoPanPin && servoHandle != NULL) xTaskNotifyGive(servoHandle);
+}
+
+void setCamTilt(int tiltVal) {
+  // change camera tilt angle
+  newTiltVal = tiltVal;
+  if (servoTiltPin && servoHandle != NULL) xTaskNotifyGive(servoHandle);
+}
+
+void setSteering(int steerVal) {
+  // change steering angle
+  newSteerVal = steerVal;
+  if (servoSteerPin && servoHandle != NULL) xTaskNotifyGive(servoHandle);
+}
+
+static void prepServos() {
+  if (SVactive) {
+    if (servoPanPin) {
+      ledcAttach(servoPanPin, PWM_FREQ, DUTY_BIT_DEPTH);
+      ledcWrite(servoPanPin, dutyCycle(servoCenter)); // write center directly
+    } else LOG_WRN("No servo pan pin defined");
+    if (servoTiltPin) {
+      ledcAttach(servoTiltPin, PWM_FREQ, DUTY_BIT_DEPTH);
+      ledcWrite(servoTiltPin, dutyCycle(servoCenter));
+    } else LOG_WRN("No servo tilt pin defined");
+  }
+  if (RCactive && servoSteerPin) {
+    ledcAttach(servoSteerPin, PWM_FREQ, DUTY_BIT_DEPTH);
+    ledcWrite(servoSteerPin, dutyCycle(servoCenter));
+  }
+  // initialise old values to match the physical position just written
+  oldPanVal = oldTiltVal = oldSteerVal = servoCenter;
+
+  if (SVactive || (RCactive && servoSteerPin)) {
+    xTaskCreateWithCaps(&servoTask, "servoTask", SERVO_STACK_SIZE, NULL, SERVO_PRI, &servoHandle, STACK_MEM);
+    newPanVal = newTiltVal = newSteerVal = servoCenter;
+    LOG_INF("Servo pin usage: %d, %d, %d", servoPanPin, servoTiltPin, servoSteerPin);
+  }
+}
+
+
+/* Read temperature from DS18B20 connected to pin specified above
+    Use Arduino Manage Libraries to install OneWire and DallasTemperature
+    DS18B20 is a one wire digital temperature sensor
+    Pin layout from flat front L-R: Gnd, data, 3V3.
+    Need a 4.7k resistor between 3V3 and data line
+    Runs in its own task as there is a 750ms delay to get temperature
+
+    If DS18B20 is not present, use ESP internal temperature sensor
+*/
+
+static float dsTemp = NULL_TEMP;
+static bool haveDS18B20 = false;
+
+#if INCLUDE_DS18B20
+#if __has_include("../libraries/DallasTemperature/DallasTemperature.h")
+#include <OneWire.h> // https://github.com/PaulStoffregen/OneWire
+#include <DallasTemperature.h> // https://github.com/milesburton/Arduino-Temperature-Control-Library
+
+// configuration
+TaskHandle_t DS18B20handle = NULL;
+
+static void DS18B20task(void* pvParameters) {
+  // get current temperature from DS18B20 device
+  OneWire oneWire(ds18b20Pin);
+  DallasTemperature sensors(&oneWire);
+  while (true) {
+    dsTemp = NULL_TEMP;
+    sensors.begin();
+    uint8_t deviceAddress[8];
+    sensors.getAddress(deviceAddress, 0);
+    if (deviceAddress[0] == 0x28) {
+      uint8_t tryCnt = 10;
+      while (tryCnt) {
+        sensors.requestTemperatures(); 
+        dsTemp = sensors.getTempCByIndex(0);
+        // ignore occasional duff readings
+        if (dsTemp > NULL_TEMP) tryCnt = 10;
+        else tryCnt--;
+        delay(1000);
+      }   
+    } 
+    // retry setting up ds18b20
+    delay(10000);
+  }
+}
+
+#else
+#error "Need to install DallasTemperature and OneWire libraries"
+#endif
+#endif // INCLUDE_DS18B20
+
+void prepTemperature() {
+#if INCLUDE_DS18B20
+  if (ds18b20Pin) {
+    xTaskCreateWithCaps(&DS18B20task, "DS18B20task", DS18B20_STACK_SIZE, NULL, DS18B20_PRI, &DS18B20handle, STACK_MEM); 
+    haveDS18B20 = true;
+    LOG_INF("Using DS18B20 sensor");
+  } else LOG_WRN("No DS18B20 pin defined, using chip sensor if present");
+#endif
+}
+
+float readTemperature(bool isCelsius, bool onlyDS18) {
+  // return latest read temperature value in celsius (true) or fahrenheit (false), unless error
+  if (onlyDS18) return dsTemp;
+  if (!haveDS18B20) dsTemp = readInternalTemp();
+  return (dsTemp > NULL_TEMP) ? (isCelsius ? dsTemp : (dsTemp * 1.8f) + 32.0f) : dsTemp;
+}
+
+float getNTCcelsius(uint16_t resistance, float oldTemp) {
+  // convert NTC thermistor resistance reading to celsius
+  if (resistance == 0) return oldTemp; // if 0 then didnt get a reading
+  float temp = logf(static_cast<float>(resistance));
+  temp = 1.0f / (0.001129148f + (0.000234125f + (0.0000000876741f * temp * temp)) * temp);
+  return temp - 273.15f;
+}
+
+/************ battery monitoring ************/
+
+// Read voltage from battery connected to ADC pin
+// input battery voltage may need to be reduced by voltage divider resistors to keep it below 3V3.
+static float currentVoltage = -1.0f; // no monitoring
+TaskHandle_t battHandle = nullptr;
+
+float readVoltage() {
+  return currentVoltage;
+}
+
+static void battTask(void* parameter) {
+  if (voltInterval < 1) voltInterval = 1;
+  while (true) {
+    // convert analog reading to corrected voltage.  analogReadMilliVolts() not working
+    currentVoltage = static_cast<float>(smoothAnalog(voltPin)) * 3.3f * static_cast<float>(voltDivider) / static_cast<float>(MAX_ADC);
+
+    static bool sentExtAlert = false;
+    if (currentVoltage < voltLow && !sentExtAlert) {
+      sentExtAlert = true; // only sent once per esp32 session
+      char battMsg[24];
+      snprintf(battMsg, sizeof(battMsg), "Voltage is %0.2fV", currentVoltage);
+      externalAlert("Low battery", battMsg);
+    }
+    delay(static_cast<uint32_t>(voltInterval) * 60UL * 1000UL); // mins
+  }
+  vTaskDelete(nullptr);
+}
+
+static void setupBatt() {
+  if (voltUse) {
+  	if (voltPin) {
+      xTaskCreateWithCaps(&battTask, "battTask", BATT_STACK_SIZE, NULL, BATT_PRI, &battHandle, STACK_MEM);
+      LOG_INF("Monitor batt voltage");
+      debugMemory("setupBatt");
+    } else LOG_WRN("No voltage pin defined");
+  }
+}
+
+
+
+void setLightsRC(bool lightsOn) {
+  // on / off RC light 
+  if (lightsRCpin > 0) digitalWrite(lightsRCpin, lightsOn);
+}
+
+static void prepPIR() {
+  if (pirUse) {
+    if (pirPin) pinMode(pirPin, INPUT_PULLDOWN); // pulled high for active
+    else {
+      pirUse = false;
+      LOG_WRN("No PIR pin defined");
+    }
+  }
+  if (relayPin) pinMode(relayPin, OUTPUT);
+}
+
+/********************************* joystick *************************************/
+
+// HW-504 Joystick
+// Use X axis  for steering, Y axis for motor, push button for lights toggle
+// Requires 2 analog pins and 1 digital pin. Ideally supply voltage should be 3.3V
+// X axis is longer edge of board
+
+static const int sRate = 1; // samples per analog reading
+static int xOffset = 0; // x zero offset
+static int yOffset = 0; // y zero offset
+static volatile bool lightsChanged = false;
+TaskHandle_t stickHandle = NULL;
+
+static void IRAM_ATTR buttonISR() {
+  // joystick button pressed - toggle state
+  lightsChanged = !lightsChanged;
+}
+
+static void IRAM_ATTR stickISR() {
+  // interrupt at timer rate
+  BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+  if (stickHandle) {
+    vTaskNotifyGiveFromISR(stickHandle, &xHigherPriorityTaskWoken); 
+    portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
+  }
+}
+
+void setStickTimer(bool restartTimer, uint32_t interval) {
+  // determines joystick polling rate or stepper speed
+  static hw_timer_t* stickTimer = NULL;
+  // stop timer if running
+  if (stickTimer) {
+    timerDetachInterrupt(stickTimer); 
+    timerEnd(stickTimer);
+    stickTimer = NULL;
+  }
+  if (restartTimer) {
+    // (re)start timer interrupt per required interval
+    stickTimer = timerBegin(OneMHz); // 1 MHz
+    timerAttachInterrupt(stickTimer, &stickISR);
+    timerAlarm(stickTimer, interval, true, 0); // in usecs
+  }
+}
+
+static void stickTask (void *pvParameter) {
+  static bool lightsStatus = false;
+  while (true) {
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    if (stickUse) {
+      // get joystick position, adjusted for zero offset
+      int xPos = smoothAnalog(stickXpin, sRate);
+      int steerAngle = (xPos > CENTER_ADC + xOffset) ? map(xPos, CENTER_ADC + xOffset, MAX_ADC, servoCenter, servoCenter + maxSteerAngle)
+        : map(xPos, 0, CENTER_ADC + xOffset, servoCenter - maxSteerAngle, servoCenter); 
+      setSteering(steerAngle);
+      
+      int yPos = smoothAnalog(stickYpin, sRate);
+      // reverse orientation of Y axis so up is forward
+      int motorCycle = (yPos > CENTER_ADC + yOffset) ? map(yPos, CENTER_ADC + yOffset, MAX_ADC, 0, 0 - maxDutyCycle)
+        : map(yPos, 0, CENTER_ADC + yOffset, maxDutyCycle, 0); 
+      if (abs(motorCycle) < minDutyCycle) motorCycle = 0; // deadzone
+#if INCLUDE_MCPWM
+      motorSpeed(motorCycle);
+#endif
+      if (lightsChanged != lightsStatus) setLightsRC(lightsChanged);
+      lightsStatus = lightsChanged;
+      LOG_VRB("Xpos %d, Ypos %d, button %d", xPos, yPos, lightsStatus);
+    }
+    if (stepperUse) doStep();
+  }
+} 
+
+static void prepJoystick() {
+  if (stickUse) {
+    if (stickXpin > 0 && stickYpin > 0) {
+      // obtain offsets at joystick resting position
+      xOffset = smoothAnalog(stickXpin, 8) - CENTER_ADC;
+      yOffset = smoothAnalog(stickYpin, 8) - CENTER_ADC;
+      LOG_VRB("X-offset: %d, Y-offset: %d", xOffset, yOffset);
+      if (stickzPushPin > 0) {
+        pinMode(stickzPushPin, INPUT_PULLUP);
+        attachInterrupt(digitalPinToInterrupt(stickzPushPin), buttonISR, FALLING); 
+      }
+      if (stickHandle == NULL) xTaskCreateWithCaps(&stickTask, "stickTask", STICK_STACK_SIZE , NULL, STICK_PRI, &stickHandle, STACK_MEM);
+      setStickTimer(true, waitTime * 1000);
+      LOG_INF("Joystick available");
+    } else {
+      stickUse = false;
+      LOG_WRN("Joystick pins not defined");
+    }
+  }
+}
+
+/****************************** stepper motors *************************************/
+
+// Unipolar 28BYJ-48 Geared Stepper Motor with ULN2003 Motor Driver
+// Bipolar generic using MX1508 H-Bridge Motor Driver
+// For 4 pin stepper motor drivers in full step mode
+// Uses stickTask & stickTimer
+
+#define stepPhases 4
+#define modelTypes 2 // must equal enum stepperModel entries in appGlobals.h
+static bool clockwise = false;
+static const uint16_t stepsPerRevolution[modelTypes] = {32 * 64, 20}; // number of steps in geared 28BYJ-48 unipolar, 8mm bipolar
+static uint32_t stepsToDo = 0; // total steps requested
+static uint8_t modelIndex = 0;
+static uint8_t stepPhase = 0;
+static const uint8_t pinSequence[stepPhases * modelTypes][stepperPins] = {
+  // 28BYJ-48 unipolar full step phases
+  {1, 1, 0, 0}, 
+  {0, 1, 1, 0}, 
+  {0, 0, 1, 1}, 
+  {1, 0, 0, 1},
+  // 8mm bipolar half step phases
+  {1, 0, 1, 0}, 
+  {0, 1, 1, 0}, 
+  {0, 1, 0, 1}, 
+  {1, 0, 0, 1}, 
+};
+
+
+void setStepperPin(uint8_t pinNum, uint8_t pinPos) {
+  // Pin order is IN1, IN2, IN3, IN4 for correct full stepping
+  // 28BYJ-48 wire color order: blue, pink, yellow, orange, red from driver not motor
+  // bipolar wire order: A+, A-, B+, B-
+  stepINpins[pinPos] = pinNum;
+}
+
+static void prepStepper() {
+  if (stepperUse) {
+    if (stepINpins[0] > 0 && stepINpins[1] > 0) {
+      stepPhase = 0;
+      // setup motor driver pins
+      for (int i = 0; i < stepperPins; i++) {
+        pinMode(stepINpins[i], OUTPUT);
+        digitalWrite(stepINpins[i], LOW);
+      }
+      // stickTask provides speed control timer
+      if (stickHandle == NULL) xTaskCreateWithCaps(&stickTask, "stickTask", STICK_STACK_SIZE , NULL, STICK_PRI, &stickHandle, STACK_MEM);   
+      LOG_INF("Stepper motor on pins: %d, %d, %d, %d", stepINpins[0], stepINpins[1], stepINpins[2], stepINpins[3]);
+      // NOTE: very first step after motor power may not occur or be reversed 
+    } else {
+      stepperUse = false;
+      LOG_WRN("Stepper pins not defined");
+    }
+  }
+}
+
+static void nextPhase(bool changeDir = false) {
+  // identify next phase
+  if (changeDir) clockwise = !clockwise; // amend next phase to account for change in direction
+  if (clockwise) stepPhase = (stepPhase == 0) ? stepPhase = stepPhases - 1 : stepPhase - 1;
+  else if (++stepPhase >= stepPhases) stepPhase = 0;
+}
+
+void stepperRun(float RPM, float revFraction, bool _clockwise, stepperModel thisStepper) {
+  // RPM is stepper motor rotation speed
+  // revFraction is required movement as a fraction of full rotation
+  // thisStepper is stepper model type to determine steps per revolution
+  stepsToDo = revFraction * stepsPerRevolution[thisStepper];
+  modelIndex = stepPhases * thisStepper;
+  if (clockwise != _clockwise) {
+    // change of direction, modify next phase to be in reversed sequence
+    nextPhase(true);
+    nextPhase();
+  }
+  uint32_t stepDelay = 60 * USECS / RPM; // duration of 1 rev in microsecs
+  stepDelay /= stepsPerRevolution[thisStepper]; // duration per step
+
+  // start stickTimer that calls task to do sequence of steps
+  setStickTimer(false, 0); // stop previous timer
+  setStickTimer(true, stepDelay);
+}
+
+static void doStep() {
+  // called from sticktask to do single step in sequence
+  if (stepsToDo > 0) { 
+    stepsToDo--;
+    for (int i = 0; i < stepperPins; i++) digitalWrite(stepINpins[i], pinSequence[modelIndex + stepPhase][i]);
+    nextPhase();
+  } else {
+    // step sequence completed
+    setStickTimer(false, 0);  // stop task timer
+    for (int i = 0; i < stepperPins; i++) digitalWrite(stepINpins[i], LOW); // stop unnecessary power use
+#if (INCLUDE_PGRAM && INCLUDE_PERIPH)
+    stepperDone();
+#endif
+  }
+}
+
+/******************* MY9221 LED Bar ***************************/
+/*
+ LED segment bar with MY9221 LED driver, eg Grove LED Bar
+ Wiring:
+    Black  GND
+    Red    3V3
+    White  DCKI Clock pin
+    Yellow D1 Data pin
+    
+ Can be used as a gauge, eg display sound level
+ */
+
+#define MY9221_COUNT 12 // max number of leds addressable by MY9221 LED driver
+#define LEDBAR_COUNT 10 // number of leds in bar display
+#define LED_OFF 0x00
+#define LED_FULL 0xFF
+
+static bool reverse = true; // from which end to light leds, true is green -> red on Grove LED Bar
+static uint8_t ledLevel[LEDBAR_COUNT];
+
+static void ledBarLatch() {
+  // display uploaded register by triggering internal-latch function
+  digitalWrite(ledBarClock, LOW); 
+  delayMicroseconds(250); // minimum 220us
+  // Internal-latch control cycle
+  bool dataVal = false;
+  for (uint8_t i = 0; i < 8; i++, dataVal = !dataVal) {
+    digitalWrite(ledBarData, dataVal ? HIGH : LOW);
+    delayMicroseconds(1); // > min pulse length 230ns 
+  }
+}
+
+static void ledBarSend(uint16_t bits) {
+  // output led value as clocked 16 bits (only 8 LSB set for 8 bit greyscale)
+  bool clockVal = false;
+  for (int i = 15; i >= 0; i--, clockVal = !clockVal) {
+    digitalWrite(ledBarData, (bits >> i) & 1 ? HIGH : LOW);
+    digitalWrite(ledBarClock, clockVal ? HIGH : LOW);
+  }
+}
+
+void ledBarClear() {
+  for (uint8_t i = 0; i < LEDBAR_COUNT; i++) ledLevel[i] = LED_OFF;
+}
+
+void ledBrightness(uint8_t whichLed, float brightness) {
+  // brightness is a float 0.0 <> 1.0, converted to one of 8 brightness levels or off
+  ledLevel[whichLed] |= (1 << (uint8_t)(8.0f * brightness)) - 1;
+}
+
+void ledBarUpdate() {
+  // update MY9221 208 bit register with required values
+  if (ledBarUse) {
+    ledBarSend(0); // initial 16 bit command, as 8 bit greyscale mode + defaults
+    // 12 * 16 bits LED greyscale PWM values
+    for (uint8_t i = 0; i < LEDBAR_COUNT; i++) // 10 * 16 bits
+      ledBarSend(reverse ? ledLevel[LEDBAR_COUNT - 1 - i] : ledLevel[i]);
+    // fill register for remaining unused channels
+    for (uint8_t i = 0; i < MY9221_COUNT - LEDBAR_COUNT; i++) ledBarSend(LED_OFF);
+    ledBarLatch();
+  }
+}
+       
+void ledBarGauge(float level) {
+  // set how many leds to be switched on and their brightness
+  // as a proportion of level between 0.0 and 1.0
+  // least significant leds are full brightness and most significant led
+  // has a proportional brightness
+  level = fabsf(level);
+  if (ledBarUse) {
+    ledBarClear();
+    uint8_t fullLedCnt = min((uint8_t)(level * LEDBAR_COUNT), (uint8_t)(LEDBAR_COUNT - 1));
+    for (uint8_t i = 0; i < fullLedCnt; i++) ledLevel[i] = LED_FULL;
+    // set brightness for most significant lit led
+    ledBrightness(fullLedCnt, (LEDBAR_COUNT * level) - fullLedCnt); 
+    ledBarUpdate();
+  }
+}
+
+static void prepLedBar() {
+  // initialise led state and setup pins
+  if (ledBarUse && ledBarClock && ledBarData) {
+    pinMode(ledBarClock, OUTPUT);
+    pinMode(ledBarData, OUTPUT);
+    ledBarClear();
+    ledBarUpdate();
+    LOG_INF("Setup %d Led Bar with pins %d, %d", LEDBAR_COUNT, ledBarClock, ledBarData);
+  } else ledBarUse = false;
+}
+
+
+/****************************** GNSS **********************************/
+
+#if INCLUDE_GNSS
+
+int gnssRxdPin = -1;  // ESP32 RX <- GNSS module TX
+int gnssTxdPin = -1;  // ESP32 TX -> GNSS module RX
+
+static const float GEOFENCE_RADIUS_M = 10.0f;   //// change to be config item
+
+#if __has_include("../libraries/SparkFun_u-blox_GNSS_v4/src/SparkFun_u-blox_GNSS_v4.h")
+#include <SparkFun_u-blox_GNSS_v4.h>
+
+SFE_UBLOX_GNSS myGNSS;
+static const unsigned long GNSS_BAUD = 38400;
+static const unsigned long GNSS_NEW_BAUD = 115200;
+static bool gnssOk = false; 
+static float moveData[4] = {0};
+static const float GEOFENCE_HOME_ACCURACY_M = 5.0f;  // set RTH home if sufficiently accurate fix
+
+static bool setupGNSS() {
+  // GNSS prep using UART 0 for ESP32C3
+  // first try connecting at default baud rate
+  delay(100);
+  monitorOpen = false;
+  Serial.begin(GNSS_BAUD, SERIAL_8N1, gnssRxdPin, gnssTxdPin);  // New QUESCAN M10Q starts at 38400 baud
+  if (myGNSS.begin(Serial) == true) {
+    myGNSS.setSerialRate(GNSS_NEW_BAUD, COM_PORT_UART1, VAL_LAYER_FLASH);  // one off override M10Q default
+    myGNSS.softwareResetGNSSOnly();  // Restart the GNSS to apply the baud changes
+    delay(100);
+  }
+
+  // Connect to the GNSS module using UART at expected rate
+  Serial.begin(GNSS_NEW_BAUD, SERIAL_8N1, gnssRxdPin, gnssTxdPin);
+  for (int i = 0; i < 5; i++) {
+    delay(1000);
+    if (myGNSS.begin(Serial) == true) {
+      gnssOk = true;
+      break;
+    }
+  }
+
+  if (gnssOk) {
+    myGNSS.setNavigationFrequency(5);  // 5Hz - max for multi constellations
+    myGNSS.softwareResetGNSSOnly();
+    delay(100);
+
+    myGNSS.setUART1Output(COM_TYPE_UBX);  // only need UBX out, not NMEA chatter (GNSS module Uart port)
+    myGNSS.setLNAMode(SFE_UBLOX_LNA_MODE_LOWGAIN);
+    myGNSS.setDynamicModel((dynModel)DYN_MODEL_AIRBORNE1g);  // best nodel for low speed drone
+    // enable constellation types
+    myGNSS.enableGNSS(true, (sfe_ublox_gnss_ids_e)UBLOX_CFG_SIGNAL_GPS_ENA);   // GPS
+    myGNSS.enableGNSS(true, (sfe_ublox_gnss_ids_e)UBLOX_CFG_SIGNAL_GLO_ENA);   // Glonass
+    myGNSS.enableGNSS(true, (sfe_ublox_gnss_ids_e)UBLOX_CFG_SIGNAL_GAL_ENA);   // Galileo
+    myGNSS.enableGNSS(true, (sfe_ublox_gnss_ids_e)UBLOX_CFG_SIGNAL_BDS_ENA);   // BeiDou
+    myGNSS.enableGNSS(true, (sfe_ublox_gnss_ids_e)UBLOX_CFG_SIGNAL_SBAS_ENA);  // Japan
+    myGNSS.enableGNSS(true, (sfe_ublox_gnss_ids_e)UBLOX_CFG_SIGNAL_QZSS_ENA);  // Japan
+
+    myGNSS.setAutoUBX("NAV", "PVT");  // library parses position in the background
+    LOG_INF("u-blox GNSS connected");
+
+    // Geofence is configured once there is a good fix - in updateGeofence()
+
+  } else {
+    // Not a halt like other sensors: GPS is required for geofencing,
+    // but not for a slow indoor/backyard flight
+    LOG_WRN("u-blox GNSS not detected on UART - check wiring/baud. Continue without geofence");
+    return false;
+  }
+  return true;
+}
+
+float* getGNSSdata() {
+  // other useful info such as:
+  //  getAltitudeMSL()
+  //  getPDOP()
+  //  getSIV()
+  return moveData;
+}
+
+bool updateGNSS() {
+  if (myGNSS.getGnssFixOk()) {  // wait for 3D fix
+    if (myGNSS.getNAVPVT()) {   // data available
+      //latLon is global array
+      latLon[1] = myGNSS.getLatitude();  // degrees * 1e-7
+      latLon[1] = myGNSS.getLongitude();
+      moveData[0] = myGNSS.getHeading(); 
+      moveData[1] = myGNSS.getGroundSpeed(); // in mm/s
+      moveData[3] = myGNSS.getHorizontalAccEst() / 1000; // in meters
+      if (moveData[3] < GEOFENCE_HOME_ACCURACY_M) return true;
+    }
+  }
+  return false; // no fix or inaccurate fix
+}
+
+// Captures "home" from the first sufficiently-accurate fix, arms the module's
+// own hardware geofence around it, then just reads back the breach state each
+// call afterward (the geofence math runs on the GNSS chip itself, not here).
+bool checkGeofence(bool isArmed) {
+  if (!gnssOk) return false;
+  if (!isArmed) {
+    // set RTH location
+    myGNSS.addGeofence(latLon[0], latLon[1], (uint32_t)GEOFENCE_RADIUS_M);
+    return true;
+  } else {
+    // check if inside geofence
+    geofenceState state;
+    // states: 0=unknown, 1=inside, 2=outside
+    if (myGNSS.getGeofenceState(state)) return (state.combState == 2);
+  }
+  return false;
+}
+
+#else
+#error "Need to install SparkFun_u-blox_GNSS_v4 library"
+#endif
+
+#endif  // INCLUDE_GNSS
+
+/**************************** GNSS end ******************************/
+
+
+void prepPeripherals() {
+  // initial setup of each peripheral on client or auxiliary
+  setupADC();
+  setupBatt();
+  prepPIR();
+  prepTemperature();
+  prepServos();
+  prepJoystick();
+  prepStepper();
+  prepLedBar();
+#if INCLUDE_GNSS
+  setupGNSS();
+#endif
+  debugMemory("prepPeripherals");
+}
+
+#endif
