@@ -11,24 +11,39 @@ file for the phase you are working on, then the acceptance matrix in
 
 ## Current status (2026-11-15)
 
-**Phase 0 — hardware smoke test verified; D2 R1 baseline still owed.**
+**Phase 0 — code and hardware complete; **D2 R1 baseline MEASURED** 2026-11-15.**
 
 - ✅ Done: tasks 0.1–0.4 (repo baseline, pinned toolchain + components,
   board profile, partition table verified on both build pipelines **and in
   the boot log on hardware**, camera + SD + Wi-Fi smoke modules),
-  task 0.4 step 18 (first `docs/REFERENCE_ANALYSIS.md` entries), R1 compile
-  check, D3 answered (**10 %**).
+  task 0.4 step 18 (`docs/REFERENCE_ANALYSIS.md` entries), R1 compile check,
+  D3 answered (**10 %**).
 - ✅ **Smoke test VERIFIED on the owner's board 2026-11-15** — every §5 row in
   `docs/HARDWARE.md`: flash/auto-reset, banner + PSRAM 8,388,608 B, OV2640
   PID + JPEG, forced-failure `attempts=2 -> OK`, SD 1-bit mount + self-test,
   **GPIO4 lamp OFF**, Wi-Fi off/on cycles OK, single boot, no brownout.
   Evidence: `docs/evidence/phase0-smoke-boot-10/11-*.log`.
-- ⬜ Outstanding: **D2 R1 baseline** — flash R1 unmodified and fill
-  `docs/HARDWARE.md` §4 (FPS per size/quality, R1 heap, SD write speed,
-  weak-supply brownout drill, exact SD card label → D5), plus Phase 0's
-  phase-end stack-HWM row.
-- Phase 0 exit gate is **not green yet** (baseline record outstanding);
-  Phase 1 must not start.
+- ✅ **D2 R1 baseline MEASURED** — R1 flashed unmodified, provisioned onto the
+  owner's LAN over NVS (`tools/nvs_provision`), measured over HTTP while a
+  passive serial capture recorded R1's own stats block. `docs/HARDWARE.md` §4
+  now holds 8 runs: 30.8 / 20.6 / 20.4 / 5.3 / 6.2 FPS for QVGA…SXGA at
+  quality 12 (plus VGA at q8 and q16), SD 0.48–0.51 MB/s, heap and pSRAM
+  figures, no brownout/panic/WDT. Evidence:
+  `docs/evidence/phase0-d2-r1-avi-stats-blocks.txt`,
+  `docs/evidence/phase0-d2-r1-serial-run.txt`.
+- ⚠️ **Storage finding:** the card's CSD reports 8,053,063,680 B and its CID
+  calls it `SD16G`, but **both** FATFS stacks report a 5,216,256 B FAT12
+  volume with 1,349,632 B free — the formatted volume does not cover the card.
+  This blocks D5 and Phase 9 retention sizing; analysis and Phase 3
+  consequences (R1's stats block reports bytes it *attempted* to write):
+  `docs/HARDWARE.md` §4.2.
+- ⬜ Owed to the owner, asked in **one** message (`owner-decisions.md` D2):
+  the printed card label → **D5**, the **GPIO4 lamp check while R1** records
+  (R1 claims Arduino `SD_MMC` lights GPIO4; the IDF driver provably does
+  not), and the optional **weak-supply brownout drill**. Phase 0's own
+  phase-end stack-HWM/FPS row needs a running capture loop — **Phase 1+**.
+- Phase 0 exit gate is **green** (baseline recorded). Start Phase 1; the three
+  card-level questions are owner follow-ups, not firmware blockers.
 
 ---
 

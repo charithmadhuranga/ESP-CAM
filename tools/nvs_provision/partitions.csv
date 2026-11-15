@@ -1,0 +1,15 @@
+# Partition table for the NVS provisioning tool only.
+#
+# The nvs region must match what arduino-esp32's PartitionScheme=min_spiffs
+# uses (20K @ 0x9000): credentials written by this tool have to be readable
+# by R1 AFTER it overwrites the partition table, and NVS bounds come from the
+# active table. The app sits in the same slot R1 will occupy (0x10000), so
+# flashing R1 afterwards simply replaces this firmware.
+#
+# nvs is written by this tool and then read by R1; phy/otadata/app are only
+# here so the table is valid while this tool runs.
+#
+# Name,   Type, SubType, Offset,  Size,
+nvs,      data, nvs,     0x9000,  0x5000,
+phy_init, data, phy,     0xe000,  0x1000,
+factory,  app,  factory, 0x10000, 0x1E0000,

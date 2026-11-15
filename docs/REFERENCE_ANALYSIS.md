@@ -226,10 +226,95 @@ the strength of SPEC's own text (AGENTS rule 26).
 | Camera init order → **adapt** | verified (source + hardware) | R1 `initCam` sequence read; R2-side retry facts in the entry above; on-device retry `attempts=2 -> OK` 2026-11-15 (`docs/evidence/phase0-smoke-boot-11-*.log`) |
 | Motion cadence → **adopt/adapt** | verified | see Motion entry above (R1 `mjpeg2sd.cpp`, `motionDetect.cpp` line evidence) |
 
-Rows **not** yet verified first-hand (still as-spec): AVI container layout,
-NULL-frame recovery, playback timing, timelapse, free-space/retention, upload,
-WebDAV, HA discovery, config store, logging, and every "defer/out of scope"
-row. They are re-verified when their phase begins.
+| Storage / free-space → **reject** R1's deletion loop | verified 2026-11-15 (source + hardware) | R1 `utilsFS.cpp:194-215` `checkFreeStorage`, called from `mjpeg2sd.cpp:374`; see the storage entry below |
+
+Rows **not** yet verified first-hand (still as-spec): AVI container layout
+(partially — the write path was studied, the header byte table was not),
+NULL-frame recovery, playback timing, timelapse, upload, WebDAV, HA discovery,
+config store, logging, and every "defer/out of scope" row. They are
+re-verified when their phase begins.
+
+## Storage and `checkFreeStorage` — 2026-11-15 (D2 run, source + hardware)
+
+- **Studied:** R1 `utilsFS.cpp:194-215` (`checkFreeStorage`),
+  `mjpeg2sd.cpp:374` (its only call site), `appSpecific.cpp` (`sdFreeSpaceMode`,
+  `sdMinCardFreeSpace`); plus arduino-esp32 3.3.12 `SD_MMCFS::totalBytes()`.
+- **What it does / limits / failure modes:** at every AVI close R1 computes free
+  megabytes from the FAT volume and, in delete mode, removes the oldest day
+  folder until free space reaches the configured minimum (default **100 MB**).
+  The minimum is an absolute megabyte figure with no regard for the size of the
+  volume it is compared against, and the deletion loop has no attempt cap.
+- **Failure mode reproduced as a near-miss on this hardware:** the owner's card
+  presents a **5,216,256 B** FAT volume (see the geometry entry below), so free
+  space is 0–1 MB and can *never* reach a 100 MB target. In R1's default mode
+  that loop therefore has no exit: it deletes the card's other content (here
+  `/boot` and `/EFI`, the owner's) and then keeps calling `getOldestDir` on an
+  empty card — a hang with the owner's data gone. It was **not** triggered here
+  because `sdFreeSpaceMode` was set to 0 (warn-only) before the first
+  recording; observed behaviour in that mode was a single
+  `Space left 0MB is less than minimum 100MB` warning and recording stopping.
+- **Decision:** **reject** as a model for VisionCam; **adopt** the "warn and
+  stop" outcome. Phase 2/3 must: compute free space from the volume actually
+  mounted, cap deletions per pass, never delete anything that is not a
+  VisionCam recording, and treat "cannot reach the target" as a bounded,
+  logged condition rather than a loop.
+- **Divergence from R1:** R1's default deletes oldest-first without a bound;
+  VisionCam keeps recordings it is not sure are its own.
+- **Evidence:** `docs/evidence/phase0-d2-r1-serial-run.txt` (warning line);
+  `docs/HARDWARE.md` §4.2.
+
+## R1's AVI stats block — trustworthy only while writes succeed — 2026-11-15
+
+- **Studied:** R1 `mjpeg2sd.cpp:226-267` (`saveFrame`), `:269-349` (close and
+  stats block), `:374` (free-space check).
+- **What it does / limits / failure modes:** frames are buffered in an 8 KiB RAM
+  staging buffer and flushed to SD in `RAMSIZE` chunks. `vidSize` and `frameCnt`
+  are incremented **unconditionally**, and the return value of `aviFile.write()`
+  is never checked, so a short write is invisible to R1. The closing block then
+  derives `File size`, `Actual FPS`, `Average SD write speed` and the per-frame
+  timings from those same counters.
+- **Observed on the owner's board:** one run reported `File size: 12.3MB`,
+  `Actual FPS: 20.1` and `Average SD write speed: 3796 kB/s` while the file on
+  disk was really **1,349,632 B** (the FAT directory entry said 1.3 MB and the
+  full HTTP download was 1,349,632 bytes), with `used_bytes` running
+  3.7 → 5.0 MB — the volume was simply full and the remainder of the writes
+  failed silently. That 3796 kB/s figure is **discarded**.
+- **Decision:** **adapt** the measurement, **reject** the mechanism. R1's
+  formula is sound on a card with space (the reported rows here, 493–520 kB/s,
+  each verified by `free_bytes` never reaching 0), so the *number* is usable;
+  the *code path* that produced it is not. Phase 3's recorder must check every
+  write's return value, count only bytes actually written, keep attempted vs
+  written as separate figures, and stop the segment on a short write.
+- **Evidence:** `docs/evidence/phase0-d2-r1-avi-stats-blocks.txt` runs 1–8 vs
+  the discarded probe; `docs/HARDWARE.md` §4.2.
+
+## FAT volume geometry — CSD, CID and BPB disagree — 2026-11-15
+
+- **Studied:** ESP-IDF `esp_vfs_fat_sdmmc_mount` + `f_getfree` (VisionCam
+  smoke), arduino-esp32 3.3.12 `SD_MMCFS::totalBytes()` (R1's figures),
+  `sdmmc_card_print_info`.
+- **What it does / limits / failure modes:** an SD card carries three capacity
+  numbers, and only one of them constrains a filesystem: the CSD (what the card
+  reports about itself), the CID product name (what the label claims), and the
+  FAT BPB (the volume any FAT driver can actually allocate in). A card can be
+  healthy in all three views only when they agree.
+- **Observed on the owner's card:** CSD **8,053,063,680 B** (7.5 GiB),
+  CID product name **`SD16G`**, FAT **5,216,256 B usable / 1,349,632 B free**
+  (FAT12, 2048-byte clusters, 2547 clusters). arduino-esp32 and ESP-IDF FATFS
+  returned the *same* geometry to the byte, so the 5 MB is in the card's own
+  FAT — the formatted volume does not cover the card. Whatever is on it
+  (`/boot`, `/EFI`, R1's `/data`) is all it can hold.
+- **Decision:** **adopt** cross-checking at mount. VisionCam's SD smoke now
+  prints the FAT volume alongside the CSD and warns when the volume is under
+  one eighth of the CSD capacity, so this class of defect shows up in the boot
+  log instead of being discovered during retention testing. Storage capacity
+  planning uses the FAT figure only.
+- **Consequences:** D5 cannot be closed from the driver alone (the printed
+  label is still needed), and Phase 9's retention numbers cannot be sized on
+  this card. VisionCam never auto-formats (SPEC §2.3), so any reformat is an
+  owner action.
+- **Evidence:** `docs/evidence/phase0-d2-vc-fat-crosscheck-boot.log`;
+  `docs/HARDWARE.md` §4.2.
 
 ## Deliberate divergences from R1 — do not "fix" these back
 

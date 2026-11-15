@@ -14,7 +14,7 @@ serial log or tool output to back it (AGENTS rule 26).
 | Decision | Answer | Date |
 |---|---|---|
 | D1 Licence | **A — clean-room**; R1 never copied or linked | 2026-11-15 |
-| D2 R1 baseline | **Run during Phase 0** — procedure is section 3 below | 2026-11-15 |
+| D2 R1 baseline | **Run during Phase 0** — **executed 2026-11-15**: R1 flashed unmodified, driven over HTTP, FPS/heap/SD-speed/heap rows in §4. Remaining: the owner's lamp observation, the printed card label (D5) and the weak-supply drill (§3.5 items 4–6) | 2026-11-15 |
 | D3 FPS tolerance | **10 %** | 2026-11-15 |
 | D4 TFLM | pending (needed by Phase 6) | — |
 | D5 SD card model | pending (needed by Phase 9) | — |
@@ -153,31 +153,130 @@ use for VisionCam's parity test.
 | **R1 compiles unmodified** with `PSRAM=enabled,PartitionScheme=min_spiffs` | ✅ **verified** | 2026-11-15 | exit 0; 1,734,516 B (88 %) flash, 102,888 B (31 %) RAM |
 | `CAMERA_MODEL_AI_THINKER` already enabled — no edit needed | ✅ verified | 2026-11-15 | `ESP32-CAM_MJPEG2SD.h:17`, inside the `CONFIG_IDF_TARGET_ESP32` branch |
 | `reference/` tree unchanged after compiling | ✅ verified | 2026-11-15 | compiled from a `/tmp/opencode/r1build` copy |
-| R1 flashed to the board | ⬜ not run | | needs the owner's hardware |
-| Baseline table (section 4) filled | ⬜ not run | | needs the owner's hardware |
+| R1 flashed to the board | ✅ **verified** | 2026-11-15 | `arduino-cli upload` exit 0, `Hash of data verified`, R1 banner `ESP-CAM_MJPEG 10.10.1` on serial |
+| R1 joins the owner's LAN (measured over HTTP from this PC) | ✅ verified | 2026-11-15 | `Wifi Station IP, use 'http://192.168.43.171'`, `/status` HTTP 200 (procedure 3.7) |
+| Baseline table (section 4) filled | ✅ **verified** | 2026-11-15 | 8 recording runs; `docs/evidence/phase0-d2-r1-avi-stats-blocks.txt` |
+| No brownout / panic / WDT during the whole R1 run | ✅ verified | 2026-11-15 | `grep` for `BROWNOUT|panic|WDT|rst:0x` over `phase0-d2-r1-serial-run.txt` → 0 hits; `printResetReason: Power on reset` |
+
+### 3.7 Provisioning R1 onto the LAN (how section 4 was measured)
+
+R1's own setup page normally collects the router credentials, but joining the
+ESP32's AP from this workstation would drop its internet, so the credentials
+were written straight into NVS instead. `prefs.cpp:216-223` shows R1 reads
+`ST_SSID` / `ST_Pass` from the Preferences namespace **`ESP-CAM_MJPEG`**
+(its `APP_NAME`) whenever its SD config holds no SSID — i.e. exactly the
+first-boot state.
+
+```bash
+pio run -d tools/nvs_provision -t upload          # our helper, ESP-IDF, pinned
+/home/charith/.platformio/penv/bin/python3 /tmp/opencode/provision.py
+#   -> cfgtool: OK — committed and verified (pass hidden)
+pio run -d tools/nvs_provision -t upload          # (optional) `join` command
+#   -> cfgtool: JOIN OK ... rssi -47, pmf:0
+arduino-cli upload --fqbn esp32:esp32:esp32:PSRAM=enabled,PartitionScheme=min_spiffs \
+  --port /dev/ttyUSB0 /tmp/opencode/r1build/ESP32-CAM_MJPEG2SD
+```
+
+- The passphrase is read from NetworkManager and sent only to the UART; it is
+  never echoed, logged, or put on a command line (AGENTS rule 17). The tool
+  firmware prints lengths only. Nothing credential-bearing is committed.
+- Clean-room note (D1): `tools/nvs_provision` contains **no R1 code** — it
+  writes two documented NVS keys, the machine equivalent of typing the
+  credentials into R1's own setup page.
+- `/status` and `/control` were open (R1's `Auth_Pass` is empty), so every
+  measurement below was driven by `curl` while a passive serial capture
+  recorded R1's own stats output.
 
 ---
 
-## 4. Baseline table (fill in — blocks performance claims)
+## 4. Baseline table — **MEASURED on the owner's board 2026-11-15**
 
-> **Status: `UNVERIFIED` until filled.** Per SPEC §1A.7 step 4, no VisionCam
-> performance claim may be marked verified without the matching row here.
+R1 10.10.1 flashed **unmodified** and driven over HTTP while a passive 115200
+capture recorded R1's own stats block at every recording close. Every number
+below is a verbatim line from
+`docs/evidence/phase0-d2-r1-avi-stats-blocks.txt` (8 runs). Per SPEC §1A.7
+step 4 these rows are now the acceptance bar — **no VisionCam performance
+claim may be marked verified without its matching row here.**
 
 | Frame size | JPEG quality | FPS | SD write MB/s | Free heap B | Min heap B | Largest block B | Notes |
 |---|---|---|---|---|---|---|---|
-| QVGA | | | | | | | UNVERIFIED |
-| VGA | | | | | | | UNVERIFIED |
-| SVGA | | | | | | | UNVERIFIED |
-| XGA | | | | | | | UNVERIFIED |
-| SXGA | | | | | | | UNVERIFIED |
+| QVGA 320×240 | 12 | 30.8 (req 30) | 0.51 (520 kB/s) | 72,024 | 53,504 | 42,996 | 189 frames, 997 KB AVI, busy 40 %, store 10 ms/frame |
+| VGA 640×480 | 12 | 20.6 (req 20) | 0.50 (513 kB/s) | 75,072 | 53,504 | 42,996 | 70 frames, 1.0 MB AVI, busy 67 %, store 29 ms/frame |
+| SVGA 800×600 | 12 | 20.4 (req 20) | 0.49 (502 kB/s) | 74,008 | 53,504 | 42,996 | busy **100 %** — SD becomes the bottleneck |
+| XGA 1024×768 | 12 | 5.3 (req 5) | 0.49 (499 kB/s) | 72,404 | 53,504 | 42,996 | busy 52 % (R1 drops FPS to 5 at XGA) |
+| SXGA 1280×1024 | 12 | 6.2 (req 5) | 0.49 (507 kB/s) | 74,376 | 53,504 | 40,948 | busy 98 %, largest block 2 KB lower |
+| VGA | 8 | 20.7 | 0.48 (493 kB/s) | 72,328 | 53,504 | 42,996 | quality sweep, run 7 |
+| VGA | 16 | 20.4 | 0.50 (515 kB/s) | 73,808 | 53,504 | 42,996 | quality sweep, run 8 |
+
+- R1's own unit is **kB/s** (`vidSize / wTimeTot`); the MB/s column is that
+  figure ÷ 1024 — no silent unit conversion was applied.
+- "Min heap" is `ESP.getMinFreeHeap()` — the **lifetime** minimum, so it is the
+  same value on every row: it reached 53,504 B during the first QVGA run and
+  never went lower.
+- Frame-size indices sent to `/control` (R1's 0-based `framesize_t`, same order
+  as `framesize_t`: QVGA 6, VGA 10, SVGA 11, XGA 12, SXGA 14; R1's shipped
+  default was 10 = VGA, quality 12.
+- Every recording was sized to fit the card's **5,216,256 B** FAT volume
+  (§4.2) — 1.3 MB free at the start, each AVI deleted immediately after its
+  stats block was captured, `/status` checked afterwards. `free_bytes` never
+  reached 0 on any row used above.
+
+### 4.1 R1 heap figures
+
+| Point | Free heap B | Largest block B | Min heap B | pSRAM B | Status |
+|---|---|---|---|---|---|
+| R1 at boot (`checkMemory`) | 62,348–67,356 (3 boots, varies) | 38,900–42,996 | 62,316–67,184 | 1,752,776 | measured 2026-11-15 |
+| R1 idle, HTTP + camera running | 70,000–74,000 (`/status` samples) | — | — | ~1.19 MB | measured 2026-11-15 |
+| R1 at recording close (table above) | 72,024–75,072 | 40,948–42,996 | 53,504 | 914,892 | measured 2026-11-15 |
+
+### 4.2 Storage finding — CSD 7.5 GiB vs a 5.0 MB FAT volume
+
+Three independent numbers from the **same card**, and only one of them is
+what a filesystem can use:
+
+| Layer | Number | Source |
+|---|---|---|
+| CSD capacity | **8,053,063,680 B** (7.5 GiB) | `sdmmc_card_print_info` (VisionCam + R1's `infoSD`) |
+| CID product name | `SD16G` (implies 16 GB) | same print, `Name: SD16G`, `Type: SDHC`, `Size: 7680MB` |
+| FAT volume | **5,216,256 B usable, 1,349,632 B free, cluster 2048 B × 2547 clusters** (FAT12) | arduino-esp32 `SD_MMC.totalBytes()` *and* IDF `f_getfree` — identical |
+
+The two FATFS implementations agree to the byte, so **the 5 MB is in the
+card's own FAT BPB, not in either wrapper**: the formatted volume simply does
+not cover the card. The card holds `/boot`, `/EFI` (≈3.5 MB) and R1's `/data`
+(≈0.2 MB) — nothing more can be stored on it until the owner replaces or
+reformats it. Evidence:
+`docs/evidence/phase0-d2-vc-fat-crosscheck-boot.log` (IDF view).
+
+**Consequences recorded for later phases — read before Phase 3:**
+
+1. **R1's stats block cannot be trusted while the disk is full.** R1 counted
+   bytes it *tried* to write: one probe reported `File size: 12.3MB`,
+   `Actual FPS: 20.1`, `Average SD write speed: 3796 kB/s` while the file on
+   the card was really **1,349,632 B** (the directory entry and the HTTP
+   download both said 1.3 MB, and `used_bytes` went 3.7 → 5.0 MB). Cause,
+   studied in the pinned source: `saveFrame()` adds to `vidSize`/`frameCnt`
+   unconditionally and never checks `aviFile.write()`'s return value
+   (`mjpeg2sd.cpp:239-261`), so short writes are invisible. That run's 3796
+   kB/s is **discarded**; the row table above comes from runs that fit.
+2. **VisionCam's recorder (Phase 3) must check write return values** and
+   abort/truncate the segment on a short write rather than counting attempts
+   into the FPS/speed figures. A counter that is incremented before the write
+   result is known would reproduce exactly this defect.
+3. **Phase 9 retention planning cannot be sized on this card.** With 5 MB
+   usable there is no room for retention at VGA; a working card is needed
+   before the phase-exit numbers exist. VisionCam never auto-formats
+   (SPEC §2.3), so the reformat is an owner action.
 
 | Item | Value | Status |
 |---|---|---|
 | SD card identity as seen by the driver | `Name: SD16G`, `Type: SDHC`, `Size: 7680MB`, CSD v2, 15,728,640 sectors | measured 2026-11-15 (smoke boot 4) |
 | SD card printed label / class | — | **pending — D5** (read the print on the card: brand, capacity, class) |
+| FAT volume usable on this card | **5,216,256 B (4.98 MiB), 1,349,632 B free** — see §4.2 | measured 2026-11-15 (two FATFS implementations agree) |
 | PSRAM size | **8,388,608 B fitted; 4,192,024 B in the free heap pool, largest block 4,128,768 B; 4 MB mapped** | measured 2026-11-15 |
-| GPIO4 lamp with SD mounted | **OFF for the whole boot** — the ESP-IDF SDMMC 1-bit driver does *not* light the lamp (owner observed a full boot, 2026-11-15) | verified 2026-11-15 |
-| Brownout symptom observed (VisionCam build) | **none** — single `POWERON_RESET`, no `BROWNOUT`/panic/WDT across the full smoke run incl. 3 s of Wi-Fi beacon TX | verified 2026-11-15 (smoke boot 11); R1's weak-supply drill still owed with D2 |
+| GPIO4 lamp with SD mounted | **OFF for the whole boot** — the ESP-IDF SDMMC 1-bit driver does *not* light the lamp (owner observed a full boot, 2026-11-15) | verified 2026-11-15 (VisionCam build) |
+| GPIO4 lamp with SD mounted | **not yet observed under R1/Arduino `SD_MMC`.** R1's config keeps the lamp off (`lampMode=0`, `lampLevel=0`), but R1's SD library may light GPIO4 during mount — exactly what its own workaround comment claims (`utilsFS.cpp:81-84`). Needs the owner's eyes (§3.5 item 4) | ⬜ pending owner observation |
+| Brownout symptom observed (VisionCam build) | **none** — single `POWERON_RESET`, no `BROWNOUT`/panic/WDT across the full smoke run incl. 3 s of Wi-Fi beacon TX | verified 2026-11-15 (smoke boot 11) |
+| Brownout / reset behaviour (R1 run) | **none in the whole D2 run** — 8 recordings, HTTP + serial traffic, `printResetReason: Power on reset`, zero `BROWNOUT`/panic/WDT lines | verified for this run 2026-11-15; weak-supply drill still owed |
 | D3 FPS tolerance agreed | **10 %** | agreed 2026-11-15 |
 
 ---

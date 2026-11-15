@@ -1,0 +1,69 @@
+I (466) esp_image: segment 4: paddr=00103f94 vaddr=4008004c size=1a954h (108884) load
+I (514) esp_image: segment 5: paddr=0011e8f0 vaddr=50000000 size=00028h (    40) load
+I (528) boot: Loaded app from partition at offset 0x20000
+I (528) boot: Disabling RNG early entropy source...
+W (540) esp_psram: Virtual address not enough for PSRAM, map as much as we can. 4MB is mapped
+I (1063) vc_smoke: ================================================
+I (1063) vc_smoke:  VisionCam Pro  Phase 0 smoke test
+I (1063) vc_smoke: ================================================
+I (1063) vc_smoke: reset reason: POWERON
+I (1073) vc_smoke: PSRAM: 8388608 bytes (8.0 MB)
+I (1073) vc_smoke: heap[boot] free: 4448703 B, min ever: 4416672 B, largest block: 4128768 B
+I (1083) vc_smoke: heap[boot] PSRAM free: 4192024 B, largest PSRAM block: 4128768 B
+I (1093) vc_smoke: board: AI-Thinker ESP32-CAM, flash LED GPIO4, SD CLK/CMD/D0 = 14/15/2
+I (1093) vc_cam: PSRAM 8388608 B -> init frame size 15
+I (1273) vc_cam: sensor PID 0x0026 = OV2640
+I (1633) vc_cam: discarded 3 warm-up frame(s)
+I (1713) vc_cam: JPEG grabbed: 216471 bytes (1600x1200), capacity 384000
+I (1753) vc_cam: runtime frame size set to VGA
+I (1753) vc_smoke: CAMERA OK: pid=0x0026, attempts=1, warmup=3, jpeg=216471 B (1600x1200)
+I (1753) vc_smoke: heap[after camera] free: 3641111 B, min ever: 3609372 B, largest block: 3407872 B
+I (1753) vc_smoke: heap[after camera] PSRAM free: 3422632 B, largest PSRAM block: 3407872 B
+I (1763) vc_sd: mounting SD: slot 1, 1-bit, freq default 20000 kHz
+W (1803) SD_HOST: esp32 doesn't support input phase delay, fallback to 0 delay
+W (1803) SD_HOST: input line delay not supported, fallback to 0 delay
+Name: SD16G
+Type: SDHC
+Speed: 20.00 MHz (limit: 20.00 MHz)
+Size: 7680MB
+CSD: ver=2, sector_size=512, capacity=15728640 read_bl_len=9
+SSR: bus_width=1
+I (1823) vc_sd: SD mounted at /sdcard, negotiated 20000 kHz
+I (1843) vc_sd: FAT volume: 5216256 B usable, 1349632 B free, cluster 2048 B x 2547 clusters  CSD capacity 8053063680 B
+W (1843) vc_sd: FAT volume is < 1/8 of the CSD capacity: the card's partition/FAT does not cover the card (docs/HARDWARE.md 5.2)
+I (1853) vc_sd: GPIO4 (flash lamp / SD D1) driven low after mount  confirm the lamp stays OFF on hardware (step 13)
+I (1913) vc_sd: SD self-test OK: wrote, read back and deleted /sdcard/vc_smoke.txt
+I (1913) vc_smoke: SD OK: width=1 bit, max 20000 kHz, self-test=pass
+I (1913) vc_smoke: step 13: GPIO4 driven low  observer must confirm the lamp is OFF
+I (1923) vc_smoke: heap[after SD] free: 3636379 B, min ever: 3603308 B, largest block: 3407872 B
+I (1933) vc_smoke: heap[after SD] PSRAM free: 3418828 B, largest PSRAM block: 3407872 B
+I (1983) vc_sd: SD self-test OK: wrote, read back and deleted /sdcard/vc_smoke.txt
+I (1983) vc_smoke: step 14 [wifi off]: camera=OK (19244 B), sd=OK
+cam_hal: EV-EOF-OVF
+I (8103) vc_sd: SD self-test OK: wrote, read back and deleted /sdcard/vc_smoke.txt
+I (8103) vc_smoke: step 14 [wifi on]: camera=OK (17831 B), sd=OK
+I (8123) vc_smoke: step 14 result: OK (scan heard 1 network(s))
+I (8123) vc_smoke: heap[after wifi] free: 3588215 B, min ever: 3549752 B, largest block: 3407872 B
+I (8123) vc_smoke: heap[after wifi] PSRAM free: 3418380 B, largest PSRAM block: 3407872 B
+I (8133) vc_cam: PSRAM 8388608 B -> init frame size 15
+W (8133) vc_cam: forced failure test: XCLK removed  attempt 1 is expected to fail
+E (8143) gpio: gpio_install_isr_service(568): GPIO isr service already installed
+W (8153) gpio: conflict found for GPIO[32]
+E (8183) camera: Detected camera not supported.
+E (8183) camera: Camera probe failed with error 0x106(ESP_ERR_NOT_SUPPORTED)
+E (8183) vc_cam: esp_camera_init failed (attempt 1/3): ESP_ERR_NOT_SUPPORTED
+W (8193) gpio: conflict found for GPIO[32]
+E (8233) gpio: gpio_install_isr_service(568): GPIO isr service already installed
+W (8233) ledc: GPIO 0 is not usable, maybe conflict with others
+W (8233) gpio: conflict found for GPIO[32]
+I (8403) vc_cam: sensor PID 0x0026 = OV2640
+I (8763) vc_cam: discarded 3 warm-up frame(s)
+I (8843) vc_cam: JPEG grabbed: 209070 bytes (1600x1200), capacity 384000
+cam_hal: NO-SOI - JPEG start marker missing
+cam_hal: NO-SOI - JPEG start marker missing
+I (8883) vc_cam: runtime frame size set to VGA
+I (8883) vc_smoke: forced-failure test: err=ESP_OK, attempts=2 -> OK
+I (8883) vc_smoke: ------------------------------------------------
+I (8883) vc_smoke:  camera: OK | sd: OK | psram: OK | wifi(step14): OK | forced-retry: OK
+I (8893) vc_smoke:  next: flash this build and fill docs/HARDWARE.md section 5
+I (8903) vc_smoke: ================================================

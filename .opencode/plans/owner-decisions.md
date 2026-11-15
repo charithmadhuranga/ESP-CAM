@@ -18,7 +18,7 @@ R1 (`s60sc/ESP32-CAM_MJPEG2SD`) is **AGPL-3.0**. Choose one and record it in
 R2 (`espressif/esp32-camera`, Apache-2.0) may be used under either option;
 its licence notice stays in the release.
 
-## D2 — R1 baseline run (blocking for all performance claims)
+## D2 — R1 baseline run (blocking for all performance claims) — **EXECUTED 2026-11-15**
 
 Flash R1 **unmodified** on the owner's board with its own Arduino toolchain
 (arduino-esp32 ≥ 3.1.1, `CAMERA_MODEL_AI_THINKER`) and record the baseline
@@ -28,6 +28,36 @@ brownout/reset behaviour, exact SD card model.
 
 Without this, every VisionCam performance number stays `UNVERIFIED`
 (AGENTS rules 26 and 34).
+
+**Run and recorded 2026-11-15** — R1 was provisioned onto the owner's LAN
+over NVS (`docs/HARDWARE.md` §3.7, `tools/nvs_provision`) and measured from
+this workstation while R1's own serial stats were captured. Results in
+`docs/HARDWARE.md` §4 with evidence in
+`docs/evidence/phase0-d2-r1-avi-stats-blocks.txt`:
+
+| Measured | Result |
+|---|---|
+| FPS per frame size (quality 12) | QVGA 30.8, VGA 20.6, SVGA 20.4, XGA 5.3, SXGA 6.2 |
+| FPS vs quality (VGA) | q8 20.7, q12 20.6, q16 20.4 |
+| SD write speed | 493–520 kB/s (0.48–0.51 MB/s), consistent across sizes |
+| Free heap while recording | 72,024–75,072 B; largest block 40,948–42,996 B; lifetime min 53,504 B; pSRAM free 914,892 B |
+| Brownout/reset behaviour | none — 8 recordings + Wi-Fi TX, zero `BROWNOUT`/panic/WDT |
+
+**Three items still need the owner's eyes or hands** (§3.5 items 4–6), and
+they are asked for in one message rather than three:
+
+1. Watch the **GPIO4 lamp** during an R1 recording — R1's own comment claims
+   Arduino's `SD_MMC` lights the pin on mount even in 1-line mode
+   (`utilsFS.cpp:81-84`), while the ESP-IDF driver measurably does not. The
+   lamp is the sharpest difference between the two storage stacks.
+2. Read the **printed card label** (brand, capacity, class) → **D5**.
+3. Optionally run the **weak-supply brownout drill** on R1.
+
+**Storage surprise — blocks D5 and Phase 9:** the card's CSD reports
+8,053,063,680 B and its CID calls it `SD16G`, but both FATFS implementations
+report a **5,216,256 B FAT12 volume with 1,349,632 B free**. Full analysis and
+its consequences (including why one R1 stats block reported 12.3 MB / 3796
+kB/s for a 1.3 MB truncated file) is `docs/HARDWARE.md` §4.2.
 
 ## D3 — FPS parity tolerance
 

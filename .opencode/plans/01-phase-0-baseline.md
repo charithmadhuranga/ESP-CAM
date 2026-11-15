@@ -85,16 +85,29 @@ every later phase is measured against.
 14. Camera + SD running together under Wi-Fi off, then Wi-Fi on — confirm no
     instability, no brownout.
 
-### 0.4 R1 baseline (owner hardware, **D2**)
+### 0.4 R1 baseline (owner hardware, **D2**) — **EXECUTED 2026-11-15**
 
 15. Flash R1 **unmodified** with its own Arduino toolchain
     (arduino-esp32 core ≥3.1.1, `CAMERA_MODEL_AI_THINKER`, Minimal SPIFFS
     partition). This is a measurement tool only — not VisionCam's build
     system.
+    **Done 2026-11-15:** compile 1,734,516 B (88 %) / upload verified / R1
+    banner on serial. R1 was then provisioned onto the owner's LAN over NVS
+    so it could be measured from this workstation (`docs/HARDWARE.md` §3.7,
+    `tools/nvs_provision` — our own ESP-IDF tool, no R1 code).
 16. Fill the baseline table in `docs/HARDWARE.md`: recorded FPS per frame
     size/quality, SD write speed, free heap, minimum heap, largest free
     block, GPIO4/lamp behaviour with SD mounted, brownout/reset behaviour,
     exact SD card model.
+    **Done 2026-11-15:** `docs/HARDWARE.md` §4 — 8 recording runs, FPS 30.8
+    (QVGA) / 20.6 (VGA) / 20.4 (SVGA) / 5.3 (XGA) / 6.2 (SXGA) at quality 12,
+    VGA at q8 and q16, SD 0.48–0.51 MB/s, no brownout/panic/WDT.
+    Still owed and asked for in one message to the owner
+    (`owner-decisions.md` D2): the **printed card label** (→ D5), the **GPIO4
+    lamp check under R1's Arduino `SD_MMC`**, and the optional **weak-supply
+    drill**. The card's usable volume turned out to be only 5,216,256 B —
+    see `docs/HARDWARE.md` §4.2 for the analysis and its Phase 3 / Phase 9
+    consequences.
 17. Record the tolerance (**D3**, suggested 10 %) as the acceptance bar for
     Phase 3 and Phase 9 parity tests (SPEC §11.10).
     **Recorded: 10 % (2026-11-15)** — `owner-decisions.md`, `docs/HARDWARE.md`
@@ -102,6 +115,8 @@ every later phase is measured against.
 18. Write the first `docs/REFERENCE_ANALYSIS.md` entries: the §1A.5 matrix
     rows you have now verified first-hand, plus any behavioural difference
     found between the pinned R1/R2 and what SPEC assumed.
+    **Updated 2026-11-15:** R1 storage/`checkFreeStorage`, R1 stats block, and
+    the two-FATFS storage cross-check are recorded as new entries.
 
 ## Memory / timing / hardware notes
 
@@ -126,9 +141,14 @@ every later phase is measured against.
       (`step 14 result: OK`, 2 networks heard, 3 s beacon TX).
 - [x] Brownout/reset behaviour recorded — **this run**: 1 boot,
       `POWERON_RESET`, none observed. Weak-supply drill still owed with D2.
-- [ ] R1 baseline table complete, or explicitly marked `UNVERIFIED` —
-      `docs/HARDWARE.md` §4 rows still `UNVERIFIED`; **owed to the owner's
-      D2 run** (R1 flash + measurements, §3.3–3.6).
+- [x] R1 baseline table complete — `docs/HARDWARE.md` §4 filled 2026-11-15
+      from 8 measured runs (`docs/evidence/phase0-d2-r1-avi-stats-blocks.txt`).
+      Three §3.5 sub-items need the owner's eyes/hands and are asked for in
+      one message: card label → D5, R1 lamp check, weak-supply drill.
+- [x] Phase 0 exit-gate smoke + `pio run` green after the D2 firmware
+      touch-up: VisionCam reflashed and re-verified
+      (`docs/evidence/phase0-d2-vc-fat-crosscheck-boot.log` —
+      `camera: OK | sd: OK | psram: OK | wifi(step14): OK | forced-retry: OK`).
 - [x] Only one `esp32-camera` copy linked (rule 33 check passes at configure).
 - [x] `docs/adr/0001-toolchain.md` and `docs/REFERENCE_ANALYSIS.md` exist.
 

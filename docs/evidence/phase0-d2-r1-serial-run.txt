@@ -1,0 +1,246 @@
+
+
+=============== ESP-CAM_MJPEG 10.10.1 ===============
+[00:00:00.491 logSetup] Setup RAM based log, size 6656, starting from 56
+[00:00:00.492 printResetReason] Power on reset
+[00:00:00.496 printWakeupReason] Wakeup by reset
+[00:00:00.500 boardInfo] Chip ESP32-D0WDQ6, 2 cores @ 240Mhz, rev 1
+[00:00:00.506 boardInfo] Flash 4.0MB, mode QIO @ 80Mhz
+[00:00:00.511 boardInfo] PSRAM 4.0MB, mode QSPI @ 80Mhz
+[00:00:00.516 utilsStartup] Compiled with arduino-esp32 v3.3.12
+[00:00:00.571 infoSD] SD card type SDHC, Size: 7.5GB, using 1 bit mode @ 40MHz
+[00:00:00.572 listFolder] Sketch size 1.7MB
+[00:00:00.899 listFolder] File: /data/configs.txt, size: 8509 bytes, Date: 01 Jan 1980 00:00:00
+[00:00:00.902 listFolder] File: /data/common.js, size: 52KB, Date: 01 Jan 1980 00:00:08
+[00:00:00.907 listFolder] File: /data/MJPEG2SD.htm, size: 101KB, Date: 15 Nov 2026 09:03:22
+[00:00:00.920 listFolder] SD_MMC: 4.7MB used of 5.0MB
+[00:00:00.920 loadConfig] Load config
+[00:00:01.237 updateAppStatus] Enabling motion detection by camera
+[00:00:01.284 saveConfigVect] Config file saved 224 entries 
+[00:00:01.300 setupLamp] Mono LED available on pin 4
+[00:00:01.302 initCam] Max frame size for 4.0MB PSRAM is UXGA 
+[00:00:01.572 onNetEvent] Wifi Station started, connecting to: OPPO F9
+[00:00:01.573 onNetEvent] Wifi AP SSID: ESP-CAM_MJPEG_80B69225BF58 started, use 'http://192.168.4.1' to connect
+[00:00:01.595 setWifiSTA] Wifi Station IP from DHCP
+[00:00:04.099 onNetEvent] WiFi Station connection to OPPO F9, using hostname: ESP-CAM_MJPEG_80B69225BF58
+[00:00:05.191 onNetEvent] Wifi Station IP, use 'http://192.168.43.171' to connect
+[00:00:05.192 startPing] Started ping monitoring - On
+[00:00:05.200 startWebServer] Starting web server on port: 80
+[00:00:05.200 startWebServer] Remote server certificates not checked
+[00:00:05.221 resetWatchDog] WatchDog started for task: ping
+[00:00:06.477 getExtIP] External IP: 212.104.231.102
+[00:00:06.478 startNetwork] MAC Addr: 58:BF:25:92:B6:80
+[00:00:06.479 appSetup] Selected board CAMERA_MODEL_AI_THINKER
+[00:00:06.974 prepCam] Camera model OV2640 ready @ 20MHz (AEC/AWB settled)
+[00:00:06.975 startSustainTasks] Started 1 sustain tasks
+[00:00:06.994 updateAppStatus] Enabling motion detection by camera
+[00:00:07.097 prepRecording] To record new AVI, do one of:
+[00:00:07.097 prepRecording] - press Start Recording on web page
+[00:00:07.097 prepRecording] - move in front of camera
+ 
+[00:00:07.102 checkMemory] Setup Free: heap 67208, block: 42996, min: 67184, pSRAM 1752776
+[00:00:07.110 loop] =============== Total tasks: 19 ===============
+
+[00:00:09.329 isNight] Night time
+[09:35:06.980 timeSyncCallback] Time synced with NTP: pool.ntp.org, using timezone: GMT0
+[09:35:15.054 updateAppStatus] Disabling motion detection by camera
+[09:35:23.713 deleteFolderOrFile] Deleting : /20261115/20261115_093350_QVGA_31_6.avi
+[09:35:23.713 deleteFolderOrFile] File /20261115/20261115_093350_QVGA_31_6.avi deleted 
+[09:35:32.196 setAlarm] Alarm scheduled at 16/11/2026 01:00:00
+[09:35:32.196 checkScheduledRestart] Next scheduled weekly restart due: 17/11/2026 02:00:00
+[09:35:46.768 appSpecificWebHandler] JPEG: 5372B in 104ms
+[09:35:48.477 processFrame] Capture started by Button  
+..................................................
+..................................................
+..................................................
+....................................... 
+[09:35:54.723 closeAvi] ******** AVI recording stats ********
+[09:35:54.723 closeAvi] Recorded /20261115/20261115_093548_QVGA_31_6.avi 
+[09:35:54.723 closeAvi] AVI duration: 6 secs
+[09:35:54.723 closeAvi] Number of frames: 189
+[09:35:54.733 closeAvi] Required FPS: 30
+[09:35:54.733 closeAvi] Actual FPS: 30.8
+[09:35:54.733 closeAvi] File size: 997KB
+[09:35:54.743 closeAvi] Average frame length: 5406 bytes
+[09:35:54.743 closeAvi] Average frame monitoring time: 2 ms
+[09:35:54.743 closeAvi] Average frame buffering time: 0 ms
+[09:35:54.743 closeAvi] Average frame storage time: 10 ms
+[09:35:54.763 closeAvi] Average SD write speed: 520 kB/s
+[09:35:54.763 closeAvi] File open / completion times: 3 ms / 100 ms
+[09:35:54.763 closeAvi] Busy: 40%
+[09:35:54.763 checkMemory] Setup Free: heap 72024, block: 42996, min: 53504, pSRAM 914892
+[09:35:54.763 closeAvi] *************************************
+[09:35:54.763 WARN checkFreeStorage] Space left 0MB is less than minimum 100MB 
+[09:36:02.315 deleteFolderOrFile] Deleting : /20261115/20261115_093548_QVGA_31_6.avi
+[09:36:02.315 deleteFolderOrFile] File /20261115/20261115_093548_QVGA_31_6.avi deleted 
+[09:36:35.527 appSpecificWebHandler] JPEG: 15698B in 949ms
+[09:36:37.618 processFrame] Capture started by Button  
+...........
+..................................................
+......... 
+[09:36:41.067 closeAvi] ******** AVI recording stats ********
+[09:36:41.067 closeAvi] Recorded /20261115/20261115_093637_VGA_21_3.avi 
+[09:36:41.067 closeAvi] AVI duration: 3 secs
+[09:36:41.067 closeAvi] Number of frames: 70
+[09:36:41.077 closeAvi] Required FPS: 20
+[09:36:41.077 closeAvi] Actual FPS: 20.6
+[09:36:41.077 closeAvi] File size: 1.0MB
+[09:36:41.087 closeAvi] Average frame length: 15281 bytes
+[09:36:41.087 closeAvi] Average frame monitoring time: 3 ms
+[09:36:41.087 closeAvi] Average frame buffering time: 0 ms
+[09:36:41.087 closeAvi] Average frame storage time: 29 ms
+[09:36:41.107 closeAvi] Average SD write speed: 513 kB/s
+[09:36:41.107 closeAvi] File open / completion times: 2 ms / 41 ms
+[09:36:41.107 closeAvi] Busy: 67%
+[09:36:41.107 checkMemory] Setup Free: heap 75072, block: 42996, min: 53504, pSRAM 914892
+[09:36:41.107 closeAvi] *************************************
+[09:36:41.107 WARN checkFreeStorage] Space left 0MB is less than minimum 100MB 
+[09:36:47.843 deleteFolderOrFile] Deleting : /20261115/20261115_093637_VGA_21_3.avi
+[09:36:47.844 deleteFolderOrFile] File /20261115/20261115_093637_VGA_21_3.avi deleted 
+[09:37:41.160 appSpecificWebHandler] JPEG: 23632B in 1018ms
+[09:37:43.415 processFrame] Capture started by Button  
+.........................................
+........... 
+[09:37:45.999 closeAvi] ******** AVI recording stats ********
+[09:37:45.999 closeAvi] Recorded /20261115/20261115_093743_SVGA_20_3.avi 
+[09:37:45.999 closeAvi] AVI duration: 3 secs
+[09:37:45.999 closeAvi] Number of frames: 52
+[09:37:46.009 closeAvi] Required FPS: 20
+[09:37:46.009 closeAvi] Actual FPS: 20.4
+[09:37:46.009 closeAvi] File size: 1.2MB
+[09:37:46.019 closeAvi] Average frame length: 23326 bytes
+[09:37:46.019 closeAvi] Average frame monitoring time: 5 ms
+[09:37:46.019 closeAvi] Average frame buffering time: 0 ms
+[09:37:46.019 closeAvi] Average frame storage time: 45 ms
+[09:37:46.039 closeAvi] Average SD write speed: 502 kB/s
+[09:37:46.039 closeAvi] File open / completion times: 2 ms / 34 ms
+[09:37:46.039 closeAvi] Busy: 100%
+[09:37:46.039 checkMemory] Setup Free: heap 74008, block: 42996, min: 53504, pSRAM 914892
+[09:37:46.039 closeAvi] *************************************
+[09:37:46.039 WARN checkFreeStorage] Space left 0MB is less than minimum 100MB 
+[09:37:53.355 deleteFolderOrFile] Deleting : /20261115/20261115_093743_SVGA_20_3.avi
+[09:37:53.355 deleteFolderOrFile] File /20261115/20261115_093743_SVGA_20_3.avi deleted 
+[09:38:21.221 appSpecificWebHandler] JPEG: 30740B in 2881ms
+[09:38:23.238 processFrame] Capture started by Button  
+................................. 
+[09:38:29.560 closeAvi] ******** AVI recording stats ********
+[09:38:29.560 closeAvi] Recorded /20261115/20261115_093823_XGA_5_6.avi 
+[09:38:29.560 closeAvi] AVI duration: 6 secs
+[09:38:29.560 closeAvi] Number of frames: 33
+[09:38:29.571 closeAvi] Required FPS: 5
+[09:38:29.571 closeAvi] Actual FPS: 5.3
+[09:38:29.571 closeAvi] File size: 1.1MB
+[09:38:29.581 closeAvi] Average frame length: 36536 bytes
+[09:38:29.581 closeAvi] Average frame monitoring time: 27 ms
+[09:38:29.581 closeAvi] Average frame buffering time: 0 ms
+[09:38:29.581 closeAvi] Average frame storage time: 71 ms
+[09:38:29.601 closeAvi] Average SD write speed: 499 kB/s
+[09:38:29.601 closeAvi] File open / completion times: 3 ms / 36 ms
+[09:38:29.601 closeAvi] Busy: 52%
+[09:38:29.601 checkMemory] Setup Free: heap 72404, block: 42996, min: 53504, pSRAM 914892
+[09:38:29.601 closeAvi] *************************************
+[09:38:29.601 WARN checkFreeStorage] Space left 0MB is less than minimum 100MB 
+[09:38:38.177 deleteFolderOrFile] Deleting : /20261115/20261115_093823_XGA_5_6.avi
+[09:38:38.178 deleteFolderOrFile] File /20261115/20261115_093823_XGA_5_6.avi deleted 
+[09:39:45.749 appSpecificWebHandler] JPEG: 61968B in 22388ms
+[09:39:47.444 processFrame] Capture started by Button  
+......
+............. 
+[09:39:50.562 closeAvi] ******** AVI recording stats ********
+[09:39:50.562 closeAvi] Recorded /20261115/20261115_093947_SXGA_6_3.avi 
+[09:39:50.562 closeAvi] AVI duration: 3 secs
+[09:39:50.562 closeAvi] Number of frames: 19
+[09:39:50.573 closeAvi] Required FPS: 5
+[09:39:50.573 closeAvi] Actual FPS: 6.2
+[09:39:50.573 closeAvi] File size: 1.1MB
+[09:39:50.583 closeAvi] Average frame length: 61383 bytes
+[09:39:50.583 closeAvi] Average frame monitoring time: 39 ms
+[09:39:50.583 closeAvi] Average frame buffering time: 0 ms
+[09:39:50.583 closeAvi] Average frame storage time: 118 ms
+[09:39:50.603 closeAvi] Average SD write speed: 507 kB/s
+[09:39:50.603 closeAvi] File open / completion times: 2 ms / 38 ms
+[09:39:50.603 closeAvi] Busy: 98%
+[09:39:50.603 checkMemory] Setup Free: heap 74376, block: 40948, min: 53504, pSRAM 914892
+[09:39:50.603 closeAvi] *************************************
+[09:39:50.603 WARN checkFreeStorage] Space left 0MB is less than minimum 100MB 
+[09:39:57.277 deleteFolderOrFile] Deleting : /20261115/20261115_093947_SXGA_6_3.avi
+[09:39:57.278 deleteFolderOrFile] File /20261115/20261115_093947_SXGA_6_3.avi deleted 
+[09:40:43.471 appSpecificWebHandler] JPEG: 21028B in 656ms
+[09:40:45.481 processFrame] Capture started by Button  
+.....................................
+............................... 
+[09:40:48.803 closeAvi] ******** AVI recording stats ********
+[09:40:48.803 closeAvi] Recorded /20261115/20261115_094045_VGA_21_3.avi 
+[09:40:48.803 closeAvi] AVI duration: 3 secs
+[09:40:48.803 closeAvi] Number of frames: 68
+[09:40:48.814 closeAvi] Required FPS: 20
+[09:40:48.814 closeAvi] Actual FPS: 20.7
+[09:40:48.814 closeAvi] File size: 1.4MB
+[09:40:48.824 closeAvi] Average frame length: 21486 bytes
+[09:40:48.824 closeAvi] Average frame monitoring time: 3 ms
+[09:40:48.824 closeAvi] Average frame buffering time: 0 ms
+[09:40:48.824 closeAvi] Average frame storage time: 38 ms
+[09:40:48.844 closeAvi] Average SD write speed: 543 kB/s
+[09:40:48.844 closeAvi] File open / completion times: 3 ms / 29 ms
+[09:40:48.844 closeAvi] Busy: 88%
+[09:40:48.844 checkMemory] Setup Free: heap 74008, block: 42996, min: 53504, pSRAM 914892
+[09:40:48.844 closeAvi] *************************************
+[09:40:48.844 WARN checkFreeStorage] Space left 0MB is less than minimum 100MB 
+[09:40:55.752 deleteFolderOrFile] Deleting : /20261115/20261115_094045_VGA_21_3.avi
+[09:40:55.753 deleteFolderOrFile] File /20261115/20261115_094045_VGA_21_3.avi deleted 
+[09:41:45.523 appSpecificWebHandler] JPEG: 21925B in 1065ms
+[09:41:47.632 processFrame] Capture started by Button  
+...................
+................ 
+[09:41:49.362 closeAvi] ******** AVI recording stats ********
+[09:41:49.362 closeAvi] Recorded /20261115/20261115_094147_VGA_21_2.avi 
+[09:41:49.362 closeAvi] AVI duration: 2 secs
+[09:41:49.362 closeAvi] Number of frames: 35
+[09:41:49.372 closeAvi] Required FPS: 20
+[09:41:49.372 closeAvi] Actual FPS: 20.7
+[09:41:49.372 closeAvi] File size: 753KB
+[09:41:49.382 closeAvi] Average frame length: 22030 bytes
+[09:41:49.382 closeAvi] Average frame monitoring time: 3 ms
+[09:41:49.382 closeAvi] Average frame buffering time: 0 ms
+[09:41:49.382 closeAvi] Average frame storage time: 43 ms
+[09:41:49.402 closeAvi] Average SD write speed: 493 kB/s
+[09:41:49.402 closeAvi] File open / completion times: 3 ms / 35 ms
+[09:41:49.402 closeAvi] Busy: 99%
+[09:41:49.402 checkMemory] Setup Free: heap 72328, block: 42996, min: 53504, pSRAM 914892
+[09:41:49.402 closeAvi] *************************************
+[09:41:49.402 WARN checkFreeStorage] Space left 0MB is less than minimum 100MB 
+[09:41:56.465 deleteFolderOrFile] Deleting : /20261115/20261115_094147_VGA_21_2.avi
+[09:41:56.465 deleteFolderOrFile] File /20261115/20261115_094147_VGA_21_2.avi deleted 
+[09:42:23.106 appSpecificWebHandler] JPEG: 13879B in 1106ms
+[09:42:26.614 processFrame] Capture started by Button  
+..................................
+..................................................
+.......... 
+[09:42:31.260 closeAvi] ******** AVI recording stats ********
+[09:42:31.260 closeAvi] Recorded /20261115/20261115_094226_VGA_20_5.avi 
+[09:42:31.260 closeAvi] AVI duration: 5 secs
+[09:42:31.260 closeAvi] Number of frames: 94
+[09:42:31.270 closeAvi] Required FPS: 20
+[09:42:31.270 closeAvi] Actual FPS: 20.4
+[09:42:31.270 closeAvi] File size: 1.2MB
+[09:42:31.280 closeAvi] Average frame length: 13598 bytes
+[09:42:31.280 closeAvi] Average frame monitoring time: 3 ms
+[09:42:31.280 closeAvi] Average frame buffering time: 0 ms
+[09:42:31.280 closeAvi] Average frame storage time: 25 ms
+[09:42:31.300 closeAvi] Average SD write speed: 515 kB/s
+[09:42:31.300 closeAvi] File open / completion times: 3 ms / 34 ms
+[09:42:31.300 closeAvi] Busy: 60%
+[09:42:31.300 checkMemory] Setup Free: heap 73808, block: 42996, min: 53504, pSRAM 914892
+[09:42:31.300 closeAvi] *************************************
+[09:42:31.300 WARN checkFreeStorage] Space left 0MB is less than minimum 100MB 
+[09:42:40.950 deleteFolderOrFile] Deleting : /20261115/20261115_094226_VGA_20_5.avi
+[09:42:40.951 deleteFolderOrFile] File /20261115/20261115_094226_VGA_20_5.avi deleted 
+ets Jun  8 2016 00:22:57
+
+rst:0x1 (POWERON_RESET),boot:0x3 (DOWNLOAD_BOOT(UART0/UART1/SDIO_REI_REO_V2))
+waiting for download
+ UU UUU UU UU        ets Jun  8 2016 00:22:57
+
+rst:0x1 (POWERON_RESET),boot:0x3 (DOWNLOAD_BOOT(UART0/UART1/SDIO_REI_REO_V2))
+waiting for download
+ U U U U U U U U

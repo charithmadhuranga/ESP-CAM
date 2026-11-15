@@ -132,7 +132,7 @@ Maintain the live status in `docs/TEST_PLAN.md`; this file is the map.
 
 | Item | Phase | Skill | Status |
 |---|---|---|---|
-| R1 baseline recorded on owner's board and card | 0 | `visioncam-reference-first` | TODO |
+| R1 baseline recorded on owner's board and card | 0 | `visioncam-reference-first` | **RUN PASS** 2026-11-15 (8 runs: QVGA 30.8, VGA 20.6, SVGA 20.4, XGA 5.3, SXGA 6.2 FPS at q12, VGA at q8/q16; SD 0.48–0.51 MB/s; `docs/HARDWARE.md` §4). Three items still need the owner: printed card label (D5), R1/Arduino `SD_MMC` lamp check, weak-supply drill |
 | VisionCam recording FPS at VGA and QVGA within tolerance | 3, 9 | `visioncam-hardware-validation` | TODO |
 | GPIO4 lamp stays off with SD mounted | 0, 9 | `visioncam-hardware-validation` | TODO |
 | Camera init retry + PWDN power-cycle verified by forced failure | 0, 1 | `visioncam-hardware-validation` | TODO |

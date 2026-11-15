@@ -14,6 +14,7 @@
 #include "driver/sdmmc_host.h"
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
+#include "ff.h"  // FATFS / f_getfree — volume geometry report below
 #include "soc/sdmmc_pins.h"
 
 #include "board_profile.h"
@@ -123,6 +124,42 @@ esp_err_t sdMount(SdReport& report) {
     sdmmc_card_print_info(stdout, s_card);
     ESP_LOGI(TAG, "SD mounted at %s, negotiated %u kHz",
              kSdMountPoint, static_cast<unsigned>(s_card->max_freq_khz));
+
+    // --- FAT volume geometry -------------------------------------------------
+    // Two independent views of one card: the CSD (physical capacity, printed
+    // above) and the FAT BPB (the volume actually usable by every filesystem
+    // user). They disagree on the owner's card — CSD 7.5 GB vs a 5.0 MB FAT
+    // (docs/HARDWARE.md 5.2, found during the D2 R1 baseline run). Printing
+    // both here, from IDF's own FATFS, says which layer the 5 MB lives in:
+    // if IDF and arduino-esp32 agree, the number comes from the card's BPB,
+    // not from either wrapper.
+    FATFS* fatfs = nullptr;
+    DWORD free_clusters = 0;
+    const FRESULT fr = f_getfree("0:", &free_clusters, &fatfs);
+    if (fr == FR_OK && fatfs != nullptr) {
+        const uint64_t cluster_bytes =
+            static_cast<uint64_t>(fatfs->csize) * fatfs->ssize;
+        const uint64_t total_bytes = cluster_bytes * (fatfs->n_fatent - 2);
+        const uint64_t free_bytes = cluster_bytes * free_clusters;
+        const uint64_t csd_bytes =
+            static_cast<uint64_t>(s_card->csd.capacity) * s_card->csd.sector_size;
+        ESP_LOGI(TAG,
+                 "FAT volume: %llu B usable, %llu B free, cluster %u B x %u "
+                 "clusters — CSD capacity %llu B",
+                 static_cast<unsigned long long>(total_bytes),
+                 static_cast<unsigned long long>(free_bytes),
+                 static_cast<unsigned>(cluster_bytes),
+                 static_cast<unsigned>(fatfs->n_fatent - 2),
+                 static_cast<unsigned long long>(csd_bytes));
+        if (total_bytes * 8 < csd_bytes) {
+            ESP_LOGW(TAG, "FAT volume is < 1/8 of the CSD capacity: the card's "
+                          "partition/FAT does not cover the card "
+                          "(docs/HARDWARE.md 5.2)");
+        }
+    } else {
+        // FRESULT has no strerror() in IDF's FATFS — print the raw code.
+        ESP_LOGW(TAG, "f_getfree(\"0:\") failed with FRESULT %d", static_cast<int>(fr));
+    }
 
     // --- GPIO4 / flash lamp (task 0.3 step 13) ------------------------------
     // R1 drives GPIO4 low right after mounting because its SD library

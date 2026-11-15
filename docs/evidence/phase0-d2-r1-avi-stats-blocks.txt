@@ -1,0 +1,154 @@
+Phase 0 D2 — R1 baseline: verbatim AVI stats blocks from the device serial log
+Source: /dev/ttyUSB0 115200, capture file r1_base_serial.txt (this file is the
+extract; every line below is unedited device output, ASCII-sanitised).
+R1 = reference/ESP32-CAM_MJPEG2SD @ abe84d8, flashed UNMODIFIED, APP_VER 10.10.1.
+Sequence of runs (quality set via /control between runs):
+  1 QVGA q12 | 2 VGA q12 | 3 SVGA q12 | 4 XGA q12 | 5 SXGA q12
+  6 VGA q8 (disk-full, speed figure INVALID) | 7 VGA q8 (clean, retried)
+  8 VGA q16
+==============================================================================
+
+--- run 1 ----------------------------------------------------------------
+[09:35:54.723 closeAvi] ******** AVI recording stats ********
+[09:35:54.723 closeAvi] Recorded /20261115/20261115_093548_QVGA_31_6.avi 
+[09:35:54.723 closeAvi] AVI duration: 6 secs
+[09:35:54.723 closeAvi] Number of frames: 189
+[09:35:54.733 closeAvi] Required FPS: 30
+[09:35:54.733 closeAvi] Actual FPS: 30.8
+[09:35:54.733 closeAvi] File size: 997KB
+[09:35:54.743 closeAvi] Average frame length: 5406 bytes
+[09:35:54.743 closeAvi] Average frame monitoring time: 2 ms
+[09:35:54.743 closeAvi] Average frame buffering time: 0 ms
+[09:35:54.743 closeAvi] Average frame storage time: 10 ms
+[09:35:54.763 closeAvi] Average SD write speed: 520 kB/s
+[09:35:54.763 closeAvi] File open / completion times: 3 ms / 100 ms
+[09:35:54.763 closeAvi] Busy: 40%
+[09:35:54.763 checkMemory] Setup Free: heap 72024, block: 42996, min: 53504, pSRAM 914892
+[09:35:54.763 closeAvi] *************************************
+
+--- run 2 ----------------------------------------------------------------
+[09:36:41.067 closeAvi] ******** AVI recording stats ********
+[09:36:41.067 closeAvi] Recorded /20261115/20261115_093637_VGA_21_3.avi 
+[09:36:41.067 closeAvi] AVI duration: 3 secs
+[09:36:41.067 closeAvi] Number of frames: 70
+[09:36:41.077 closeAvi] Required FPS: 20
+[09:36:41.077 closeAvi] Actual FPS: 20.6
+[09:36:41.077 closeAvi] File size: 1.0MB
+[09:36:41.087 closeAvi] Average frame length: 15281 bytes
+[09:36:41.087 closeAvi] Average frame monitoring time: 3 ms
+[09:36:41.087 closeAvi] Average frame buffering time: 0 ms
+[09:36:41.087 closeAvi] Average frame storage time: 29 ms
+[09:36:41.107 closeAvi] Average SD write speed: 513 kB/s
+[09:36:41.107 closeAvi] File open / completion times: 2 ms / 41 ms
+[09:36:41.107 closeAvi] Busy: 67%
+[09:36:41.107 checkMemory] Setup Free: heap 75072, block: 42996, min: 53504, pSRAM 914892
+[09:36:41.107 closeAvi] *************************************
+
+--- run 3 ----------------------------------------------------------------
+[09:37:45.999 closeAvi] ******** AVI recording stats ********
+[09:37:45.999 closeAvi] Recorded /20261115/20261115_093743_SVGA_20_3.avi 
+[09:37:45.999 closeAvi] AVI duration: 3 secs
+[09:37:45.999 closeAvi] Number of frames: 52
+[09:37:46.009 closeAvi] Required FPS: 20
+[09:37:46.009 closeAvi] Actual FPS: 20.4
+[09:37:46.009 closeAvi] File size: 1.2MB
+[09:37:46.019 closeAvi] Average frame length: 23326 bytes
+[09:37:46.019 closeAvi] Average frame monitoring time: 5 ms
+[09:37:46.019 closeAvi] Average frame buffering time: 0 ms
+[09:37:46.019 closeAvi] Average frame storage time: 45 ms
+[09:37:46.039 closeAvi] Average SD write speed: 502 kB/s
+[09:37:46.039 closeAvi] File open / completion times: 2 ms / 34 ms
+[09:37:46.039 closeAvi] Busy: 100%
+[09:37:46.039 checkMemory] Setup Free: heap 74008, block: 42996, min: 53504, pSRAM 914892
+[09:37:46.039 closeAvi] *************************************
+
+--- run 4 ----------------------------------------------------------------
+[09:38:29.560 closeAvi] ******** AVI recording stats ********
+[09:38:29.560 closeAvi] Recorded /20261115/20261115_093823_XGA_5_6.avi 
+[09:38:29.560 closeAvi] AVI duration: 6 secs
+[09:38:29.560 closeAvi] Number of frames: 33
+[09:38:29.571 closeAvi] Required FPS: 5
+[09:38:29.571 closeAvi] Actual FPS: 5.3
+[09:38:29.571 closeAvi] File size: 1.1MB
+[09:38:29.581 closeAvi] Average frame length: 36536 bytes
+[09:38:29.581 closeAvi] Average frame monitoring time: 27 ms
+[09:38:29.581 closeAvi] Average frame buffering time: 0 ms
+[09:38:29.581 closeAvi] Average frame storage time: 71 ms
+[09:38:29.601 closeAvi] Average SD write speed: 499 kB/s
+[09:38:29.601 closeAvi] File open / completion times: 3 ms / 36 ms
+[09:38:29.601 closeAvi] Busy: 52%
+[09:38:29.601 checkMemory] Setup Free: heap 72404, block: 42996, min: 53504, pSRAM 914892
+[09:38:29.601 closeAvi] *************************************
+
+--- run 5 ----------------------------------------------------------------
+[09:39:50.562 closeAvi] ******** AVI recording stats ********
+[09:39:50.562 closeAvi] Recorded /20261115/20261115_093947_SXGA_6_3.avi 
+[09:39:50.562 closeAvi] AVI duration: 3 secs
+[09:39:50.562 closeAvi] Number of frames: 19
+[09:39:50.573 closeAvi] Required FPS: 5
+[09:39:50.573 closeAvi] Actual FPS: 6.2
+[09:39:50.573 closeAvi] File size: 1.1MB
+[09:39:50.583 closeAvi] Average frame length: 61383 bytes
+[09:39:50.583 closeAvi] Average frame monitoring time: 39 ms
+[09:39:50.583 closeAvi] Average frame buffering time: 0 ms
+[09:39:50.583 closeAvi] Average frame storage time: 118 ms
+[09:39:50.603 closeAvi] Average SD write speed: 507 kB/s
+[09:39:50.603 closeAvi] File open / completion times: 2 ms / 38 ms
+[09:39:50.603 closeAvi] Busy: 98%
+[09:39:50.603 checkMemory] Setup Free: heap 74376, block: 40948, min: 53504, pSRAM 914892
+[09:39:50.603 closeAvi] *************************************
+
+--- run 6 ----------------------------------------------------------------
+[09:40:48.803 closeAvi] ******** AVI recording stats ********
+[09:40:48.803 closeAvi] Recorded /20261115/20261115_094045_VGA_21_3.avi 
+[09:40:48.803 closeAvi] AVI duration: 3 secs
+[09:40:48.803 closeAvi] Number of frames: 68
+[09:40:48.814 closeAvi] Required FPS: 20
+[09:40:48.814 closeAvi] Actual FPS: 20.7
+[09:40:48.814 closeAvi] File size: 1.4MB
+[09:40:48.824 closeAvi] Average frame length: 21486 bytes
+[09:40:48.824 closeAvi] Average frame monitoring time: 3 ms
+[09:40:48.824 closeAvi] Average frame buffering time: 0 ms
+[09:40:48.824 closeAvi] Average frame storage time: 38 ms
+[09:40:48.844 closeAvi] Average SD write speed: 543 kB/s
+[09:40:48.844 closeAvi] File open / completion times: 3 ms / 29 ms
+[09:40:48.844 closeAvi] Busy: 88%
+[09:40:48.844 checkMemory] Setup Free: heap 74008, block: 42996, min: 53504, pSRAM 914892
+[09:40:48.844 closeAvi] *************************************
+
+--- run 7 ----------------------------------------------------------------
+[09:41:49.362 closeAvi] ******** AVI recording stats ********
+[09:41:49.362 closeAvi] Recorded /20261115/20261115_094147_VGA_21_2.avi 
+[09:41:49.362 closeAvi] AVI duration: 2 secs
+[09:41:49.362 closeAvi] Number of frames: 35
+[09:41:49.372 closeAvi] Required FPS: 20
+[09:41:49.372 closeAvi] Actual FPS: 20.7
+[09:41:49.372 closeAvi] File size: 753KB
+[09:41:49.382 closeAvi] Average frame length: 22030 bytes
+[09:41:49.382 closeAvi] Average frame monitoring time: 3 ms
+[09:41:49.382 closeAvi] Average frame buffering time: 0 ms
+[09:41:49.382 closeAvi] Average frame storage time: 43 ms
+[09:41:49.402 closeAvi] Average SD write speed: 493 kB/s
+[09:41:49.402 closeAvi] File open / completion times: 3 ms / 35 ms
+[09:41:49.402 closeAvi] Busy: 99%
+[09:41:49.402 checkMemory] Setup Free: heap 72328, block: 42996, min: 53504, pSRAM 914892
+[09:41:49.402 closeAvi] *************************************
+
+--- run 8 ----------------------------------------------------------------
+[09:42:31.260 closeAvi] ******** AVI recording stats ********
+[09:42:31.260 closeAvi] Recorded /20261115/20261115_094226_VGA_20_5.avi 
+[09:42:31.260 closeAvi] AVI duration: 5 secs
+[09:42:31.260 closeAvi] Number of frames: 94
+[09:42:31.270 closeAvi] Required FPS: 20
+[09:42:31.270 closeAvi] Actual FPS: 20.4
+[09:42:31.270 closeAvi] File size: 1.2MB
+[09:42:31.280 closeAvi] Average frame length: 13598 bytes
+[09:42:31.280 closeAvi] Average frame monitoring time: 3 ms
+[09:42:31.280 closeAvi] Average frame buffering time: 0 ms
+[09:42:31.280 closeAvi] Average frame storage time: 25 ms
+[09:42:31.300 closeAvi] Average SD write speed: 515 kB/s
+[09:42:31.300 closeAvi] File open / completion times: 3 ms / 34 ms
+[09:42:31.300 closeAvi] Busy: 60%
+[09:42:31.300 checkMemory] Setup Free: heap 73808, block: 42996, min: 53504, pSRAM 914892
+[09:42:31.300 closeAvi] *************************************
+

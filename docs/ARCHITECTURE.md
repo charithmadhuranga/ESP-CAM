@@ -69,7 +69,7 @@ Never estimate — paste real numbers or write `UNVERIFIED`.
 
 | Phase | Free heap B | Min heap B | Largest block B | Stack HWM (worst task) | FPS measured | Date / build |
 |---|---|---|---|---|---|---|
-| 0 | UNVERIFIED (no phase-end figure yet) | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | board now attached — smoke figures below |
+| 0 | 3,588,215 (after Wi-Fi, no capture loop) | 3,549,752 | 3,407,872 | UNVERIFIED | UNVERIFIED — needs the Phase 1 capture loop; the R1 bar it must match is now recorded below | D2 reflash 2026-11-15 (smoke figures below) |
 
 **Smoke-run measurements (2026-11-15, board attached, evidence in
 `docs/evidence/`):**
@@ -84,12 +84,44 @@ Never estimate — paste real numbers or write `UNVERIFIED`.
 PSRAM: 8,388,608 B fitted, 4,192,024 B in the free-heap pool at boot, **4 MB
 mapped** by IDF (see `docs/HARDWARE.md` §2). Largest PSRAM block 4,128,768 B.
 
+**R1 baseline (D2, measured on the owner's board 2026-11-15 — the acceptance
+bar; full table with heap figures in `docs/HARDWARE.md` §4):**
+
+| Reference point (quality 12) | Recording FPS | SD write | Recorder busy |
+|---|---|---|---|
+| QVGA 320×240 | 30.8 (R1 target 30) | 0.51 MB/s | 40 % |
+| VGA 640×480 | 20.6 (target 20) | 0.50 MB/s | 67 % |
+| SVGA 800×600 | 20.4 (target 20) | 0.49 MB/s | **100 %** |
+| XGA 1024×768 | 5.3 (target 5) | 0.49 MB/s | 52 % |
+| SXGA 1280×1024 | 6.2 (target 5) | 0.49 MB/s | 98 % |
+
+R1's recording FPS is essentially the requested FPS up to SVGA; the card is
+saturated at SVGA/SXGA, so those two sizes are **write-limited**, not
+capture-limited. Phase 3's parity test (§11.10, tolerance **10 %** — D3) must
+compare like for like and, above SVGA, compare against the same bottleneck.
+
+**Storage capacity reality check (affects storage manager, retention and
+Phase 9):** the owner's card reports **CSD 8,053,063,680 B** (CID product name
+`SD16G`) but presents a **5,216,256 B FAT12 volume with 1,349,632 B free** —
+both FATFS implementations measured identically, so the formatted volume does
+not cover the card (`docs/HARDWARE.md` §4.2). Consequences:
+
+- size retention against the **mounted volume**, never against the CSD;
+- the storage manager's free-space policy must be **bounded** and must never
+  delete anything that is not a VisionCam recording (R1's unbounded
+  oldest-folder loop is rejected — `docs/REFERENCE_ANALYSIS.md`);
+- the Phase 9 24-hour and power-loss tests need a card that actually holds
+  hours of footage; **D5 stays open**;
+- SD write throughput measured on this card is ≈0.5 MB/s in 1-bit mode, which
+  is the number the recorder's buffering must be sized against.
+
 Build size (verified 2026-11-15):
 
 | Artifact | Value |
 |---|---|
 | RAM used, smoke build **with Wi-Fi** | 50,584 B / 327,680 B (15.4 %) |
 | Flash used, smoke build **with Wi-Fi** | 1,041,544 B / 1,572,864 B = **66.2 %** of the `ota_0` app slot |
+| Flash used, same build + D2 FAT-volume diagnostic | 1,042,324 B / 1,572,864 B = **66.3 %** (+780 B, RAM unchanged) |
 | RAM used, smoke build without radio (earlier) | 26,840 B / 327,680 B (8.2 %) |
 | Flash used, smoke build without radio (earlier) | 387,356 B = 24.6 % — `firmware.bin` 387,792 B |
 

@@ -30,8 +30,8 @@ ESP32-CAM-MB. Evidence:
 | 0.8 | GPIO4/lamp with SD mounted | RUN PASS | owner observation: **OFF** the whole boot (2026-11-15) |
 | 0.9 | Camera + SD together, Wi-Fi off then on, no brownout | RUN PASS | boots 10/11 — `step 14 result: OK`, 1 boot, no `BROWNOUT` |
 | 0.10 | Partition table as flashed | RUN PASS | boot 11 log lists all 6 partitions from `partitions.csv` |
-| 0.11 | **D2 — R1 baseline table** (`docs/HARDWARE.md` §4: FPS per size/quality, R1 heap, SD write MB/s, weak-supply brownout, exact card label → D5) | **UNVERIFIED** | needs the owner to flash R1 and take measurements (`docs/HARDWARE.md` §3.3–3.6) |
-| 0.12 | Phase-end resource row: stack high-water marks, FPS | **UNVERIFIED** | needs R1 baseline + a running VisionCam capture loop (Phase 1+) |
+| 0.11 | **D2 — R1 baseline table** (`docs/HARDWARE.md` §4: FPS per size/quality, R1 heap, SD write MB/s, weak-supply brownout, exact card label → D5) | **RUN PASS** (measurements) | `docs/evidence/phase0-d2-r1-avi-stats-blocks.txt` — 8 recording runs: QVGA 30.8, VGA 20.6, SVGA 20.4, XGA 5.3, SXGA 6.2 FPS at quality 12 (+ VGA at q8/q16), SD 0.48–0.51 MB/s, no brownout/panic/WDT. **Still owed:** the printed card label (D5), the lamp check under R1's Arduino `SD_MMC`, and the weak-supply drill — all three need the owner's eyes/hands |
+| 0.12 | Phase-end resource row: stack high-water marks, FPS | **UNVERIFIED** | VisionCam's own FPS/stack HWM need a running capture loop — **Phase 1+**; the R1 baseline that must be matched against is now recorded (0.11) |
 
 ## Known hardware quirks found in Phase 0
 
@@ -44,6 +44,16 @@ ESP32-CAM-MB. Evidence:
   `SD_MMC` does — that is what R1's workaround targets).
 - **R2 PWDN:** `esp_camera.c:204-216` releases PWDN at the start of *every*
   init, so an external PWDN hold cannot force a failed attempt.
+- **Storage — the usable volume is 5 MB, not 7.5 GiB** (`docs/HARDWARE.md`
+  §4.2): CSD says 8,053,063,680 B, CID calls the card `SD16G`, but both FATFS
+  implementations (Arduino's and IDF's) report a 5,216,256 B FAT12 volume with
+  1,349,632 B free — the card's own FAT simply does not cover it. Confirmed
+  independently: `docs/evidence/phase0-d2-vc-fat-crosscheck-boot.log`.
+- **R1's stats block lies on a full disk** (`docs/HARDWARE.md` §4.2):
+  `saveFrame()` counts bytes it *attempted* to write and never checks
+  `aviFile.write()`'s return value, so a truncated file still reports
+  `File size: 12.3MB` / `3796 kB/s`. Phase 3's recorder must not copy this
+  failure mode — check every write's return value.
 
 ## Later phases
 

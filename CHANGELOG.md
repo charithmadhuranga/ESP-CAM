@@ -8,6 +8,34 @@ tagged once Phase 9 release criteria pass.
 
 ### Added
 
+- **D2 R1 baseline — measured 2026-11-15.** R1 (`ESP32-CAM_MJPEG2SD`
+  10.10.1 @ `abe84d8`) was flashed **unmodified** and driven over HTTP while a
+  passive 115200 capture recorded its own stats block at every recording close.
+  `docs/HARDWARE.md` §4 now holds the acceptance bar: recording FPS 30.8
+  (QVGA), 20.6 (VGA), 20.4 (SVGA), 5.3 (XGA), 6.2 (SXGA) at quality 12, plus
+  VGA at quality 8 (20.7) and 16 (20.4); SD write 493–520 kB/s
+  (0.48–0.51 MB/s); free heap 72–75 KB, largest block 41–43 KB, lifetime min
+  53,504 B, pSRAM free 914,892 B; zero brownout/panic/WDT events. Evidence:
+  `docs/evidence/phase0-d2-r1-avi-stats-blocks.txt`,
+  `docs/evidence/phase0-d2-r1-serial-run.txt`.
+- **`tools/nvs_provision/`** — small pinned ESP-IDF helper (no R1 code) that
+  writes R1's two documented Preferences keys (`ST_SSID`/`ST_Pass` in namespace
+  `ESP-CAM_MJPEG`) so R1 joins the owner's LAN and the baseline can be measured
+  from this workstation instead of a second device. Reads the passphrase from
+  NetworkManager over UART; it is never printed, logged or put on a command
+  line (rule 17) and nothing credential-bearing is committed. Also carries a
+  `join` diagnostic that prints the raw `WIFI_REASON_*` code — which is how
+  R1's first post-provision failure was shown to be a transient association
+  issue, not bad credentials. Procedure: `docs/HARDWARE.md` §3.7.
+- **FAT volume diagnostic in the SD smoke test** — `sd_bringup.cpp` now prints
+  the mounted volume (usable/free bytes, cluster layout) next to the CSD and
+  warns when the volume is under one eighth of the CSD capacity.
+- **Storage finding** (`docs/HARDWARE.md` §4.2): the owner's card reports
+  **CSD 8,053,063,680 B** and CID product name **`SD16G`**, but both FATFS
+  implementations (Arduino's and IDF's) report a **5,216,256 B FAT12 volume
+  with 1,349,632 B free** — the formatted volume does not cover the card.
+  D5 and Phase 9 retention sizing stay open on it.
+
 - **Analysis and planning** (`.opencode/plans/`)
   - `00-analysis.md` — inventory, 15 hard constraints, authority order,
     8 in-spec supersessions, mockup and reference analysis, gaps G1–G16,
@@ -96,10 +124,21 @@ tagged once Phase 9 release criteria pass.
   (`step 14 result: OK`, 2 networks heard), single boot, no
   brownout/panic/WDT. Verdict line: `camera: OK | sd: OK | psram: OK |
   wifi(step14): OK | forced-retry: OK`. Recorded in `docs/HARDWARE.md` §5.
-- **Still `UNVERIFIED`:** the **D2 R1 baseline** (FPS per frame size/quality,
-  R1 heap figures, SD write MB/s, weak-supply brownout drill, exact SD card
-  label for D5) and Phase 0's phase-end stack-HWM/FPS row — all owed to the
-  owner-hardware R1 run (`docs/HARDWARE.md` §3–§4).
+- **D2 R1 baseline recorded** — measurements are **not** `UNVERIFIED` any more
+  (`docs/HARDWARE.md` §4). Three items are still owed **to the owner's eyes or
+  hands** and are asked for in one message (`owner-decisions.md` D2): the
+  printed SD card label (→ D5), the GPIO4 lamp check **while R1 records** (R1
+  asserts Arduino's `SD_MMC` lights GPIO4 on mount; the ESP-IDF driver
+  measurably does not — the sharpest difference between the two stacks), and
+  the optional weak-supply brownout drill. Phase 0's own phase-end
+  stack-HWM/FPS row stays `UNVERIFIED` until a capture loop exists (Phase 1+).
+- **Two R1 behaviours recorded as rejected** (`docs/REFERENCE_ANALYSIS.md`):
+  `checkFreeStorage()`'s oldest-folder deletion loop, which on a volume
+  smaller than `sdMinCardFreeSpace` can never exit (it was disarmed on the
+  owner's card before any recording, in warn-only mode); and R1's AVI stats
+  block, which counts bytes it *attempted* to write — on a full disk it
+  reported `File size: 12.3MB` / `3796 kB/s` for a file that was really
+  1,349,632 B. Phase 3's recorder must check every write's return value.
 - **Hardware quirks found:** SD mount errors varied (`ESP_ERR_TIMEOUT` /
   `ESP_ERR_INVALID_RESPONSE`) until the card was re-seated — contact, not
   firmware (`docs/HARDWARE.md` §5.1); IDF maps only 4 MB of the 8 MB PSRAM;
