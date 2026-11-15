@@ -19,8 +19,9 @@ file for the phase you are working on, then the acceptance matrix in
   `docs/REFERENCE_ANALYSIS.md` entries), R1 compile check.
 - ⬜ Blocked on the owner's board: steps 14–17 — flash R1 and fill the
   `docs/HARDWARE.md` baseline table (D2), camera + SD together with Wi-Fi
-  off then on, GPIO4/lamp result, brownout behaviour.
-- ⬜ Blocked on owner decision: ~~D3~~ — **answered: 10 %** (2026-11-15).
+  off then on, GPIO4/lamp result, brownout behaviour. *Board expected
+  later today (2026-11-15).*
+- ✅ D3 answered: **10 %** FPS parity tolerance (2026-11-15).
 - Phase 0 exit gate is therefore **not green** (hardware steps outstanding);
   Phase 1 must not start.
 
