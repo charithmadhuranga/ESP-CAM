@@ -34,6 +34,9 @@ Without this, every VisionCam performance number stays `UNVERIFIED`
 How close must VisionCam's recording FPS match the R1 baseline at the same
 frame size, quality and card? Suggested: **10 %**.
 
+**Answered: 10 % (2026-11-15)** — acceptance bar for the Phase 3 and
+Phase 9 parity tests (SPEC §11.10).
+
 ## D4 — On-device TFLite Micro (needed by Phase 6)
 
 The original ESP32 has little headroom for TFLM. After the Phase 6 benchmark
@@ -54,6 +57,6 @@ no-name "Class 6" card about 3x slower than a genuine Sandisk 4 GB Class 2).
 |---|---|---|---|
 | D1 | Licence A / B | **A — Clean-room.** R1 is behavioural reference only; no R1 code copied or mechanically translated; never linked into a release build. | 2026-11-15 |
 | D2 | R1 baseline run | **Run during Phase 0.** Owner flashes R1 unmodified and records the baseline table; procedure is Phase 0 task 1. | 2026-11-15 |
-| D3 | FPS tolerance | *(pending — default 10 %)* | |
+| D3 | FPS tolerance | **10 %.** Acceptance bar for Phase 3 / Phase 9 parity tests (SPEC §11.10). | 2026-11-15 |
 | D4 | TFLM supported / unsupported | *(pending)* | |
 | D5 | SD card model | *(pending — needed by Phase 9)* | |

@@ -101,7 +101,8 @@ R1 already runs on the owner's board, so it is the measurement bar:
 2. Record the baseline table in `docs/HARDWARE.md`: FPS per frame size and
    quality, SD write speed, free/min heap, largest free block, GPIO4/lamp
    behaviour with SD mounted, brownout/reset behaviour, exact SD card model.
-3. VisionCam must match within the owner-agreed tolerance (suggested 10 %) at
+3. VisionCam must match within the owner-agreed tolerance (**10 %**,
+   decided 2026-11-15) at
    the same frame size, quality and card. Any shortfall is explained and
    recorded, never hidden.
 4. Never mark a performance claim verified without its matching baseline row.

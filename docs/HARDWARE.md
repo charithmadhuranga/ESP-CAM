@@ -15,7 +15,7 @@ serial log or tool output to back it (AGENTS rule 26).
 |---|---|---|
 | D1 Licence | **A — clean-room**; R1 never copied or linked | 2026-11-15 |
 | D2 R1 baseline | **Run during Phase 0** — procedure is section 3 below | 2026-11-15 |
-| D3 FPS tolerance | pending (suggested 10 %) | — |
+| D3 FPS tolerance | **10 %** | 2026-11-15 |
 | D4 TFLM | pending (needed by Phase 6) | — |
 | D5 SD card model | pending (needed by Phase 9) | — |
 
@@ -171,7 +171,7 @@ use for VisionCam's parity test.
 | PSRAM size | | UNVERIFIED (smoke test reports it) |
 | GPIO4 lamp with SD mounted | | UNVERIFIED |
 | Brownout symptom observed | | UNVERIFIED |
-| D3 FPS tolerance agreed | *(suggested 10 %)* | pending owner |
+| D3 FPS tolerance agreed | **10 %** | agreed 2026-11-15 |
 
 ---
 

@@ -20,9 +20,9 @@ file for the phase you are working on, then the acceptance matrix in
 - ⬜ Blocked on the owner's board: steps 14–17 — flash R1 and fill the
   `docs/HARDWARE.md` baseline table (D2), camera + SD together with Wi-Fi
   off then on, GPIO4/lamp result, brownout behaviour.
-- ⬜ Blocked on owner decision: **D3** (FPS tolerance, needed by the Phase 0
-  exit gate).
-- Phase 0 exit gate is therefore **not green**; Phase 1 must not start.
+- ⬜ Blocked on owner decision: ~~D3~~ — **answered: 10 %** (2026-11-15).
+- Phase 0 exit gate is therefore **not green** (hardware steps outstanding);
+  Phase 1 must not start.
 
 ---
 
@@ -84,7 +84,7 @@ Full write-up and answer table: [`owner-decisions.md`](owner-decisions.md).
 |---|---|---|---|
 | D1 | Licence: **A clean-room** or **B adopt AGPL-3.0** | Phase 0 | ✅ **A — clean-room** (2026-11-15): no R1 code may be copied |
 | D2 | Run R1 unmodified on the board and record the baseline table | Phase 0 | ✅ **Run during Phase 0** (2026-11-15); performance claims stay `UNVERIFIED` until numbers are recorded |
-| D3 | FPS parity tolerance vs R1 baseline (suggested 10 %) | Phase 0 | ⬜ pending — default 10 % |
+| D3 | FPS parity tolerance vs R1 baseline | Phase 0 | ✅ **10 %** (2026-11-15): VisionCam recording FPS must stay within 10 % of the R1 baseline at the same frame size, quality and card |
 | D4 | Declare on-device TFLM supported or unsupported after benchmark | Phase 6 | ⬜ pending — default: unsupported beyond the benchmarked model |
 | D5 | Deployment SD card model(s) for the long-run test | Phase 9 | ⬜ pending — default: owner's card, recorded in `docs/HARDWARE.md` |
 

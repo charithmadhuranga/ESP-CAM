@@ -61,8 +61,8 @@ Warning thresholds to wire in: free heap < ~32 KB, largest free block
 3. Record SD write speed, free heap, minimum free heap, largest free block.
 4. Record GPIO4/lamp behaviour with the SD mounted.
 5. Record brownout/reset behaviour and the exact SD card model.
-6. Fill `docs/HARDWARE.md`; agree the tolerance with the owner (suggested
-   10 %) and record it.
+6. Fill `docs/HARDWARE.md`; the tolerance is **10 %** (D3, decided
+   2026-11-15) — record it with the baseline.
 
 R1's published reference table (targets, not guarantees):
 

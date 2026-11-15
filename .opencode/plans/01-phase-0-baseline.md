@@ -97,6 +97,8 @@ every later phase is measured against.
     exact SD card model.
 17. Record the tolerance (**D3**, suggested 10 %) as the acceptance bar for
     Phase 3 and Phase 9 parity tests (SPEC §11.10).
+    **Recorded: 10 % (2026-11-15)** — `owner-decisions.md`, `docs/HARDWARE.md`
+    §1 and §4.
 18. Write the first `docs/REFERENCE_ANALYSIS.md` entries: the §1A.5 matrix
     rows you have now verified first-hand, plus any behavioural difference
     found between the pinned R1/R2 and what SPEC assumed.

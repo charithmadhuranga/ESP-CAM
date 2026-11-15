@@ -399,7 +399,7 @@ VisionCam rule 14 ("do not load the entire media index into RAM") is a
 | G11 | Which `esp32-camera` copy is linked (registry 2.1.9 vs `library.json` 2.0.0) | §1A.1 | Pin exact version, assert single copy at build, record in ADR |
 | G12 | ESP-IDF / PlatformIO platform version not chosen | §3.3.1 | Phase 0 ADR + `sdkconfig.defaults` baseline |
 | G13 | Whether TFLM is ship-supported on original ESP32 | §4.4, Phase 6 | Phase 6 benchmark may legitimately end in "unsupported" |
-| G14 | FPS parity tolerance vs R1 baseline | §1A.7 | Suggested 10 %, owner must confirm |
+| G14 | FPS parity tolerance vs R1 baseline | §1A.7 | **10 %, owner-confirmed 2026-11-15 (D3)** |
 | G15 | Pre-event buffer RAM cost unknown | §4.6 | Default pre-event = 0 until measured |
 | G16 | R1 loads a whole folder listing into one 32 KB buffer (`JSON_BUFF_LEN`) — conflicts with AGENTS rule 14 | `appGlobals.h:58` | Keep VisionCam's pagination; record as a deliberate divergence in `docs/REFERENCE_ANALYSIS.md` |
 

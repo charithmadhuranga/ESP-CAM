@@ -21,8 +21,8 @@ tagged once Phase 9 release criteria pass.
   skills under `.opencode/skills/` (`visioncam-dev`, `visioncam-build-flash`,
   `visioncam-reference-first`, `visioncam-webui`, `visioncam-api-contract`,
   `visioncam-hardware-validation`).
-- **Owner decisions D1, D2** recorded (clean-room licence; R1 baseline run
-  during Phase 0).
+- **Owner decisions D1, D2, D3** recorded (clean-room licence; R1 baseline run
+  during Phase 0; FPS parity tolerance **10 %**).
 - **Reference pinning** — `reference/README.md`, `reference/pins.txt` (tree
   SHA-256 + upstream commit for both refs), `reference/fetch_references.sh`
   with `--verify`.
