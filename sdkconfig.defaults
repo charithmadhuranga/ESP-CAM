@@ -46,8 +46,18 @@ CONFIG_LOG_DEFAULT_LEVEL_WARN=y
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 
 # --- Partition table ---------------------------------------------------------
-# Custom table, sized for firmware + embedded web assets (plan 01,
-# deliverable 5). Wired in once its headroom has been measured; the default
-# table is used until then.
-# CONFIG_PARTITION_TABLE_CUSTOM=y
-# CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+# Custom table (partitions.csv at the repo root), sized for firmware +
+# embedded web assets with two OTA slots and a raw data partition for model
+# support. Layout, alignment rules and headroom: partitions.csv header and
+# docs/adr/0001-toolchain.md (plan 01, deliverable 5).
+#
+# HALF OF A PAIR — see the "two-pipeline trap" in that ADR. This controls the
+# IDF/CMake pipeline (flash_args, consumed by `idf.py flash`); PlatformIO's
+# SCons pipeline reads board_build.partitions in platformio.ini instead and
+# will silently use the framework's default CSV if it is not set there too.
+# Both must name partitions.csv.
+# Verified effective: sdkconfig.h defines CONFIG_PARTITION_TABLE_CUSTOM 1 and
+# CONFIG_PARTITION_TABLE_FILENAME "partitions.csv"; partitions.bin parses as
+# the same table (byte-identical to the IDF-side output).
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"

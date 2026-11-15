@@ -75,9 +75,23 @@ Build size after Phase 0 (host-side, verified 2026-11-15):
 
 | Artifact | Value |
 |---|---|
-| RAM used | 13,932 B / 327,680 B (4.3 %) |
-| Flash used | 183,784 B (17.5 % of the 1 MB app slot) |
-| `firmware.bin` | 184,208 B |
+| RAM used | 26,840 B / 327,680 B (8.2 %) |
+| Flash used | 387,356 B / 1,572,864 B = **24.6 %** of the `ota_0` app slot |
+| `firmware.bin` | 387,792 B |
+
+Before `board_build.partitions` was set, the same binary read as 36.9 % —
+PlatformIO was measuring against the framework's default 1 MB `factory`
+partition instead of our 1.5 MB `ota_0`. Always check the denominator.
+See `docs/adr/0001-toolchain.md` § "Partition table".
+
+| Partition | Offset | Size |
+|---|---|---|
+| `nvs` | `0x009000` | 92 KB |
+| `ota_0` (app slot A) | `0x020000` | 1.5 MB |
+| `ota_1` (app slot B) | `0x1a0000` | 1.5 MB |
+| `otadata` | `0x320000` | 8 KB |
+| `phy_init` | `0x322000` | 4 KB |
+| `storage` (models / UI fallback) | `0x323000` | 884 KB |
 
 ## 5. Degraded modes (SPEC §9)
 
@@ -94,7 +108,12 @@ Prefer safe degradation over keeping everything alive under memory pressure:
 
 ## 6. Open architecture questions
 
-- Partition table (two-slot OTA vs single app) — decided with deliverable 5
-  once the web bundle size is known.
-- Whether the web assets live in the app partition or a separate data
-  partition — depends on the same measurement.
+- ~~Partition table (two-slot OTA vs single app)~~ — **decided** (Phase 0,
+  deliverable 5): two 1.5 MB OTA slots + 884 KB `storage`. Rationale in
+  `partitions.csv` header and `docs/adr/0001-toolchain.md`. Kept two slots
+  because the table cannot be changed later without a full erase; no OTA
+  code exists yet (SPEC §5.4).
+- Whether the web assets live in the app partition or in the 884 KB
+  `storage` partition — still open, depends on the built web bundle size.
+  The `storage` partition is reserved for exactly this plus model support,
+  so either answer is accommodated without re-flashing the table.

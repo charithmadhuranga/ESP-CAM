@@ -66,7 +66,9 @@ firmware/src/idf_component.yml  pinned components (R2 2.1.9, mqtt 1.1.0)
 dependencies.lock         committed exact-version lock (incl. transitive)
 managed_components/       downloaded by the component manager — gitignored
 sdkconfig.defaults        verified symbol baseline (see below)
-partitions.csv            sized for firmware + embedded web assets
+partitions.csv            two 1.5 MB OTA slots + 884 KB storage (see below)
+                          platformio.ini must ALSO set
+                          board_build.partitions — see "two-pipeline trap"
 ```
 
 Notes from the PlatformIO ESP-IDF docs that constrain this layout:
@@ -119,6 +121,74 @@ Both paths were exercised, not assumed:
 |---|---|
 | Normal configure | ✅ `count=1`, build SUCCESS |
 | Fixture `components/vc_test_dup/` with a copy of `esp_camera.h` | ✅ **FAILED** with `AGENTS rule 33 violated: 2 copies …` naming both directories; fixture removed, build green again |
+
+## Partition table (task 0.2 deliverable 5)
+
+4 MB flash, two-slot OTA plus a raw data partition. Source of truth is
+`partitions.csv` at the repo root; the byte map and rationale live in its
+header.
+
+| Name | Type/SubType | Offset | Size | Purpose |
+|---|---|---|---|---|
+| `nvs` | data/nvs | `0x009000` | 92 KB | config, credentials, versioned schemas |
+| `ota_0` | app/ota_0 | `0x020000` | 1.5 MB | app slot A — boots first |
+| `ota_1` | app/ota_1 | `0x1a0000` | 1.5 MB | app slot B |
+| `otadata` | data/ota | `0x320000` | 8 KB | which slot boots + rollback state |
+| `phy_init` | data/phy | `0x322000` | 4 KB | RF calibration |
+| `storage` | data/spiffs | `0x323000` | 884 KB | models / UI fallback (raw until used) |
+
+Verified against the pinned IDF 6.1.0 `gen_esp32part.py`: no overlaps, app
+offsets `0x10000`-aligned, app sizes `0x1000`-aligned, all data offsets
+`0x1000`-aligned, and the last partition ends at exactly `0x400000`.
+
+**Why two app slots when no OTA code exists yet:** the partition table cannot
+be changed later without erasing the whole device, so the layout keeps the OTA
+option open (SPEC §5.4 allows firmware update only once a safe OTA design
+exists). Each slot is 1.5 MB — 4× the current firmware — so nothing is given
+up today. `otadata`/`phy_init` sit after the app slots only because app
+offsets must be `0x10000`-aligned and the standard `0x9000`–`0x12000` header
+area would otherwise strand 56 KB.
+
+### The two-pipeline trap (why `partitions.bin` was stale)
+
+There are **two independent partition pipelines** and they do not share a
+source of truth:
+
+| Pipeline | Driven by | Output | Consumed by |
+|---|---|---|---|
+| IDF/CMake (configure time) | `CONFIG_PARTITION_TABLE_CUSTOM_FILENAME` in `sdkconfig.defaults` | `flash_args`, `app-flash_args` | `idf.py flash` |
+| PlatformIO/SCons (build time) | `board_build.partitions` in `platformio.ini` | `partitions.bin`, `ESP32_APP_OFFSET`, `ota_data_initial.bin` | **`pio run -t upload`** |
+
+`sdkconfig.h` correctly reported `CONFIG_PARTITION_TABLE_CUSTOM 1` and
+`CONFIG_PARTITION_TABLE_FILENAME "partitions.csv"`, yet
+`.pio/build/esp32cam/partitions.bin` still held the **old** `nvs/phy/factory
+1M` table. Cause: `espidf.py`'s `generate_partition_table()` reads
+`board.get("build.partitions", "partitions_singleapp.csv")`, and the
+`esp32cam` board JSON has no `build.partitions` key — so PlatformIO silently
+fell back to the framework's default CSV. Setting
+`CONFIG_PARTITION_TABLE_CUSTOM*` cannot influence it.
+
+Left unfixed, `pio run -t upload` would have flashed the app at `0x10000`
+(the `factory` offset) — inside our NVS region — and written a partition table
+at `0x8000` that disagreed with the app image. The device would not have
+booted.
+
+Fix: `board_build.partitions = partitions.csv` in `platformio.ini`.
+
+Also note: PlatformIO builds through **SCons**, so ninja's
+`partition_table/partition-table.bin` custom command (whose rule *does* list
+`partitions.csv` as an input) never executes, and `flash_args` — an IDF-side
+file — keeps referencing that never-generated path. PlatformIO's upload path
+does not read `flash_args` at all (verified: no reference in
+`platformio/` core or the platform's `builder/`), so this is harmless here,
+but do not flash with `idf.py` expecting it to work.
+
+**Both pipelines verified to agree**, not assumed: the IDF-side rule was
+re-run by hand with its exact arguments and `cmp`-ed against
+`partitions.bin` — byte-identical (md5 `7ca60f29f1fa15cf0b949d746387d5da`).
+`parttool.py … --partition-boot-default` returns `0x180000 0x20000`, i.e.
+`ESP32_APP_OFFSET` = `0x20000` (our `ota_0`), and the size-check denominator
+moved from 1,048,576 B (old 1 MB `factory`) to 1,572,864 B (1.5 MB `ota_0`).
 
 ## sdkconfig symbol verification
 
@@ -174,6 +244,11 @@ mode) are added in the same verified way when the camera driver lands.
 - Exactly one `esp32-camera` copy may be linked (rule 33); the configure-time
   check lives in the root `CMakeLists.txt` and both its pass and fail paths
   have been exercised (see above).
+- **The partition table has two sources of truth** — `sdkconfig.defaults`
+  (`CONFIG_PARTITION_TABLE_CUSTOM*`) and `platformio.ini`
+  (`board_build.partitions`). Both must name `partitions.csv`. Changing one
+  without the other produces a table that disagrees with the flashed app;
+  re-run the byte-comparison check in "Partition table" after any change.
 - The Arduino core is **not** present; every R1 Arduino API must be ported
   using SPEC §1A.10.
 
@@ -193,4 +268,10 @@ mode) are added in the same verified way when the camera driver lands.
 | 2026-11-15 | Rule 33 single-copy check, pass path | ✅ `count=1`, build SUCCESS |
 | 2026-11-15 | Rule 33 single-copy check, fail path | ✅ injected duplicate in `components/vc_test_dup/` → build FAILED listing both paths; fixture removed, build green |
 | 2026-11-15 | Only one `esp32-camera` archive in the build tree | ✅ `libespressif__esp32-camera.a`; no camera component in IDF 6.1.0 |
+| 2026-11-15 | Camera + SD smoke firmware compiles and links (task 0.3 steps 11–13) | ✅ RAM 8.2 % (26,840 / 327,680 B), Flash 36.9 % (387,356 B); `firmware.bin` 387,792 B; `esp_camera_init` defined exactly once at `400de3b8` |
+| 2026-11-15 | `partitions.csv` validates under IDF `gen_esp32part.py` | ✅ 6 partitions, no overlap, alignments valid, exact fit to `0x400000` |
+| 2026-11-15 | **Partition table reaches the artifact `pio upload` flashes** | ✅ after adding `board_build.partitions = partitions.csv` — `partitions.bin` parses as our 6-partition table (was `nvs 24K / phy 4K / factory 1M`) |
+| 2026-11-15 | Both partition pipelines produce the same bytes | ✅ IDF-side rule re-run by hand with its exact args, `cmp` identical to `partitions.bin` (md5 `7ca60f29f1fa15cf0b949d746387d5da`) |
+| 2026-11-15 | App upload offset is the `ota_0` slot | ✅ `parttool --partition-boot-default` → `0x180000 0x20000`; size denominator now 1,572,864 B |
+| 2026-11-15 | `ota_data_initial.bin` generated (needs an `ota` data partition) | ✅ 8,192 B at `0x320000` |
 | _pending_ | Smoke firmware flashes and reports PSRAM/heap on hardware | **UNVERIFIED — no board attached** (`/dev/ttyUSB*` absent) |
