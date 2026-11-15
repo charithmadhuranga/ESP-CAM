@@ -49,9 +49,22 @@ tagged once Phase 9 release criteria pass.
 - **Docs** — `docs/adr/0001-toolchain.md`, `docs/HARDWARE.md` (R1 baseline
   procedure + fill-in tables), `docs/REFERENCE_ANALYSIS.md`, `README.md`,
   this file.
+- **Reference analysis, first entries** (task 0.4 step 18) —
+  `docs/REFERENCE_ANALYSIS.md` gains three sections: the two verified
+  divergences between SPEC §2.3's mount snippet and pinned IDF 6.1.0
+  (`SDMMC_HOST_FLAG_1BIT` deliberately not set; slot `clk/cmd/d0` inert on
+  ESP32), pinned-R2 init/retry facts (stale "no way to de-initialize" doc
+  comment, `OV2640_PID = 0x26`, `width*height/5` confirmed), and the eight
+  §1A.5 matrix rows verified first-hand against the pinned R1/R2 source.
 
 ### Fixed
 
+- **`camera_bringup.cpp` comment overstated why `cameraShutdown()` is
+  required.** A *failed* `esp_camera_init` already deinitialises via its
+  `fail:` label (`esp_camera.c:374-376`); the explicit `esp_camera_deinit()`
+  is what the post-success exit paths (PID mismatch, warm-up, malformed
+  frame) need, or a later bring-up hits `ESP_ERR_INVALID_STATE`. Comment now
+  matches the pinned source.
 - **Partition table silently not reaching the flashed binary.**
   `sdkconfig.defaults` set `CONFIG_PARTITION_TABLE_CUSTOM*` correctly, but
   PlatformIO's SCons pipeline reads `board_build.partitions` instead and fell

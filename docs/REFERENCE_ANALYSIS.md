@@ -67,6 +67,52 @@ revisited before any R1 code is reused.
 - **Evidence:** source confirmed at `utilsFS.cpp:81-84`;
   hardware confirmation `UNVERIFIED` (Phase 0 task 0.3 step 13).
 
+## SDMMC mount — two divergences from SPEC §2.3's snippet — 2026-11-15
+
+SPEC §2.3 labels its example "Example starting point (verify against the
+pinned ESP-IDF)". It has now been verified against the pinned **ESP-IDF
+6.1.0**, and two places differ from the snippet as written.
+`firmware/src/sd_bringup.cpp` implements both and points at this section
+(task 0.4 step 18).
+
+**1. Do not set `host.flags = SDMMC_HOST_FLAG_1BIT` (SPEC line 620).**
+
+- **Redundant.** The bus width comes from `slot.width`, not from the flag:
+  `sdmmc_fix_host_flags()` (`sdmmc_common.c:365-377`) reads the slot width and
+  masks `host.flags` down to `SDMMC_HOST_FLAG_1BIT` when it is 1, then
+  `sdmmc_init_host_bus_width()` (`sdmmc_common.c:222`) never requests 4-bit.
+  `slot.width = 1` alone is what actually forces 1-bit (AGENTS rule 7).
+- **Harmful.** Assigning that single flag **clears
+  `SDMMC_HOST_FLAG_DEINIT_ARG`**, which `SDMMC_HOST_DEFAULT()` carries.
+  `vfs_fat_sdmmc.c:447` branches on it when unmounting: with the flag,
+  `deinit_p(slot)` tears down only this slot; without it, `host.deinit()`
+  tears down the whole SDMMC peripheral. Keeping the default flags is the
+  correct behaviour.
+
+**2. `sdmmc_slot_config_t.clk / cmd / d0` are inert on ESP32.**
+
+- ESP32 uses `SOC_SDMMC_USE_IOMUX`, not the GPIO matrix, so the driver sets
+  `use_gpio_matrix = false` (`sd_host_sdmmc.c:1216`) and the pin fields never
+  take effect — they only matter on targets that have a GPIO matrix. Setting
+  them would be harmless but would imply control we do not have, so they are
+  not set.
+- The pins are fixed per slot: slot 1 = CLK 14, CMD 15, D0 2, D1 4, D2 12,
+  D3 13 (`soc/sdmmc_pins.h:21-26`) — exactly the AI-Thinker SD pins — and
+  slot 0 is the SPI flash (`sd_host_sdmmc.c:1231`), so being on slot 1 is not
+  optional. `SDMMC_HOST_DEFAULT()` already resolves to slot 1
+  (`sdmmc_default_configs.h:65`); `sd_bringup.cpp` sets `host.slot`
+  explicitly anyway so a future IDF default change cannot silently move the
+  bus onto the flash pins. SPEC's snippet relies on the default and does not
+  set it.
+- **Consequence for the board profile:** the SD pin constants in
+  `board_profile.h` cannot be handed to the driver at all. They are
+  compile-time documentation, enforced by `static_assert` against
+  `SDMMC_SLOT1_IOMUX_PIN_*` so a wrong pin map fails the build instead of
+  silently mounting nowhere.
+
+- **Evidence:** IDF 6.1.0 source paths cited above; `sd_bringup.cpp`
+  compiles. Mount behaviour on hardware `UNVERIFIED` (no board attached).
+
 ## Motion detection cadence — 2026-11-15
 
 - **Studied:** R1 `mjpeg2sd.cpp:27-28,123-131,489` and
@@ -107,7 +153,61 @@ revisited before any R1 code is reused.
 - **Evidence:** R2 commit matches SPEC's recorded pin; driver smoke test
   `UNVERIFIED` (no board attached).
 
+## Camera init / retry — pinned R2 facts vs its own documentation — 2026-11-15
+
+- **Studied:** pinned esp32-camera 2.1.9 in `managed_components/` —
+  `driver/include/esp_camera.h:187-188,203`,
+  `driver/esp_camera.c:177-178,316-320,374-376,379-391`,
+  `driver/include/sensor.h:21`, `driver/cam_hal.c:619`.
+- **What was found:**
+  - `esp_camera_init()`'s doc comment still says the module "can only be
+    called once and there is no way to de-initialize"
+    (`esp_camera.h:187-188`). **This is stale:** `esp_camera_deinit()` is
+    declared (`esp_camera.h:203`), implemented (`esp_camera.c:379`) and nulls
+    `s_state` (`esp_camera.c:387`).
+  - Every *failure* path inside `esp_camera_init` reaches its `fail:` label,
+    which already calls `esp_camera_deinit()` (`esp_camera.c:374-376`) — so
+    retrying after a failed init works without extra help.
+  - A *successful* init leaves `s_state` set, so a second `esp_camera_init()`
+    returns `ESP_ERR_INVALID_STATE` from `camera_probe()`
+    (`esp_camera.c:177-178`) unless deinit runs first. SPEC §4.1.1's PID
+    check, warm-up discard and malformed-frame rejection all execute **after**
+    a successful init, so those exit paths must deinit explicitly or a later
+    bring-up can never recover. Taken at face value, R2's own doc comment
+    would have forbidden the retry SPEC mandates.
+  - `OV2640_PID` is **`0x26`**, not `0x2640` (`sensor.h:21`). SPEC asks for a
+    PID check without quoting the constant — the trap is recorded here.
+  - R2's default JPEG receive buffer is `width*height/5` (`cam_hal.c:619`) —
+    **confirms** SPEC's "Proven design fact" instead of diverging from it.
+- **Decision:** **adopt** the retry sequence with an explicit
+  `cameraShutdown()` (= `esp_camera_deinit()`) before any re-init and on every
+  post-init exit path (`camera_bringup.cpp`).
+- **Evidence:** source lines cited above; on-device retry and PWDN recovery
+  `UNVERIFIED` (no board attached).
+
 ---
+
+## §1A.5 matrix rows verified first-hand — task 0.4 step 18 (2026-11-15)
+
+Only rows whose pinned source was actually opened are listed. Anything not
+listed stays "as specified, not yet re-verified" — no row may be promoted on
+the strength of SPEC's own text (AGENTS rule 26).
+
+| §1A.5 row | Status | First-hand evidence |
+|---|---|---|
+| Camera driver → **adopt** R2 | verified | pinned 2.1.9 in `managed_components/`; facts in the camera entries above; single-copy build check passes (AGENTS rule 33) |
+| Framework → **reject** Arduino | verified | R1 compiles only as an Arduino sketch: `arduino-cli` build = 1,734,516 B (88 %) flash / 102,888 B (31 %) RAM vs VisionCam IDF build 387,356 B (24.6 %) — R1 has ≈231 KB free, no room to grow (`docs/HARDWARE.md` §3.2) |
+| Frame buffers (R1: 4 × PSRAM, `GRAB_LATEST`) | verified | R1 `mjpeg2sd.cpp:20` `#define FB_CNT 4`, `:1070` `config.grab_mode = CAMERA_GRAB_LATEST`, `:1075` `config.fb_count = FB_CNT` — SPEC's claim is exact |
+| SD mode → **adopt** 1-bit | verified | R1 `utilsFS.cpp:28` `use1bitMode = true`, `:80` `SD_MMC.begin("/sdcard", use1bitMode, ...)`; IDF side in the SDMMC entry above |
+| Auth → **reject** Basic | verified | R1 `webServer.cpp:100-143`: pre-computes and caches the expected `Basic <b64>` value, then reads the request's `Authorization` header and compares — exactly the model SPEC replaces with sessions + CSRF |
+| MQTT client → **adopt** esp-mqtt | verified | R1 `mqtt.cpp:14,36,46` uses `mqtt_client.h` / `esp_mqtt_client_publish`; VisionCam pins `espressif/mqtt@1.1.0` (`dependencies.lock`) and it builds |
+| Camera init order → **adapt** | verified (source side) | R1 `initCam` sequence read; R2-side retry facts in the entry above. On-hardware behaviour `UNVERIFIED` |
+| Motion cadence → **adopt/adapt** | verified | see Motion entry above (R1 `mjpeg2sd.cpp`, `motionDetect.cpp` line evidence) |
+
+Rows **not** yet verified first-hand (still as-spec): AVI container layout,
+NULL-frame recovery, playback timing, timelapse, free-space/retention, upload,
+WebDAV, HA discovery, config store, logging, and every "defer/out of scope"
+row. They are re-verified when their phase begins.
 
 ## Deliberate divergences from R1 — do not "fix" these back
 

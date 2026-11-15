@@ -81,11 +81,18 @@ void powerCyclePwdn() {
 
 void cameraShutdown() {
     // esp_camera_init()'s doc comment still claims the module "can only be
-    // called once and there is no way to de-initialize". That is stale in
-    // esp32-camera 2.1.9: esp_camera_deinit() is declared (esp_camera.h:203),
-    // implemented (esp_camera.c:379) and nulls s_state. Without this call a
-    // retry hits `if (s_state != NULL) return ESP_ERR_INVALID_STATE`
-    // (esp_camera.c:177), so the retry loop below would never recover.
+    // called once and there is no way to de-initialize" (esp_camera.h:187-188).
+    // That is stale in esp32-camera 2.1.9: esp_camera_deinit() is declared
+    // (esp_camera.h:203), implemented (esp_camera.c:379) and nulls s_state
+    // (esp_camera.c:387).
+    //
+    // Why every exit path calls it: a *failed* esp_camera_init already cleans
+    // up after itself via its `fail:` label (esp_camera.c:374-376), but a
+    // *successful* one leaves s_state set — and the PID check, warm-up and
+    // malformed-frame exits below all run after a successful init. Without an
+    // explicit deinit a later re-init returns ESP_ERR_INVALID_STATE from
+    // camera_probe() (esp_camera.c:177-178). Recorded in
+    // docs/REFERENCE_ANALYSIS.md.
     esp_camera_deinit();
 }
 
