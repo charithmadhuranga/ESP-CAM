@@ -147,6 +147,125 @@ All artboards are 1280x760 desktop with `[placeholder]` values. The
 implementation must be fluid and must supply mobile/tablet layouts itself
 (`DESIGN.md` §3 responsive table).
 
+### 6.1 Second pass — 11 screens decoded in detail
+
+**Method and confidence.** The image `read` tool returned stale/cached
+content for every PNG in that session, so all strings below were recovered by
+direct pixel/glyph analysis (row/column ink projection + per-glyph bitmap
+rendering). Colour values are sampled RGB. Artboards are **2560x1520 = 2x of
+the 1280x760 CSS px**, so every coordinate below halves to CSS. Short labels
+read from glyph bitmaps are high confidence; **spot-check any string against
+the PNG before hard-coding it as UI copy.**
+
+**Shared chrome — verified byte-identical across all 16 app screens**
+(`Login.png` has none of it: no sidebar, no header pills, no footer —
+confirmed by cropping Login's sidebar region x0-458 and finding **zero**
+ink samples).
+
+*Independently re-verified 2026-11-15 after the decode pass:*
+- footer band (x500-1100, y1465-1495) → **one md5 across all 16** non-Login
+  artboards;
+- header pill band (x1950-2510, y45-80) → **one md5 across all 16**;
+- sidebar band (x0-458, y150-1400) → 9 groups: the 8 Settings screens
+  share one, and the other 8 differ *only* by which item is highlighted.
+
+That is one shared component with an active-state prop, not 16 layouts.
+(The original pass reported "10 screens"; the correct figure is 16.)
+
+- Sidebar (CSS x0-229): `Overview`, `Live View`, `Recordings`, `Snapshots`,
+  `Timelapse`, `AI Detection`, `Storage`, `Integrations`, `Settings`. Active
+  item fill `rgb(37,46,57)`.
+- Header pills (y49-75): `Device: Online` (green `Online`), `MQTT:
+  Connected` (green `Connected`), `Admin`.
+- Footer: hairline rule at y1444, then on every screen
+  **`Firmware [version] | SD: Mounted | Wi-Fi: Connected`**. Note the mixed
+  policy — `[version]` is bracketed-placeholder while `SD: Mounted` /
+  `Wi-Fi: Connected` / `Device: Online` / `MQTT: Connected` render as real
+  states.
+- Palette sampled: page `rgb(16,19,24)`, card `rgb(29,36,45)`, row/active
+  `rgb(37,46,57)`, hairline `rgb(48,58,70)`, primary text `rgb(241,245,249)`,
+  secondary `rgb(163,175,189)`, blue `rgb(79,156,249)`, green `rgb(47,191,113)`,
+  amber `rgb(230,162,60)`. ~13 CSS px card radius.
+
+**Per-screen detail** (exact labels/values recovered):
+
+- **Login** — `Username`, `Password`, bare-text `Show password` (no control
+  drawn), full-width `Sign in`, red `Invalid username or password` shown by
+  default. Inputs empty, no placeholders.
+- **Snapshots** — title `Snapshots` + bordered `Date range` button. Filter
+  pills `All` (active) / `Manual` / `Motion` / `Detection` / `Timelapse`.
+  2x5 empty thumbnails labelled with times (row 1 `10:30 10:25 09:58 09:41
+  09:12`, row 2 `08:55 08:30 08:02 07:44 07:15`). Pagination `Previous | 1 |
+  2 | Next`. **No empty/loading/error state drawn for the grid** (G7).
+- **Timelapse** — `Create project` (primary, top-right) + `Projects` card
+  with 3 rows, all showing pixel-identical `Project name [sample]`:
+  amber `Capturing` + ~60% blue progress bar; green `Ready` + `Preview` +
+  `Download`; `Source frames` + `Manage`. `New project` card fields —
+  `Capture interval` = `30 s`, `Schedule` = `Start / end time`,
+  `Resolution and quality` = `SVGA, quality 12`, `Output FPS` = `15`.
+  **No submit button inside that card** (G17).
+- **Integrations** — 3 equal cards (only 3-column screen). `MQTT` + green
+  `Connected`: `Broker host / port` = `[host]:1883`, `Base topic` =
+  `visioncam/[id]`, `Client ID` = `[client id]`, `Test` + `Save and
+  reconnect` (the only primary button). `Home Assistant` + green
+  `Discovered`: `Discovery prefix` = `homeassistant`, `Birth message` =
+  `Received`, `Entities` = `Motion, …`, `Republish discovery`.
+  `Network storage` + gray `Disabled`: `Backend / URL` = `[backend]`,
+  `Authentication` = `[user]`, `Upload queue` = `0 pending`,
+  `Test connection`.
+- **Settings › Camera** — `Resolution` = `SVGA 800x600`, `JPEG quality` =
+  `12`, `Frame rate limit` = `[fps]`, `Flash LED` = `Safe mode`. 4 sliders
+  in 2x2: `Brightness`, `Contrast`, `Saturation`, `Sharpness`. Text-only
+  booleans: `Auto exposure` = `On`, `Auto white balance` = `On`, `Flip /
+  mirror` = `Off`. `Save` + `Reset to default`.
+- **Settings › Recording** — `Mode` = `Event-based`, `Format` = `MJPEG /
+  AVI`, `Segment length` = `[minutes]`, `Max FPS` = `[fps]`, `Pre-event
+  buffer` = `[seconds]`, `Post-event time` = `[seconds]`; `Continuous
+  recording` = `Off`, `Record on motion` = `On`, `Record on AI detection` =
+  `On`. `Save` + `Reset to default`.
+- **Settings › Motion** — sliders `Sensitivity`, `Change threshold`; large
+  `Detection zone editor` placeholder box; `Cooldown` = `[seconds]`,
+  `Minimum frames` = `[n]`; `Start recording on motion` = `On`, `Publish
+  MQTT motion event` = `On`. `Save` + `Reset to default`.
+- **Settings › AI Models** — content card x940-2511. Model row 1: `[model]`
+  `v[x]`, green `Active, validated`, `Rollback`. Row 2: `[model]` `v[y]`,
+  amber `Incompatible operator`, `Activate`. Fields `Model file (.tflite)`
+  = `Choose file`, `Manifest` = `Choose file`, `Tensor arena` = `[KB]`,
+  `Inference timeout` = `[ms]`. Single primary `Upload and validate`;
+  **no `Save`/`Reset` pair**.
+- **Settings › Network** — `Wi-Fi network` = `[ssid]`, `Password` = dots,
+  `IP mode` = `DHCP`, `Hostname` = `visioncam`. `Nearby networks` list:
+  `[ssid]` = `-58 dBm`, `[ssid]` = `[dBm]`. `Scan` + `Save and reconnect`.
+- **Settings › Security** — `Current password` / `New password` / `Confirm
+  new password` = dots, `Session timeout` = `[minutes]`. Primary `Change
+  password` only. Amber callout: **`Warning` / `Do not expose this device
+  directly to the internet. Use a VPN or secure reverse proxy.`** — direct
+  traceability to AGENTS rule 29.
+- **Settings › System** — read-only rows `Firmware` `[version]`, `Web UI`
+  `[version]`, `Min free heap` `[KB]`, `PSRAM free` `[KB]`, `Uptime`
+  `[time]`. **Zero blue buttons** (verified by blue-pixel scan): `Back up
+  config`, `Restore config`, `Restart`, `Factory reset` all secondary.
+  Destructive gate `Type RESET to confirm factory reset` + empty input.
+
+### 6.2 Findings that change implementation
+
+| # | Finding | Consequence |
+|---|---|---|
+| G17 | **Timelapse "New project" card has no submit button** — 4 inputs and nothing else; creation is only offered by the top-right `Create project` above the whole list | Designer must decide: move the action into the card, or treat the top-right button as a modal trigger. Do not invent a button silently |
+| G18 | **Action bar is inconsistent across settings sections** — Camera/Recording/Motion/Network = `Save` + `Reset to default`; AI Models = `Upload and validate` only; Security = `Change password` only; System = none | Decide per-section semantics vs drift before Phase 1 builds the shell. A user who mistypes a Security timeout currently has **no recovery path** |
+| G19 | **No toggle widget exists in any mockup** — every boolean is `label … right-aligned value text` (`On` green / `Off` gray), no switch, checkbox or radio. Login's `Show password` is bare text | DESIGN.md must specify the actual control; the mockups cannot be conformed to literally |
+| G20 | **Status is shown three different ways** — bordered badge (`Capturing`, `Ready`), colored inline text (`Active, validated`, `Connected`), right-aligned word (`On`/`Off`) | Pick one rule in DESIGN.md §4 before Phase 1, or the UI will look arbitrary |
+| G21 | **Both AI-model file inputs read `Choose file`** (`.tflite` and `Manifest`) | Manifest input needs its own wording; confirm `Model file (.tflite)` label against SPEC §4.4 |
+| G22 | **Destructive actions are not visually distinguished** — `Restart` and `Factory reset` are identical secondary buttons; only the `RESET` typing gate separates them | DESIGN.md requires confirmation on every destructive action; add danger styling (G9 colours) |
+| G23 | **Snapshots grid has no empty/loading/error state**, only 2 pages of empty placeholders | Covered by G7's state classes, but note the media grid specifically needs them |
+| G24 | **Chrome is genuinely shared** — independently re-verified: the footer band hashes to one md5 across **all 16** non-Login artboards, and Login has zero sidebar ink | Build one layout component; do not per-page it. But treat `Firmware [version]` as placeholder and the other four as live state |
+| G25 | **No responsive artboards exist** — every screen is a single 1280x760 3-column shell (sidebar 229 + sub-nav ~223 + content) | Confirms G6: responsive behaviour is entirely DESIGN.md §3's job |
+| G26 | **Real-looking defaults need SPEC cross-check** — `SVGA 800x600`, quality `12`, `Event-based`, `MJPEG / AVI`, `DHCP`, `visioncam`, `30 s`, `SVGA, quality 12`, `15`, `homeassistant`, `-58 dBm`, `0 pending` | Verify against SPEC §5/§16 defaults in Phase 1; bracketed tokens (`[version]`, `[fps]`, `[minutes]`, `[seconds]`, `[n]`, `[KB]`, `[ms]`, `[ssid]`, `[dBm]`, `[host]`, `[client id]`, `[backend]`, `[user]`, `[model]`, `v[x]`, `v[y]`, `[sample]`) are placeholders and must never ship as literal text |
+
+**Reassuring:** placeholder discipline is consistent and **no credential,
+token or secret appears anywhere** — passwords render as dots only, matching
+AGENTS rules 17-18. The Security warning callout matches rule 29 exactly.
+
 ---
 
 ## 7. Reference projects analysis
@@ -283,6 +402,15 @@ VisionCam rule 14 ("do not load the entire media index into RAM") is a
 | G14 | FPS parity tolerance vs R1 baseline | §1A.7 | Suggested 10 %, owner must confirm |
 | G15 | Pre-event buffer RAM cost unknown | §4.6 | Default pre-event = 0 until measured |
 | G16 | R1 loads a whole folder listing into one 32 KB buffer (`JSON_BUFF_LEN`) — conflicts with AGENTS rule 14 | `appGlobals.h:58` | Keep VisionCam's pagination; record as a deliberate divergence in `docs/REFERENCE_ANALYSIS.md` |
+
+**G17–G26** are mockup-derived and live in §6.2 (second-pass decode of the
+11 remaining artboards): missing Timelapse submit button, inconsistent
+settings action bars, no toggle widget drawn, three different status
+styles, duplicate `Choose file` labels, undistinguished destructive
+buttons, no media-grid empty state, shared-chrome confirmation, no
+responsive artboards, and real-looking defaults needing a SPEC §5/§16
+cross-check. They are design decisions for `DESIGN.md`, not code gaps —
+resolve them in Phase 1 before the shell is built.
 
 ---
 
