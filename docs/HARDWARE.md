@@ -33,8 +33,14 @@ is the only place pin constants may exist (AGENTS rule 6).
 | Status LED | GPIO 33 (red) | SPEC §2.2 cross-check note |
 | SD pins | CLK 14, CMD 15, D0 2, D1 4, D2 12, D3 13 | owner table (SPEC §2.2 does not tabulate these) |
 | SD mode | **1-bit** (CLK/CMD/D0 only) — frees GPIO4 and GPIO12 | SPEC §2.3, line 333; R1 README "MMC 1 line" |
-| PSRAM | reported at boot by the smoke test | R1 README says 4 MB but warns clone boards differ — **measure** |
-| Flash size | 4 MB (per `esp32cam` board definition) | `pio boards esp32cam` — confirm on hardware |
+| PSRAM | **8,388,608 B (8 MB)** fitted; IDF maps **4 MB** of it (`Virtual address not enough for PSRAM, map as much as we can. 4MB is mapped`) | measured 2026-11-15 — `docs/evidence/phase0-smoke-boot-11-forced-retry.log`, lines `PSRAM: 8388608 bytes` and the `esp_psram` warning. R1 README's 4 MB guess is **wrong for this board** |
+| Flash size | **4 MB** | measured 2026-11-15 — boot log `SPI Flash Size : 4MB` (same evidence file) |
+
+> **PSRAM finding (2026-11-15):** the module carries 8 MB, but the original
+> ESP32 maps only ~4 MB of it into the linear virtual-address window, and the
+> boot heap pool shows 4,192,024 B PSRAM free / 4,128,768 B largest block.
+> Planning numbers (frame buffers ≈2 MB → SVGA, ≈4 MB → UXGA) stay unchanged,
+> but §4 records the real figures rather than the README's assumption.
 
 **Reserved pins:** GPIO16 (PSRAM), GPIO1 (U0T), GPIO3 (U0R).
 **Boot strapping pins:** GPIO0 (boot), GPIO2, GPIO12 (flash voltage), GPIO15.
@@ -167,15 +173,19 @@ use for VisionCam's parity test.
 
 | Item | Value | Status |
 |---|---|---|
-| SD card model / capacity / class | | UNVERIFIED |
-| PSRAM size | | UNVERIFIED (smoke test reports it) |
-| GPIO4 lamp with SD mounted | | UNVERIFIED |
-| Brownout symptom observed | | UNVERIFIED |
+| SD card identity as seen by the driver | `Name: SD16G`, `Type: SDHC`, `Size: 7680MB`, CSD v2, 15,728,640 sectors | measured 2026-11-15 (smoke boot 4) |
+| SD card printed label / class | — | **pending — D5** (read the print on the card: brand, capacity, class) |
+| PSRAM size | **8,388,608 B fitted; 4,192,024 B in the free heap pool, largest block 4,128,768 B; 4 MB mapped** | measured 2026-11-15 |
+| GPIO4 lamp with SD mounted | **OFF for the whole boot** — the ESP-IDF SDMMC 1-bit driver does *not* light the lamp (owner observed a full boot, 2026-11-15) | verified 2026-11-15 |
+| Brownout symptom observed (VisionCam build) | **none** — single `POWERON_RESET`, no `BROWNOUT`/panic/WDT across the full smoke run incl. 3 s of Wi-Fi beacon TX | verified 2026-11-15 (smoke boot 11); R1's weak-supply drill still owed with D2 |
 | D3 FPS tolerance agreed | **10 %** | agreed 2026-11-15 |
 
 ---
 
-## 5. VisionCam Phase 0 smoke test (once firmware builds)
+## 5. VisionCam Phase 0 smoke test — **VERIFIED on hardware 2026-11-15**
+
+Raw serial logs are committed under `docs/evidence/` (ASCII-sanitised copies
+of the capture tool's output; nothing was edited out).
 
 1. `pio run -t upload` over the ESP32-CAM-MB (hold BOOT if auto-reset does
    not engage).
@@ -193,16 +203,36 @@ use for VisionCam's parity test.
    be re-proven on the IDF driver.
 6. Camera + SD together, Wi-Fi **off** then **on** — no brownout, no reset.
 
-| Smoke test step | Result | Date |
-|---|---|---|
-| Flash via ESP32-CAM-MB | UNVERIFIED | |
-| Banner: reset reason / PSRAM / heap | UNVERIFIED | |
-| Camera JPEG captured, PID = OV2640 | UNVERIFIED | |
-| Retry + PWDN power-cycle recovers | UNVERIFIED | |
-| SD mounts 1-bit, file round-trips | UNVERIFIED | |
-| GPIO4/lamp behaviour documented | UNVERIFIED | |
-| Camera + SD stable with Wi-Fi on | UNVERIFIED | |
-| Brownout/reset behaviour recorded | UNVERIFIED | |
+| Smoke test step | Result | Date | Evidence |
+|---|---|---|---|
+| Flash via ESP32-CAM-MB | **verified** — auto-reset works, no BOOT press needed; app at `0x20000` boots, partition table matches `partitions.csv` | 2026-11-15 | boot 11 log, `rst:0x1 (POWERON_RESET)` + `boot:` partition listing |
+| Banner: reset reason / PSRAM / heap | **verified** — `reset reason: POWERON`, `PSRAM: 8388608 bytes`, heap boot free 4,448,703 B / min 4,416,672 B / largest 4,128,768 B | 2026-11-15 | boot 11 log |
+| Camera JPEG captured, PID = OV2640 | **verified** — `sensor PID 0x0026 = OV2640`, 3 warm-up frames discarded, `JPEG grabbed: 243471 B (1600x1200)`, runtime dropped to VGA | 2026-11-15 | boot 11 log |
+| Forced first-attempt failure → retry recovers | **verified** — attempt 1 sabotaged with `pin_xclk = -1` (real failure: `ESP_ERR_NOT_SUPPORTED`), attempt 2 after `cameraShutdown()` + PWDN power-cycle → `forced-failure test: err=ESP_OK, attempts=2 -> OK` | 2026-11-15 | boot 11 log. *Method note:* holding PWDN instead **does not work** — R2's `camera_probe` releases PWDN itself each init (`esp_camera.c:204-216`), proven on hardware when the hold attempt still passed at `attempts=1` |
+| SD mounts 1-bit, file round-trips | **verified** — `SD mounted at /sdcard, negotiated 20000 kHz`, `SSR: bus_width=1`, `SD self-test OK: wrote, read back and deleted /sdcard/vc_smoke.txt` | 2026-11-15 | boot 8/10/11 logs |
+| GPIO4/lamp behaviour documented | **verified — lamp stayed OFF for the entire boot** (owner watched a full boot). The ESP-IDF SDMMC 1-bit driver does **not** light GPIO4; our post-mount drive-low is belt-and-braces | 2026-11-15 | owner observation + boot 9/10 logs |
+| Camera + SD stable with Wi-Fi on | **verified** — SoftAP `visioncam-smoke` ch6 up, scan heard 2 networks, camera+SD OK both `wifi off` and `wifi on` (`step 14 result: OK`), no instability | 2026-11-15 | boot 10/11 logs |
+| Brownout/reset behaviour recorded | **verified for this run** — exactly **1** boot in the whole capture, `POWERON_RESET`, no `BROWNOUT`/panic/WDT even across 3 s of beacon TX + scan. The weaker-supply drill stays owed with D2 | 2026-11-15 | boot 11 log |
+
+Final verdict line (boot 11):
+
+```
+camera: OK | sd: OK | psram: OK | wifi(step14): OK | forced-retry: OK
+```
+
+### 5.1 Known hardware quirk — SD card contact
+
+During this session the SD mount failed on **six of the first seven boots**
+with *varying* errors: `ESP_ERR_TIMEOUT` (no reply at all, `sdmmc_cmd.c` CMD
+timeout) and `ESP_ERR_INVALID_RESPONSE` (card answered but the CMD8 echo
+pattern was wrong, `sdmmc_cmd.c:136`). Varying corruption → silence is the signature of
+**marginal contact or power at the slot**, not a firmware bug (a code bug
+fails deterministically: it failed identically every time). Re-seating the
+card fixed it immediately and it then passed on boots 8–11 without a single
+failure.
+
+**If mount errors vary between runs, re-seat the card (push until it clicks)
+before debugging firmware.** Record the exact card label here when read — D5.
 
 ---
 

@@ -56,6 +56,17 @@ tagged once Phase 9 release criteria pass.
   ESP32), pinned-R2 init/retry facts (stale "no way to de-initialize" doc
   comment, `OV2640_PID = 0x26`, `width*height/5` confirmed), and the eight
   §1A.5 matrix rows verified first-hand against the pinned R1/R2 source.
+- **Wi-Fi smoke module** (task 0.3 step 14) — `wifi_bringup.{h,cpp}`: APSTA
+  SoftAP `visioncam-smoke` + one blocking scan (IDF 6.1 renamed the API to
+  `esp_wifi_scan_start`), no credentials anywhere, nothing joined. `main.cpp`
+  runs camera + SD cycles with the radio off, then on for 3 s of beacon TX.
+- **Forced first-attempt failure test** (step 11 part 2) — attempt 1 runs with
+  `pin_xclk = -1` so the SCCB probe genuinely fails, the normal retry
+  (`cameraShutdown()` + PWDN power-cycle) must recover on attempt 2. First
+  attempt with a PWDN hold **failed the test on hardware**: R2's
+  `camera_probe` releases PWDN itself (`esp_camera.c:204-216`).
+- **Hardware evidence logs** — `docs/evidence/` holds the raw serial captures
+  behind every claim in `docs/HARDWARE.md` §2/§4/§5.
 
 ### Fixed
 
@@ -77,16 +88,33 @@ tagged once Phase 9 release criteria pass.
 
 ### Notes
 
-- Phase 0 build sizes (host-side): RAM 8.2 % (26,840 / 327,680 B),
-  Flash 387,356 B = 24.6 % of the 1.5 MB `ota_0` slot;
-  `firmware.bin` 387,792 B.
-- Everything hardware-dependent — flashing, camera, SD, PSRAM-on-device,
-  GPIO4 lamp, brownout — is **UNVERIFIED**: no serial device is attached.
+- **Phase 0 smoke test VERIFIED on hardware 2026-11-15** (owner's board,
+  evidence in `docs/evidence/`): flash + auto-reset, `POWERON_RESET` banner,
+  **PSRAM 8,388,608 B** (4 MB mapped), OV2640 PID `0x0026` + 243,471 B JPEG,
+  forced-failure recovery at `attempts=2`, SD 1-bit mount + self-test at
+  20,000 kHz, **GPIO4 lamp OFF for the whole boot**, Wi-Fi off/on cycles
+  (`step 14 result: OK`, 2 networks heard), single boot, no
+  brownout/panic/WDT. Verdict line: `camera: OK | sd: OK | psram: OK |
+  wifi(step14): OK | forced-retry: OK`. Recorded in `docs/HARDWARE.md` §5.
+- **Still `UNVERIFIED`:** the **D2 R1 baseline** (FPS per frame size/quality,
+  R1 heap figures, SD write MB/s, weak-supply brownout drill, exact SD card
+  label for D5) and Phase 0's phase-end stack-HWM/FPS row — all owed to the
+  owner-hardware R1 run (`docs/HARDWARE.md` §3–§4).
+- **Hardware quirks found:** SD mount errors varied (`ESP_ERR_TIMEOUT` /
+  `ESP_ERR_INVALID_RESPONSE`) until the card was re-seated — contact, not
+  firmware (`docs/HARDWARE.md` §5.1); IDF maps only 4 MB of the 8 MB PSRAM;
+  the ESP-IDF SDMMC driver does **not** light GPIO4 (R1's workaround is
+  Arduino-`SD_MMC`-specific).
+- Build sizes with Wi-Fi: RAM 15.4 % (50,584 / 327,680 B), Flash 1,041,544 B
+  = 66.2 % of the 1.5 MB `ota_0` slot — Wi-Fi + mbedTLS + supplicant cost
+  ≈654 KB flash over the no-radio build.
 - All six `sdkconfig.defaults` symbols confirmed effective in the generated
   `sdkconfig.h`; PSRAM defaults to 40 MHz and flash to 2 MB in IDF 6.1.0, so
   both are overridden explicitly.
 - Two build failures diagnosed and documented in ADR-0001: missing
   `PRIV_REQUIRES esp_psram` (renamed `main` component gets no automatic
   dependencies) and `esp_psram.c` being compiled only under `CONFIG_SPIRAM`.
-- **Nothing is hardware-verified yet.** No serial device is attached; every
-  flashing, camera, SD and PSRAM-on-device claim remains `UNVERIFIED`.
+- Log-level trap documented in `sdkconfig.defaults`: with
+  `CONFIG_LOG_MAXIMUM_LEVEL_WARN` every `ESP_LOGI` is compiled out and
+  `esp_log_level_set()` cannot restore it — the maximum must be INFO while
+  the runtime default stays WARN.

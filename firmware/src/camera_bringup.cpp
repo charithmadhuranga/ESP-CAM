@@ -77,6 +77,24 @@ void powerCyclePwdn() {
     vTaskDelay(pdMS_TO_TICKS(20));
 }
 
+// Leaves the sensor powered down (PWDN asserted) so the next esp_camera_init
+// genuinely cannot reach it — the forced first-attempt failure of step 11.
+// NOTE (2026-11-15, hardware): this does NOT work on its own — R2's
+// camera_probe releases PWDN itself at the start of every init
+// (esp_camera.c:204-216), so attempt 1 still succeeded while we held it.
+// cameraBringup therefore forces the failure via pin_xclk instead.
+void holdPwdnAsserted() {
+    gpio_config_t io = {};
+    io.pin_bit_mask = 1ULL << BOARD_CAM_PWDN;
+    io.mode         = GPIO_MODE_OUTPUT;
+    io.pull_up_en   = GPIO_PULLUP_DISABLE;
+    io.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    gpio_config(&io);
+
+    gpio_set_level(static_cast<gpio_num_t>(BOARD_CAM_PWDN), 1);
+    vTaskDelay(pdMS_TO_TICKS(20));
+}
+
 }  // namespace
 
 void cameraShutdown() {
@@ -96,7 +114,7 @@ void cameraShutdown() {
     esp_camera_deinit();
 }
 
-esp_err_t cameraBringup(CameraReport& report) {
+esp_err_t cameraBringup(CameraReport& report, bool force_first_failure) {
     report = CameraReport{};
 
     const size_t psram = esp_psram_get_size();
@@ -113,6 +131,16 @@ esp_err_t cameraBringup(CameraReport& report) {
         if (attempt > 1) {
             cameraShutdown();
             powerCyclePwdn();
+            cfg.pin_xclk = BOARD_CAM_XCLK;  // undo the forced-failure sabotage
+        } else if (force_first_failure) {
+            // Step 11: make attempt 1 genuinely fail by removing the sensor's
+            // clock (pin_xclk = -1 -> GPIO0 never driven -> the SCCB probe
+            // cannot see the sensor). Holding PWDN instead does NOT work: R2's
+            // camera_probe releases PWDN itself at the start of every init
+            // (esp_camera.c:204-216 — verified on hardware 2026-11-15).
+            cfg.pin_xclk = -1;
+            ESP_LOGW(TAG, "forced failure test: XCLK removed — attempt 1 is "
+                          "expected to fail");
         }
         err = esp_camera_init(&cfg);
         if (err == ESP_OK) break;
@@ -194,6 +222,16 @@ esp_err_t cameraBringup(CameraReport& report) {
     }
 
     return ESP_OK;
+}
+
+bool cameraGrabProbe(size_t* bytes) {
+    if (bytes != nullptr) *bytes = 0;
+    camera_fb_t* fb = esp_camera_fb_get();
+    if (fb == nullptr) return false;
+    if (bytes != nullptr) *bytes = fb->len;
+    const bool ok = fb->len > 0;
+    esp_camera_fb_return(fb);
+    return ok;
 }
 
 }  // namespace visioncam

@@ -112,18 +112,25 @@ every later phase is measured against.
 
 ## Tests and acceptance
 
-- [ ] `pio run` produces a firmware image with no warnings-as-errors ignored.
-- [ ] Firmware flashes using ESP32-CAM-MB.
-- [ ] Serial log shows reset reason, PSRAM size, heap figures.
-- [ ] Camera captures a valid JPEG; sensor PID reported as OV2640.
-- [ ] Forced first-attempt camera failure → retry + PWDN power-cycle recovers.
-- [ ] SD mounts in 1-bit mode; test file round-trips.
-- [ ] GPIO4/lamp behaviour with SD mounted documented.
-- [ ] Camera and SD operate together; stable power under Wi-Fi TX + camera.
-- [ ] Brownout/reset behaviour recorded.
-- [ ] R1 baseline table complete, or explicitly marked `UNVERIFIED`.
-- [ ] Only one `esp32-camera` copy linked.
-- [ ] `docs/adr/0001-toolchain.md` and `docs/REFERENCE_ANALYSIS.md` exist.
+- [x] `pio run` produces a firmware image with no warnings-as-errors ignored.
+- [x] Firmware flashes using ESP32-CAM-MB (auto-reset, no BOOT press).
+- [x] Serial log shows reset reason, PSRAM size, heap figures.
+- [x] Camera captures a valid JPEG; sensor PID reported as OV2640.
+- [x] Forced first-attempt camera failure → retry + PWDN power-cycle recovers
+      (`attempts=2 -> OK`; sabotage = `pin_xclk = -1`, because R2 releases
+      PWDN itself — evidence `docs/evidence/phase0-smoke-boot-11-*.log`).
+- [x] SD mounts in 1-bit mode; test file round-trips.
+- [x] GPIO4/lamp behaviour with SD mounted documented (**OFF** for the whole
+      boot — IDF SDMMC driver does not light it).
+- [x] Camera and SD operate together; stable power under Wi-Fi TX + camera
+      (`step 14 result: OK`, 2 networks heard, 3 s beacon TX).
+- [x] Brownout/reset behaviour recorded — **this run**: 1 boot,
+      `POWERON_RESET`, none observed. Weak-supply drill still owed with D2.
+- [ ] R1 baseline table complete, or explicitly marked `UNVERIFIED` —
+      `docs/HARDWARE.md` §4 rows still `UNVERIFIED`; **owed to the owner's
+      D2 run** (R1 flash + measurements, §3.3–3.6).
+- [x] Only one `esp32-camera` copy linked (rule 33 check passes at configure).
+- [x] `docs/adr/0001-toolchain.md` and `docs/REFERENCE_ANALYSIS.md` exist.
 
 ## Exit gate
 

@@ -44,7 +44,9 @@ revisited before any R1 code is reused.
 - **Divergence from R1:** none in values. VisionCam adds the SD pin map,
   which SPEC §2.2 did not tabulate and which the owner supplied.
 - **Evidence:** static cross-check complete; hardware confirmation
-  `UNVERIFIED`.
+  **verified 2026-11-15** — camera (PID `0x0026`, JPEG at 1600×1200), SD
+  (slot 1 pins 14/15/2) and GPIO4 all behaved exactly as this map predicts
+  (`docs/HARDWARE.md` §5).
 
 ## Storage / SD card interface — 2026-11-15
 
@@ -65,7 +67,10 @@ revisited before any R1 code is reused.
 - **Divergence from R1:** R1 exposes `formatIfMountFailed` as a user
   parameter; VisionCam never enables it (SPEC §2.3).
 - **Evidence:** source confirmed at `utilsFS.cpp:81-84`;
-  hardware confirmation `UNVERIFIED` (Phase 0 task 0.3 step 13).
+  hardware confirmation **now done for the IDF driver, 2026-11-15: the lamp
+  stayed OFF for the whole boot** — the ESP-IDF SDMMC 1-bit driver does not
+  light GPIO4, so R1's workaround is Arduino-`SD_MMC`-specific and VisionCam's
+  post-mount drive-low is belt-and-braces (`docs/HARDWARE.md` §5, step 13).
 
 ## SDMMC mount — two divergences from SPEC §2.3's snippet — 2026-11-15
 
@@ -111,7 +116,9 @@ pinned ESP-IDF)". It has now been verified against the pinned **ESP-IDF
   silently mounting nowhere.
 
 - **Evidence:** IDF 6.1.0 source paths cited above; `sd_bringup.cpp`
-  compiles. Mount behaviour on hardware `UNVERIFIED` (no board attached).
+  compiles. Mount behaviour on hardware **verified 2026-11-15**: slot 1,
+  1-bit, 20,000 kHz, `SSR: bus_width=1`, write/read/delete self-test passed,
+  no auto-format triggered (`docs/HARDWARE.md` §5).
 
 ## Motion detection cadence — 2026-11-15
 
@@ -151,7 +158,20 @@ pinned ESP-IDF)". It has now been verified against the pinned **ESP-IDF
   reimplementation target (SPEC §1A.3).
 - **Divergence from R1:** none on init order.
 - **Evidence:** R2 commit matches SPEC's recorded pin; driver smoke test
-  `UNVERIFIED` (no board attached).
+  **verified on hardware 2026-11-15** — PID `0x0026`, ≥3 warm-up frames,
+  243,471 B JPEG at 1600×1200 (`docs/HARDWARE.md` §5).
+- **Hardware finding (2026-11-15, changes the retry design):** R2's
+  `camera_probe` **power-cycles PWDN itself at the start of every
+  `esp_camera_init()`** (`esp_camera.c:204-216`: 10 ms high, 10 ms low), so
+  an external PWDN hold placed before the call is released by the driver and
+  cannot be used to force a failed attempt. Proven on the board: with PWDN
+  held, attempt 1 still succeeded (`attempts=1`). The Phase 0 forced-failure
+  test therefore sabotages attempt 1 with `pin_xclk = -1` (sensor gets no
+  clock → real `ESP_ERR_NOT_SUPPORTED`), restoring XCLK on the retry — which
+  then recovered at `attempts=2` (`docs/evidence/phase0-smoke-boot-11-*.log`).
+  Consequence for the retry path: `powerCyclePwdn()` between attempts is
+  still correct, but it is R2's own PWDN cycle plus ours, not the only
+  power-cycle happening.
 
 ## Camera init / retry — pinned R2 facts vs its own documentation — 2026-11-15
 
@@ -182,8 +202,10 @@ pinned ESP-IDF)". It has now been verified against the pinned **ESP-IDF
 - **Decision:** **adopt** the retry sequence with an explicit
   `cameraShutdown()` (= `esp_camera_deinit()`) before any re-init and on every
   post-init exit path (`camera_bringup.cpp`).
-- **Evidence:** source lines cited above; on-device retry and PWDN recovery
-  `UNVERIFIED` (no board attached).
+- **Evidence:** source lines cited above; on-device retry **verified
+  2026-11-15**: sabotaged attempt 1 failed for a real reason, attempt 2
+  recovered after `cameraShutdown()` + PWDN power-cycle
+  (`attempts=2 -> OK`, `docs/evidence/phase0-smoke-boot-11-*.log`).
 
 ---
 
@@ -196,12 +218,12 @@ the strength of SPEC's own text (AGENTS rule 26).
 | §1A.5 row | Status | First-hand evidence |
 |---|---|---|
 | Camera driver → **adopt** R2 | verified | pinned 2.1.9 in `managed_components/`; facts in the camera entries above; single-copy build check passes (AGENTS rule 33) |
-| Framework → **reject** Arduino | verified | R1 compiles only as an Arduino sketch: `arduino-cli` build = 1,734,516 B (88 %) flash / 102,888 B (31 %) RAM vs VisionCam IDF build 387,356 B (24.6 %) — R1 has ≈231 KB free, no room to grow (`docs/HARDWARE.md` §3.2) |
+| Framework → **reject** Arduino | verified | R1 compiles only as an Arduino sketch: `arduino-cli` build = 1,734,516 B (88 %) flash / 102,888 B (31 %) RAM vs VisionCam IDF build 387,356 B (24.6 %) without the radio (1,041,544 B = 66.2 % with the smoke Wi-Fi module) — R1 has ≈231 KB free, no room to grow (`docs/HARDWARE.md` §3.2) |
 | Frame buffers (R1: 4 × PSRAM, `GRAB_LATEST`) | verified | R1 `mjpeg2sd.cpp:20` `#define FB_CNT 4`, `:1070` `config.grab_mode = CAMERA_GRAB_LATEST`, `:1075` `config.fb_count = FB_CNT` — SPEC's claim is exact |
 | SD mode → **adopt** 1-bit | verified | R1 `utilsFS.cpp:28` `use1bitMode = true`, `:80` `SD_MMC.begin("/sdcard", use1bitMode, ...)`; IDF side in the SDMMC entry above |
 | Auth → **reject** Basic | verified | R1 `webServer.cpp:100-143`: pre-computes and caches the expected `Basic <b64>` value, then reads the request's `Authorization` header and compares — exactly the model SPEC replaces with sessions + CSRF |
 | MQTT client → **adopt** esp-mqtt | verified | R1 `mqtt.cpp:14,36,46` uses `mqtt_client.h` / `esp_mqtt_client_publish`; VisionCam pins `espressif/mqtt@1.1.0` (`dependencies.lock`) and it builds |
-| Camera init order → **adapt** | verified (source side) | R1 `initCam` sequence read; R2-side retry facts in the entry above. On-hardware behaviour `UNVERIFIED` |
+| Camera init order → **adapt** | verified (source + hardware) | R1 `initCam` sequence read; R2-side retry facts in the entry above; on-device retry `attempts=2 -> OK` 2026-11-15 (`docs/evidence/phase0-smoke-boot-11-*.log`) |
 | Motion cadence → **adopt/adapt** | verified | see Motion entry above (R1 `mjpeg2sd.cpp`, `motionDetect.cpp` line evidence) |
 
 Rows **not** yet verified first-hand (still as-spec): AVI container layout,

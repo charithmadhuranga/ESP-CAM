@@ -35,10 +35,17 @@ CONFIG_SPIRAM=y
 CONFIG_SPIRAM_SPEED_80M=y
 
 # --- Logging -----------------------------------------------------------------
-# Warn by default; per-module debug is enabled behind a config flag in later
-# phases (AGENTS: never log high-frequency frame data).
-# Confirmed: sets CONFIG_LOG_DEFAULT_LEVEL=2 (WARN) in sdkconfig.h.
+# Default level WARN (quiet production logs); per-module debug is raised
+# behind a config flag in later phases (AGENTS: never log high-frequency
+# frame data). The compile-time MAXIMUM must be INFO though: LOG_LOCAL_LEVEL
+# = CONFIG_LOG_MAXIMUM_LEVEL (esp_log_level.h:57), so with maximum WARN every
+# ESP_LOGI is compiled out and esp_log_level_set() cannot bring it back —
+# that silenced the Phase 0 smoke test's banner/PSRAM/heap/CAMERA-OK lines.
+# With maximum INFO the runtime default still filters at WARN, and
+# main.cpp raises only the vc_* tags when it needs evidence.
+# Confirmed: DEFAULT=2, MAXIMUM=3 in sdkconfig.h.
 CONFIG_LOG_DEFAULT_LEVEL_WARN=y
+CONFIG_LOG_MAXIMUM_LEVEL_INFO=y
 
 # --- Main task ---------------------------------------------------------------
 # The smoke test and later subsystem init need headroom.

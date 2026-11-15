@@ -18,11 +18,15 @@
 # sdmmc          sdmmc_card_print_info, sdmmc_card_t
 # esp_driver_sdmmc  driver/sdmmc_host.h, SDMMC_HOST_DEFAULT, slot config
 # esp_driver_gpio   driver/gpio.h (GPIO4 lamp, PWDN power-cycle)
+# esp_wifi/esp_netif/esp_event  wifi_bringup.cpp (step 14: camera+SD under
+#                Wi-Fi off then on; SoftAP + scan only, no credentials)
+# nvs_flash      Wi-Fi calibration storage required by esp_wifi_init
 idf_component_register(
     SRCS
         "main.cpp"
         "camera_bringup.cpp"
         "sd_bringup.cpp"
+        "wifi_bringup.cpp"
     INCLUDE_DIRS "../include"
     PRIV_REQUIRES
         esp_psram
@@ -31,4 +35,8 @@ idf_component_register(
         sdmmc
         esp_driver_sdmmc
         esp_driver_gpio
+        esp_wifi
+        esp_netif
+        esp_event
+        nvs_flash
 )

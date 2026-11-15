@@ -4,10 +4,10 @@
 //   step 11  camera bring-up        (visioncam::cameraBringup)
 //   step 12  SD 1-bit mount + write/read/delete  (visioncam::sdMount/sdSelfTest)
 //   step 13  GPIO4 / flash-lamp behaviour with the SD mounted
+//   step 14  camera + SD together with Wi-Fi off, then Wi-Fi on
 //
-// Steps 11-13 compile and link here; they can only RUN on the owner's board.
-// No serial device is attached to this machine, so every runtime result stays
-// UNVERIFIED until a serial log exists (AGENTS rule 26).
+// Steps 11-14 compile and link here; they run on the owner's board. Every
+// runtime result is recorded in docs/HARDWARE.md section 5 (AGENTS rule 26).
 
 #include <cstdio>
 
@@ -21,6 +21,7 @@
 #include "board_profile.h"
 #include "camera_bringup.h"
 #include "sd_bringup.h"
+#include "wifi_bringup.h"
 
 static const char* TAG = "vc_smoke";
 
@@ -57,7 +58,31 @@ static void logHeap(const char* where) {
     }
 }
 
+// One camera grab + one SD write/read/delete — the "camera and SD running
+// together" probe of plan 0.3 step 14. Frame access stays in camera_bringup
+// (AGENTS rule 9) and file access in sd_bringup (rule 10); this helper only
+// orchestrates the two.
+static bool togetherCycle(const char* phase) {
+    size_t bytes = 0;
+    const bool cam_ok = visioncam::cameraGrabProbe(&bytes);
+    const bool sd_ok = visioncam::sdSelfTest() == ESP_OK;
+    ESP_LOGI(TAG, "step 14 [%s]: camera=%s (%u B), sd=%s",
+             phase, cam_ok ? "OK" : "FAIL", static_cast<unsigned>(bytes),
+             sd_ok ? "OK" : "FAIL");
+    return cam_ok && sd_ok;
+}
+
 extern "C" void app_main(void) {
+    // The default log level is WARN (sdkconfig.defaults), but Phase 0 step 10
+    // requires the banner, PSRAM and heap figures as serial evidence. Raise
+    // only our own smoke tags back to INFO at runtime; everything else stays
+    // quiet. This only works because CONFIG_LOG_MAXIMUM_LEVEL is INFO — at
+    // compile time LOG_LOCAL_LEVEL would otherwise discard these ESP_LOGI
+    // calls before esp_log_level_set could see them.
+    esp_log_level_set("vc_smoke", ESP_LOG_INFO);
+    esp_log_level_set("vc_cam", ESP_LOG_INFO);
+    esp_log_level_set("vc_sd", ESP_LOG_INFO);
+
     ESP_LOGI(TAG, "================================================");
     ESP_LOGI(TAG, " VisionCam Pro — Phase 0 smoke test");
     ESP_LOGI(TAG, "================================================");
@@ -123,12 +148,65 @@ extern "C" void app_main(void) {
 
     logHeap("after SD");
 
+    // --- step 14: camera + SD together, Wi-Fi off then Wi-Fi on ------------
+    // A brownout during radio TX resets the chip, and the NEXT boot reports
+    // reset reason BROWNOUT — so this log plus the following boot's banner
+    // are the evidence pair for "no brownout". Wi-Fi here is only a local
+    // SoftAP + scan (wifi_bringup.h): no credentials, no network joined.
+    const char* step14 = "SKIP";
+    if (camErr == ESP_OK && sd.self_test_ok) {
+        // (a) radio has never been started — the "Wi-Fi off" state.
+        bool ok = togetherCycle("wifi off");
+
+        // (b) Wi-Fi on: bring the radio up, let it beacon, run camera + SD
+        // again while it is active, then turn it back off.
+        visioncam::WifiReport wr;
+        const esp_err_t werr = visioncam::wifiStart(wr);
+        if (werr != ESP_OK) {
+            ESP_LOGE(TAG, "step 14: wifi start failed: %s", esp_err_to_name(werr));
+            ok = false;
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(3000));  // sustain the beacon TX load
+            ok = togetherCycle("wifi on") && ok;
+            visioncam::WifiReport wr2;
+            const esp_err_t serr = visioncam::wifiStop(wr2);
+            if (serr != ESP_OK) {
+                ESP_LOGE(TAG, "step 14: wifi stop failed: %s", esp_err_to_name(serr));
+                ok = false;
+            }
+        }
+        step14 = ok ? "OK" : "FAIL";
+        ESP_LOGI(TAG, "step 14 result: %s (scan heard %u network(s))",
+                 step14, static_cast<unsigned>(wr.scan_results));
+        logHeap("after wifi");
+    } else {
+        ESP_LOGW(TAG, "step 14 skipped — camera or SD not OK");
+    }
+
+    // --- step 11 (part 2): forced first-attempt failure -> PWDN recovery ----
+    // Re-runs bring-up with PWDN held during attempt 1: the sensor is really
+    // unreachable, so esp_camera_init must really fail, and the normal retry
+    // (cameraShutdown + PWDN power-cycle) must recover on attempt 2.
+    const char* forced = "SKIP";
+    if (camErr == ESP_OK) {
+        visioncam::cameraShutdown();
+        visioncam::CameraReport cam2;
+        const esp_err_t fErr = visioncam::cameraBringup(cam2, /*force=*/true);
+        forced = (fErr == ESP_OK && cam2.init_attempts == 2) ? "OK" : "FAIL";
+        ESP_LOGI(TAG, "forced-failure test: err=%s, attempts=%u -> %s",
+                 esp_err_to_name(fErr), cam2.init_attempts, forced);
+    } else {
+        ESP_LOGW(TAG, "forced-failure test skipped — camera not OK");
+    }
+
     // --- verdict -----------------------------------------------------------
     ESP_LOGI(TAG, "------------------------------------------------");
-    ESP_LOGI(TAG, " camera: %s | sd: %s | psram: %s",
+    ESP_LOGI(TAG, " camera: %s | sd: %s | psram: %s | wifi(step14): %s | forced-retry: %s",
              camErr == ESP_OK ? "OK" : "FAIL",
              sdErr == ESP_OK ? (sd.self_test_ok ? "OK" : "SELFTEST-FAIL") : "FAIL",
-             psramSize > 0 ? "OK" : "MISSING");
+             psramSize > 0 ? "OK" : "MISSING",
+             step14,
+             forced);
     ESP_LOGI(TAG, " next: flash this build and fill docs/HARDWARE.md section 5");
     ESP_LOGI(TAG, "================================================");
 

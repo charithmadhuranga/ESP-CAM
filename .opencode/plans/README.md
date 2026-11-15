@@ -11,18 +11,23 @@ file for the phase you are working on, then the acceptance matrix in
 
 ## Current status (2026-11-15)
 
-**Phase 0 — host-side work complete, hardware steps blocked.**
+**Phase 0 — hardware smoke test verified; D2 R1 baseline still owed.**
 
-- ✅ Done: tasks 0.1–0.3 (repo baseline, pinned toolchain + components,
-  board profile, partition table verified on both build pipelines, camera +
-  SD smoke modules compile), task 0.4 step 18 (first
-  `docs/REFERENCE_ANALYSIS.md` entries), R1 compile check.
-- ⬜ Blocked on the owner's board: steps 14–17 — flash R1 and fill the
-  `docs/HARDWARE.md` baseline table (D2), camera + SD together with Wi-Fi
-  off then on, GPIO4/lamp result, brownout behaviour. *Board expected
-  later today (2026-11-15).*
-- ✅ D3 answered: **10 %** FPS parity tolerance (2026-11-15).
-- Phase 0 exit gate is therefore **not green** (hardware steps outstanding);
+- ✅ Done: tasks 0.1–0.4 (repo baseline, pinned toolchain + components,
+  board profile, partition table verified on both build pipelines **and in
+  the boot log on hardware**, camera + SD + Wi-Fi smoke modules),
+  task 0.4 step 18 (first `docs/REFERENCE_ANALYSIS.md` entries), R1 compile
+  check, D3 answered (**10 %**).
+- ✅ **Smoke test VERIFIED on the owner's board 2026-11-15** — every §5 row in
+  `docs/HARDWARE.md`: flash/auto-reset, banner + PSRAM 8,388,608 B, OV2640
+  PID + JPEG, forced-failure `attempts=2 -> OK`, SD 1-bit mount + self-test,
+  **GPIO4 lamp OFF**, Wi-Fi off/on cycles OK, single boot, no brownout.
+  Evidence: `docs/evidence/phase0-smoke-boot-10/11-*.log`.
+- ⬜ Outstanding: **D2 R1 baseline** — flash R1 unmodified and fill
+  `docs/HARDWARE.md` §4 (FPS per size/quality, R1 heap, SD write speed,
+  weak-supply brownout drill, exact SD card label → D5), plus Phase 0's
+  phase-end stack-HWM row.
+- Phase 0 exit gate is **not green yet** (baseline record outstanding);
   Phase 1 must not start.
 
 ---

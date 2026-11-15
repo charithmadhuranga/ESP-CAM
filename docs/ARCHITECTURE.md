@@ -69,15 +69,33 @@ Never estimate — paste real numbers or write `UNVERIFIED`.
 
 | Phase | Free heap B | Min heap B | Largest block B | Stack HWM (worst task) | FPS measured | Date / build |
 |---|---|---|---|---|---|---|
-| 0 | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | no board attached |
+| 0 | UNVERIFIED (no phase-end figure yet) | UNVERIFIED | UNVERIFIED | UNVERIFIED | UNVERIFIED | board now attached — smoke figures below |
 
-Build size after Phase 0 (host-side, verified 2026-11-15):
+**Smoke-run measurements (2026-11-15, board attached, evidence in
+`docs/evidence/`):**
+
+| Point in boot | Free heap B | Min heap B | Largest block B |
+|---|---|---|---|
+| after boot banner | 4,448,703 | 4,416,672 | 4,128,768 |
+| after camera init | 3,641,111 | 3,609,372 | 3,407,872 |
+| after SD mount | 3,636,379 | 3,603,308 | 3,407,872 |
+| after Wi-Fi start + scan | 3,587,879 | 3,549,316 | 3,407,872 |
+
+PSRAM: 8,388,608 B fitted, 4,192,024 B in the free-heap pool at boot, **4 MB
+mapped** by IDF (see `docs/HARDWARE.md` §2). Largest PSRAM block 4,128,768 B.
+
+Build size (verified 2026-11-15):
 
 | Artifact | Value |
 |---|---|
-| RAM used | 26,840 B / 327,680 B (8.2 %) |
-| Flash used | 387,356 B / 1,572,864 B = **24.6 %** of the `ota_0` app slot |
-| `firmware.bin` | 387,792 B |
+| RAM used, smoke build **with Wi-Fi** | 50,584 B / 327,680 B (15.4 %) |
+| Flash used, smoke build **with Wi-Fi** | 1,041,544 B / 1,572,864 B = **66.2 %** of the `ota_0` app slot |
+| RAM used, smoke build without radio (earlier) | 26,840 B / 327,680 B (8.2 %) |
+| Flash used, smoke build without radio (earlier) | 387,356 B = 24.6 % — `firmware.bin` 387,792 B |
+
+The radio (Wi-Fi + mbedTLS + supplicant) costs **≈654 KB flash / ≈24 KB RAM**
+— the single largest flash consumer so far; keep this in mind for the
+Phase 6/7 budget.
 
 Before `board_build.partitions` was set, the same binary read as 36.9 % —
 PlatformIO was measuring against the framework's default 1 MB `factory`

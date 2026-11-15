@@ -37,10 +37,21 @@ struct CameraReport {
 //   6. grab one JPEG, drop and count it if it breaks rule 7, else measure it
 //   7. drop back to the VGA runtime default (rule 1)
 //
+// force_first_failure (Phase 0 step 11): holds PWDN asserted during the
+// FIRST attempt only, so the sensor is genuinely unreachable and
+// esp_camera_init really fails — then the normal retry power-cycles PWDN and
+// must recover. A real failure on a real recovery path, not a simulated one.
+//
 // Returns ESP_OK on success. On failure the camera is left shut down.
-esp_err_t cameraBringup(CameraReport& report);
+esp_err_t cameraBringup(CameraReport& report, bool force_first_failure = false);
 
 // Releases the driver. Safe to call when the camera was never initialised.
 void cameraShutdown();
+
+// Grabs exactly one frame from the already-initialised camera and returns it
+// immediately — the "camera still running" half of the step-14 Wi-Fi cycle.
+// Frame access stays inside this module (AGENTS rule 9). Returns false when
+// no frame could be produced; *bytes (optional) receives the frame length.
+bool cameraGrabProbe(size_t* bytes);
 
 }  // namespace visioncam

@@ -12,14 +12,14 @@ Maintain the live status in `docs/TEST_PLAN.md`; this file is the map.
 
 | Item | Phase | Skill | Status |
 |---|---|---|---|
-| Board detected and flashes via ESP32-CAM-MB | 0 | `visioncam-hardware-validation` | TODO |
-| OV2640 initializes | 0 | `visioncam-hardware-validation` | TODO |
-| PSRAM detected and reported correctly | 0 | `visioncam-build-flash` | TODO |
-| SD card mounts in 1-bit mode | 0 | `visioncam-hardware-validation` | TODO |
-| Camera and SD operate together | 0 | `visioncam-hardware-validation` | TODO |
-| Flash LED behaviour documented with SD mounted | 0 | `visioncam-hardware-validation` | TODO |
-| Stable power under Wi-Fi TX and camera load | 0 | `visioncam-hardware-validation` | TODO |
-| Brownout behavior recorded | 0 | `visioncam-hardware-validation` | TODO |
+| Board detected and flashes via ESP32-CAM-MB | 0 | `visioncam-hardware-validation` | **RUN PASS** 2026-11-15 (auto-reset, no BOOT press; `docs/evidence/phase0-smoke-boot-11-*.log`) |
+| OV2640 initializes | 0 | `visioncam-hardware-validation` | **RUN PASS** 2026-11-15 (PID `0x0026`, 243,471 B JPEG; forced-failure retry `attempts=2`) |
+| PSRAM detected and reported correctly | 0 | `visioncam-build-flash` | **RUN PASS** 2026-11-15 (8,388,608 B; 4 MB mapped — `docs/HARDWARE.md` §2) |
+| SD card mounts in 1-bit mode | 0 | `visioncam-hardware-validation` | **RUN PASS** 2026-11-15 (20,000 kHz, `SSR: bus_width=1`, self-test; contact quirk §5.1) |
+| Camera and SD operate together | 0 | `visioncam-hardware-validation` | **RUN PASS** 2026-11-15 (`step 14 result: OK`, Wi-Fi off and on) |
+| Flash LED behaviour documented with SD mounted | 0 | `visioncam-hardware-validation` | **RUN PASS** 2026-11-15 (OFF for the whole boot — IDF driver does not light it) |
+| Stable power under Wi-Fi TX and camera load | 0 | `visioncam-hardware-validation` | **RUN PASS** 2026-11-15 (3 s beacon TX + scan + camera/SD cycles, no reset) |
+| Brownout behavior recorded | 0 | `visioncam-hardware-validation` | **RUN PASS** 2026-11-15 for the normal supply (1 boot, none observed); weak-supply drill still owed with **D2** |
 
 ## 11.2 Authentication → Phase 1
 

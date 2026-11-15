@@ -274,4 +274,6 @@ mode) are added in the same verified way when the camera driver lands.
 | 2026-11-15 | Both partition pipelines produce the same bytes | ✅ IDF-side rule re-run by hand with its exact args, `cmp` identical to `partitions.bin` (md5 `7ca60f29f1fa15cf0b949d746387d5da`) |
 | 2026-11-15 | App upload offset is the `ota_0` slot | ✅ `parttool --partition-boot-default` → `0x180000 0x20000`; size denominator now 1,572,864 B |
 | 2026-11-15 | `ota_data_initial.bin` generated (needs an `ota` data partition) | ✅ 8,192 B at `0x320000` |
-| _pending_ | Smoke firmware flashes and reports PSRAM/heap on hardware | **UNVERIFIED — no board attached** (`/dev/ttyUSB*` absent) |
+| _done_ | Smoke firmware flashes and reports PSRAM/heap on hardware | ✅ 2026-11-15 — `pio run -t upload` via ESP32-CAM-MB auto-reset; boot log `POWERON_RESET`, `PSRAM: 8388608 bytes`, heap free 4,448,703 B (`docs/evidence/phase0-smoke-boot-11-forced-retry.log`) |
+| 2026-11-15 | Partition table + `otadata` as flashed on hardware | ✅ boot log lists all 6 partitions exactly as `partitions.csv` (`nvs 00009000`, `ota_0 00020000 00180000`, `ota_1`, `otadata`, `storage`) — same evidence log |
+| 2026-11-15 | Full smoke run: camera, SD 1-bit, Wi-Fi off/on, forced retry | ✅ verdict `camera: OK \| sd: OK \| psram: OK \| wifi(step14): OK \| forced-retry: OK`; single boot, no brownout (`docs/HARDWARE.md` §5) |
