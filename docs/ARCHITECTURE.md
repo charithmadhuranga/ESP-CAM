@@ -101,19 +101,25 @@ capture-limited. Phase 3's parity test (§11.10, tolerance **10 %** — D3) must
 compare like for like and, above SVGA, compare against the same bottleneck.
 
 **Storage capacity reality check (affects storage manager, retention and
-Phase 9):** the owner's card reports **CSD 8,053,063,680 B** (CID product name
-`SD16G`) but presents a **5,216,256 B FAT12 volume with 1,349,632 B free** —
-both FATFS implementations measured identically, so the formatted volume does
-not cover the card (`docs/HARDWARE.md` §4.2). Consequences:
+Phase 9) — RESOLVED 2026-11-16:** the owner's card reported **CSD
+8,053,063,680 B** (CID product name `SD16G`) but presented a **5,216,256 B
+FAT12 volume with 1,349,632 B free** — both FATFS implementations measured
+identically, so the formatted volume did not cover the card
+(`docs/HARDWARE.md` §4.2). The cause turned out to be a **bootable Linux
+Mint image** (EFI + ext4; owner identified it 2026-11-16), and the owner
+authorized a rewrite: `tools/sd_format/` reformatted the card to **MBR +
+FAT32, 8,051,032,064 B usable (99 % of CSD)**, re-verified by VisionCam
+boot 12 with no coverage warning. Consequences that remain in force:
 
 - size retention against the **mounted volume**, never against the CSD;
 - the storage manager's free-space policy must be **bounded** and must never
   delete anything that is not a VisionCam recording (R1's unbounded
   oldest-folder loop is rejected — `docs/REFERENCE_ANALYSIS.md`);
-- the Phase 9 24-hour and power-loss tests need a card that actually holds
-  hours of footage; **D5 stays open**;
-- SD write throughput measured on this card is ≈0.5 MB/s in 1-bit mode, which
-  is the number the recorder's buffering must be sized against.
+- VisionCam never auto-formats (SPEC §2.3) — the reformat was a
+  human-gated one-shot tool, not firmware behaviour;
+- SD write throughput measured on this card in 1-bit mode is ≈0.5 MB/s
+  (D2 run), which is the number the recorder's buffering must be sized
+  against; the 24-hour Phase 9 numbers now have a card with room.
 
 Build size (verified 2026-11-15):
 

@@ -50,14 +50,22 @@ they are asked for in one message rather than three:
    Arduino's `SD_MMC` lights the pin on mount even in 1-line mode
    (`utilsFS.cpp:81-84`), while the ESP-IDF driver measurably does not. The
    lamp is the sharpest difference between the two storage stacks.
-2. Read the **printed card label** (brand, capacity, class) → **D5**.
+2. Read the **printed SD speed class** — brand and capacity are already
+   known (genuine SanDisk 8 GB, owner 2026-11-16 → D5 mostly closed), but
+   the class (Class 4/10, U1) printed on the card is still unread.
 3. Optionally run the **weak-supply brownout drill** on R1.
 
-**Storage surprise — blocks D5 and Phase 9:** the card's CSD reports
+**Storage surprise — RESOLVED 2026-11-16:** the card's CSD reports
 8,053,063,680 B and its CID calls it `SD16G`, but both FATFS implementations
-report a **5,216,256 B FAT12 volume with 1,349,632 B free**. Full analysis and
-its consequences (including why one R1 stats block reported 12.3 MB / 3796
-kB/s for a 1.3 MB truncated file) is `docs/HARDWARE.md` §4.2.
+reported a **5,216,256 B FAT12 volume with 1,349,632 B free**. The owner
+then identified the card (genuine **SanDisk 8 GB**, pre-flashed with a
+bootable **Linux Mint** image — the 5 MB FAT was its EFI partition, the rest
+ext4) and authorized a rewrite. `tools/sd_format/` reformatted it to
+MBR + FAT32 across the whole card (**8,051,032,064 B usable, 99 % of CSD**),
+verified by `docs/evidence/phase0-sd-format.log` and VisionCam boot 12.
+Full analysis of the original finding (including why one R1 stats block
+reported 12.3 MB / 3796 kB/s for a 1.3 MB truncated file) is
+`docs/HARDWARE.md` §4.2/§4.2.1.
 
 ## D3 — FPS parity tolerance
 
@@ -89,4 +97,4 @@ no-name "Class 6" card about 3x slower than a genuine Sandisk 4 GB Class 2).
 | D2 | R1 baseline run | **Run during Phase 0.** Owner flashes R1 unmodified and records the baseline table; procedure is Phase 0 task 1. | 2026-11-15 |
 | D3 | FPS tolerance | **10 %.** Acceptance bar for Phase 3 / Phase 9 parity tests (SPEC §11.10). | 2026-11-15 |
 | D4 | TFLM supported / unsupported | *(pending)* | |
-| D5 | SD card model | *(pending — needed by Phase 9)* | |
+| D5 | SD card model | **Partially answered:** genuine **SanDisk 8 GB** (owner, 2026-11-16) — was pre-flashed with Linux Mint, reformatted MBR+FAT32 by `tools/sd_format/` same day (§4.2.1). **Still owed:** the printed speed class (e.g. Class 4/10, U1), read off the card | 2026-11-16 |

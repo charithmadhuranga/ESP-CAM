@@ -1,0 +1,11 @@
+# Partition table for tools/sd_format only.
+#
+# Same proven layout as tools/nvs_provision (nvs 20K @ 0x9000, phy @ 0xe000,
+# factory app @ 0x10000): it boots on this board and keeps the flashing
+# procedure identical across the Phase 0 helper tools. This tool writes no
+# NVS; those entries exist only so the table is valid while it runs.
+#
+# Name,   Type, SubType, Offset,  Size,
+nvs,      data, nvs,     0x9000,  0x5000,
+phy_init, data, phy,     0xe000,  0x1000,
+factory,  app,  factory, 0x10000, 0x1E0000,

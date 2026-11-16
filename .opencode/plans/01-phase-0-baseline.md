@@ -103,11 +103,21 @@ every later phase is measured against.
     (QVGA) / 20.6 (VGA) / 20.4 (SVGA) / 5.3 (XGA) / 6.2 (SXGA) at quality 12,
     VGA at q8 and q16, SD 0.48–0.51 MB/s, no brownout/panic/WDT.
     Still owed and asked for in one message to the owner
-    (`owner-decisions.md` D2): the **printed card label** (→ D5), the **GPIO4
+    (`owner-decisions.md` D2): the **printed SD speed class** (brand/capacity
+    now known — genuine SanDisk 8 GB, 2026-11-16), the **GPIO4
     lamp check under R1's Arduino `SD_MMC`**, and the optional **weak-supply
     drill**. The card's usable volume turned out to be only 5,216,256 B —
     see `docs/HARDWARE.md` §4.2 for the analysis and its Phase 3 / Phase 9
     consequences.
+    **Resolved 2026-11-16:** the card held a bootable Linux Mint image (the
+    5 MB FAT was its EFI partition, the rest ext4). Owner authorized the
+    rewrite; `tools/sd_format/` (new standalone tool — VisionCam itself
+    never formats, SPEC §2.3) wrote MBR + FAT32 across the whole card:
+    **8,051,032,064 B usable, 99 % of CSD**, `f_mkfs` 2,791 ms, self-test
+    OK, and VisionCam boot 12 re-mounted it with no coverage warning and a
+    green verdict line. Evidence: `docs/evidence/phase0-sd-format.log`,
+    `docs/evidence/phase0-smoke-boot-12-postformat.log`; TEST_PLAN row 0.13;
+    `docs/HARDWARE.md` §4.2.1.
 17. Record the tolerance (**D3**, suggested 10 %) as the acceptance bar for
     Phase 3 and Phase 9 parity tests (SPEC §11.10).
     **Recorded: 10 % (2026-11-15)** — `owner-decisions.md`, `docs/HARDWARE.md`
@@ -155,7 +165,8 @@ every later phase is measured against.
 ## Exit gate
 
 Flashes, captures JPEG, mounts SD, PSRAM reported, baseline recorded, licence
-option (D1) written into `docs/REFERENCE_ANALYSIS.md`.
+option (D1) written into `docs/REFERENCE_ANALYSIS.md`, and the storage
+geometry finding resolved (card reformatted MBR+FAT32, §4.2.1 — **2026-11-16**).
 
 ## Docs updated
 

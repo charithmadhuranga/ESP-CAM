@@ -312,9 +312,50 @@ re-verified when their phase begins.
 - **Consequences:** D5 cannot be closed from the driver alone (the printed
   label is still needed), and Phase 9's retention numbers cannot be sized on
   this card. VisionCam never auto-formats (SPEC §2.3), so any reformat is an
-  owner action.
+  owner action. — *Superseded 2026-11-16: the card was identified (genuine
+  SanDisk 8 GB, pre-flashed with Linux Mint) and reformatted by
+  `tools/sd_format/`; see the f_mkfs entry below.*
 - **Evidence:** `docs/evidence/phase0-d2-vc-fat-crosscheck-boot.log`;
   `docs/HARDWARE.md` §4.2.
+
+## Formatting a card without breaking the no-auto-format rule — 2026-11-16
+
+- **Studied:** pinned ESP-IDF 6.1.0 FatFs — `ff.c` `f_mkfs` /
+  `create_partition` (`N_SEC_TRACK`, system-ID selection, the
+  FAT16→FAT32 upgrade at `ff.c:6455-6456`), `ffconf.h`
+  (`FF_FS_EXFAT=0`, `FF_LBA64=0`, `FF_MULTI_PARTITION=1`, `FF_USE_MKFS=1`,
+  `FF_FS_NORTC=0` + `get_fattime()` from `diskio_sdmmc.c:108`),
+  `diskio_sdmmc.c` `CTRL_TRIM`, `sdmmc_cmd.c` `sdmmc_can_trim`; plus
+  `esp_vfs_fat.h` (the `sdcard_init` helper is *not* public — it lives in
+  `vfs_fat_internal.h`).
+- **What it does / limits / failure modes:** `f_mkfs` with `FM_ANY` and no
+  `FM_SFD` writes an MBR (single partition, start LBA 63, type chosen from
+  the volume size) and then the filesystem inside it; on an 8 GB card the
+  cluster count forces the FAT16→FAT32 upgrade, and with exFAT compiled out
+  the result is always a FAT32 volume any FAT driver can mount. The `CTRL_TRIM`
+  hints `f_mkfs` issues on the way are **unchecked** in `ff.c`, and
+  `sdmmc_can_trim()` rejects plain SD cards anyway, so they cannot abort a
+  format. `f_mkfs` needs a work buffer (4 KiB static here = internal SRAM =
+  DMA-safe).
+- **Decision:** **adopt** — but only inside `tools/sd_format/`, a standalone
+  one-shot utility flashed *instead of* the firmware, gated behind a typed
+  `ERASE` confirmation, and never linked into a release build. VisionCam
+  itself keeps `format_if_mount_failed = false` forever (SPEC §2.3, AGENTS
+  rule: never auto-format): the rule bans *automatic* formatting on mount,
+  not a human-gated maintenance tool. Manual card init uses the public APIs
+  (`sdmmc_host_init_slot` → `sdmmc_card_init` →
+  `ff_diskio_register_sdmmc(0, card)`) because the convenient helper is
+  internal; `sdmmc_card_t` embeds `card->host`, so host lifetime is
+  straightforward.
+- **Reason:** the owner's card shipped with a Linux Mint image whose layout
+  FATFS cannot use (`docs/HARDWARE.md` §4.2), and the owner instructed that
+  it be rewritten — the sanctioned path for a destructive operation is an
+  explicit tool with confirmation, not firmware behaviour.
+- **Evidence:** tool run on hardware 2026-11-16 —
+  `docs/evidence/phase0-sd-format.log` (`FORMAT OK`, MBR `0x0C` at LBA 63,
+  FAT32 8,051,032,064 B usable = 99 % of CSD, self-test OK, 2,791 ms),
+  re-mounted by VisionCam in
+  `docs/evidence/phase0-smoke-boot-12-postformat.log`.
 
 ## Deliberate divergences from R1 — do not "fix" these back
 

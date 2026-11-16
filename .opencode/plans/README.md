@@ -9,9 +9,9 @@ file for the phase you are working on, then the acceptance matrix in
 
 ---
 
-## Current status (2026-11-15)
+## Current status (2026-11-16)
 
-**Phase 0 — code and hardware complete; **D2 R1 baseline MEASURED** 2026-11-15.**
+**Phase 0 — code and hardware complete; **D2 R1 baseline MEASURED** 2026-11-15; **SD card reformatted** 2026-11-16.**
 
 - ✅ Done: tasks 0.1–0.4 (repo baseline, pinned toolchain + components,
   board profile, partition table verified on both build pipelines **and in
@@ -31,19 +31,27 @@ file for the phase you are working on, then the acceptance matrix in
   figures, no brownout/panic/WDT. Evidence:
   `docs/evidence/phase0-d2-r1-avi-stats-blocks.txt`,
   `docs/evidence/phase0-d2-r1-serial-run.txt`.
-- ⚠️ **Storage finding:** the card's CSD reports 8,053,063,680 B and its CID
-  calls it `SD16G`, but **both** FATFS stacks report a 5,216,256 B FAT12
-  volume with 1,349,632 B free — the formatted volume does not cover the card.
-  This blocks D5 and Phase 9 retention sizing; analysis and Phase 3
-  consequences (R1's stats block reports bytes it *attempted* to write):
-  `docs/HARDWARE.md` §4.2.
-- ⬜ Owed to the owner, asked in **one** message (`owner-decisions.md` D2):
-  the printed card label → **D5**, the **GPIO4 lamp check while R1** records
-  (R1 claims Arduino `SD_MMC` lights GPIO4; the IDF driver provably does
-  not), and the optional **weak-supply brownout drill**. Phase 0's own
-  phase-end stack-HWM/FPS row needs a running capture loop — **Phase 1+**.
-- Phase 0 exit gate is **green** (baseline recorded). Start Phase 1; the three
-  card-level questions are owner follow-ups, not firmware blockers.
+- ✅ **Storage finding RESOLVED 2026-11-16:** the card held a bootable
+  **Linux Mint** image — the "5 MB FAT volume" was its EFI partition, the
+  rest ext4 (invisible to FATFS). Owner authorized the rewrite; the new
+  standalone `tools/sd_format/` tool (flash → `format` → typed `ERASE` →
+  reflash) wrote **MBR + FAT32 across the whole card: 8,051,032,064 B
+  usable, 99 % of the CSD**. Post-format VisionCam boot 12: no coverage
+  warning, full verdict line green. Evidence:
+  `docs/evidence/phase0-sd-format.log`,
+  `docs/evidence/phase0-smoke-boot-12-postformat.log`; analysis:
+  `docs/HARDWARE.md` §4.2/§4.2.1, TEST_PLAN row 0.13. Phase 9 retention
+  sizing now has a card with room; R1's stats-block lesson from the
+  full-disk era stands (Phase 3 must check write return values).
+- ⬜ Owed to the owner, asked in **one** message: the **GPIO4 lamp check
+  while R1** records (R1 claims Arduino `SD_MMC` lights GPIO4; the IDF
+  driver provably does not), the **printed SD speed class** (brand and
+  8 GB capacity already confirmed → D5 mostly closed), and the optional
+  **weak-supply brownout drill**. Phase 0's own phase-end stack-HWM/FPS
+  row needs a running capture loop — **Phase 1+**.
+- Phase 0 exit gate is **green** (baseline recorded, storage resolved).
+  Start Phase 1; the remaining card-level questions are owner follow-ups,
+  not firmware blockers.
 
 ---
 
@@ -107,7 +115,7 @@ Full write-up and answer table: [`owner-decisions.md`](owner-decisions.md).
 | D2 | Run R1 unmodified on the board and record the baseline table | Phase 0 | ✅ **Run during Phase 0** (2026-11-15); performance claims stay `UNVERIFIED` until numbers are recorded |
 | D3 | FPS parity tolerance vs R1 baseline | Phase 0 | ✅ **10 %** (2026-11-15): VisionCam recording FPS must stay within 10 % of the R1 baseline at the same frame size, quality and card |
 | D4 | Declare on-device TFLM supported or unsupported after benchmark | Phase 6 | ⬜ pending — default: unsupported beyond the benchmarked model |
-| D5 | Deployment SD card model(s) for the long-run test | Phase 9 | ⬜ pending — default: owner's card, recorded in `docs/HARDWARE.md` |
+| D5 | Deployment SD card model(s) for the long-run test | Phase 9 | 🟡 **partially answered** — genuine **SanDisk 8 GB** (owner 2026-11-16; was pre-flashed with Linux Mint, reformatted MBR+FAT32 same day). Still owed: the printed speed class |
 
 ## Global engineering rules for every phase
 

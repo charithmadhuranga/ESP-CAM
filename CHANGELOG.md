@@ -8,6 +8,22 @@ tagged once Phase 9 release criteria pass.
 
 ### Added
 
+- **`tools/sd_format/` — one-shot SD card formatter (2026-11-16).** The
+  owner's 8 GB SanDisk card shipped with a bootable Linux Mint image (the
+  "5 MB FAT volume" of `docs/HARDWARE.md` §4.2 was its EFI partition; the
+  rest was ext4, invisible to FATFS). VisionCam never formats a card
+  (SPEC §2.3 keeps `format_if_mount_failed = false`), so the rewrite lives
+  in this standalone tool: flash it, run `format`, type `ERASE`
+  (case-sensitive, nothing is written before it), then flash the firmware
+  back. FatFs `f_mkfs` from the pinned ESP-IDF 6.1.0 wrote **MBR (one
+  partition, `0x0C`, start LBA 63) + FAT32 across the whole card:
+  8,051,032,064 B usable = 99 % of the CSD**, 32 KB clusters, format
+  2,791 ms, write/read/delete self-test OK. Evidence:
+  `docs/evidence/phase0-sd-format.log`; VisionCam reflash re-mounts it with
+  no coverage warning and a green verdict line
+  (`docs/evidence/phase0-smoke-boot-12-postformat.log`); TEST_PLAN row 0.13;
+  analysis in `docs/HARDWARE.md` §4.2.1 and the `docs/REFERENCE_ANALYSIS.md`
+  f_mkfs entry. Clean-room (D1): no R1 code.
 - **D2 R1 baseline — measured 2026-11-15.** R1 (`ESP32-CAM_MJPEG2SD`
   10.10.1 @ `abe84d8`) was flashed **unmodified** and driven over HTTP while a
   passive 115200 capture recorded its own stats block at every recording close.

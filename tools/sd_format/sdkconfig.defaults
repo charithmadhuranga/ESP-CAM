@@ -1,0 +1,16 @@
+# tools/sd_format sdkconfig defaults — keep this tool minimal.
+#
+# Partition table: same two-pipeline rule as the root project
+# (docs/adr/0001-toolchain.md) — IDF/CMake side lives here, PlatformIO side
+# is board_build.partitions in platformio.ini.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# The console handshake happens over UART0 at 115200; INFO lines from this
+# tool must actually be compiled in (same trap as the root project:
+# LOG_LOCAL_LEVEL = CONFIG_LOG_MAXIMUM_LEVEL).
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# app_main runs the MBR decode and the FatFs format/self-test with a few
+# hundred bytes of locals; give it headroom over the IDF default.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192

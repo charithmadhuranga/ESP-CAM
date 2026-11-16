@@ -231,6 +231,12 @@ claim may be marked verified without its matching row here.**
 
 ### 4.2 Storage finding — CSD 7.5 GiB vs a 5.0 MB FAT volume
 
+> **RESOLVED 2026-11-16 — see §4.2.1.** The card shipped with a bootable
+> Linux Mint image; the owner authorised a reformat and
+> `tools/sd_format/` rewrote it as MBR + FAT32 across the whole card
+> (8,051,032,064 B usable, 99 % of the CSD). The finding below is kept as
+> the record of what was observed and why.
+
 Three independent numbers from the **same card**, and only one of them is
 what a filesystem can use:
 
@@ -265,17 +271,57 @@ reformats it. Evidence:
 3. **Phase 9 retention planning cannot be sized on this card.** With 5 MB
    usable there is no room for retention at VGA; a working card is needed
    before the phase-exit numbers exist. VisionCam never auto-formats
-   (SPEC §2.3), so the reformat is an owner action.
+   (SPEC §2.3), so the reformat is an owner action. — *Superseded by
+   §4.2.1: the card was reformatted 2026-11-16 and now has room; the
+   "never auto-format" rule itself is unchanged.*
+
+### 4.2.1 Resolution — card reformatted MBR + FAT32 (2026-11-16)
+
+The owner identified the card: a genuine **SanDisk 8 GB** carrying a
+bootable **Linux Mint** image (owner, 2026-11-16), and instructed that it
+be rewritten with a suitable file system and partition table. That
+explained the §4.2 geometry exactly — the "5 MB FAT volume" was the
+image's **EFI system partition** (`/EFI`, `/boot`), and the rest of the
+card was an **ext4** root filesystem FATFS cannot see. The pre-format
+partition table read by the tool confirms it:
+
+```
+p2: type 0xEF (EFI system), start LBA 8452, 10240 sectors = 5242880 B
+p3: type 0x83 (Linux),      start LBA 6041600, 9687040 sectors = 4959764480 B
+```
+
+VisionCam itself **never formats a card** (SPEC §2.3 keeps
+`format_if_mount_failed = false`), so the rewrite was done by the
+standalone one-shot tool `tools/sd_format/` (flash, run `format`, type
+`ERASE`, reflash firmware — never part of a release build). FatFs
+`f_mkfs` (`FM_ANY`, `n_fat=2`) from the pinned ESP-IDF 6.1.0 wrote:
+
+| Layer | Result |
+|---|---|
+| Partition table | MBR, one entry: `p1: type 0x0C (FAT32 LBA), start LBA 63, 15,728,577 sectors = 8,053,031,424 B` |
+| Filesystem | FAT32, two FATs, 32,768 B clusters × 245,698 |
+| Usable volume | **8,051,032,064 B** (99 % of the 8,053,063,680 B CSD — no coverage warning) |
+
+- Format duration **2,791 ms**; post-format self-test (FatFs layer)
+  wrote, read back and deleted `VCSDFMT.TXT` — OK.
+- Evidence: `docs/evidence/phase0-sd-format.log` (pre-format `info` with
+  the Mint table, typed `ERASE`, `FORMAT OK`, post-format `info`).
+- VisionCam reflash after the format: `FAT volume: 8051032064 B usable
+  … CSD capacity 8053063680 B`, no coverage warning, `sd: OK`, full
+  verdict line green, single `POWERON_RESET` —
+  `docs/evidence/phase0-smoke-boot-12-postformat.log`.
+- The Mint image is **destroyed** (owner instruction); recovery means
+  re-imaging the card on a PC.
 
 | Item | Value | Status |
 |---|---|---|
 | SD card identity as seen by the driver | `Name: SD16G`, `Type: SDHC`, `Size: 7680MB`, CSD v2, 15,728,640 sectors | measured 2026-11-15 (smoke boot 4) |
-| SD card printed label / class | — | **pending — D5** (read the print on the card: brand, capacity, class) |
-| FAT volume usable on this card | **5,216,256 B (4.98 MiB), 1,349,632 B free** — see §4.2 | measured 2026-11-15 (two FATFS implementations agree) |
+| SD card printed label / class | **SanDisk, genuine, 8 GB** — printed speed class still unread | brand/capacity owner-confirmed 2026-11-16 (D5); class pending |
+| FAT volume usable on this card | **8,051,032,064 B (7.50 GiB), 8,050,999,296 B free, 32 KB clusters** — reformatted MBR+FAT32, see §4.2.1 | measured 2026-11-16 (`phase0-sd-format.log`, re-confirmed by boot 12) |
 | PSRAM size | **8,388,608 B fitted; 4,192,024 B in the free heap pool, largest block 4,128,768 B; 4 MB mapped** | measured 2026-11-15 |
 | GPIO4 lamp with SD mounted | **OFF for the whole boot** — the ESP-IDF SDMMC 1-bit driver does *not* light the lamp (owner observed a full boot, 2026-11-15) | verified 2026-11-15 (VisionCam build) |
 | GPIO4 lamp with SD mounted | **not yet observed under R1/Arduino `SD_MMC`.** R1's config keeps the lamp off (`lampMode=0`, `lampLevel=0`), but R1's SD library may light GPIO4 during mount — exactly what its own workaround comment claims (`utilsFS.cpp:81-84`). Needs the owner's eyes (§3.5 item 4) | ⬜ pending owner observation |
-| Brownout symptom observed (VisionCam build) | **none** — single `POWERON_RESET`, no `BROWNOUT`/panic/WDT across the full smoke run incl. 3 s of Wi-Fi beacon TX | verified 2026-11-15 (smoke boot 11) |
+| Brownout symptom observed (VisionCam build) | **none** — single `POWERON_RESET`, no `BROWNOUT`/panic/WDT across the full smoke run incl. 3 s of Wi-Fi beacon TX | verified 2026-11-15 (smoke boot 11); still none on boot 12 (2026-11-16) |
 | Brownout / reset behaviour (R1 run) | **none in the whole D2 run** — 8 recordings, HTTP + serial traffic, `printResetReason: Power on reset`, zero `BROWNOUT`/panic/WDT lines | verified for this run 2026-11-15; weak-supply drill still owed |
 | D3 FPS tolerance agreed | **10 %** | agreed 2026-11-15 |
 
