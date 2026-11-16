@@ -232,12 +232,16 @@ the strength of SPEC's own text (AGENTS rule 26).
 | Motion cadence → **adopt/adapt** | verified | see Motion entry above (R1 `mjpeg2sd.cpp`, `motionDetect.cpp` line evidence) |
 
 | Storage / free-space → **reject** R1's deletion loop | verified 2026-11-15 (source + hardware) | R1 `utilsFS.cpp:194-215` `checkFreeStorage`, called from `mjpeg2sd.cpp:374`; see the storage entry below |
+| HTTP server config + MJPEG stream → **adapt** | verified 2026-11-16 | R1 `webServer.cpp:682-775` (`lru_purge`, 7 sockets, 4 KB stack), `streamServer.cpp:1-240` (framing, drop policy, stall abort); R2 README stream/capture handlers — see the Phase 1 streaming entry below |
+| Wi-Fi lifecycle → **adapt** | verified 2026-11-16 | R1 `wifiEth.cpp:330-520, 640-720` (manual lifecycle, 5 s bound, ping-based link check) — see the Phase 1 Wi-Fi entry below |
+| NULL-frame recovery → **adopt/adapt** | verified 2026-11-16 | R1 `mjpeg2sd.cpp:385-460, 588-600` (2 s gate, 10 attempts, 10 ms yield) + SPEC §9.1 — see the Phase 1 frame entry below |
+| Logging / crash loop → **adopt** | verified 2026-11-16 | R1 `utilsLog.cpp:41-80, 755-775, 838-915` (RTC no-init ring, magic counter, task monitor) — see the Phase 1 logging entry below |
+| Config store → **reject** mechanism | verified 2026-11-16 | R1 `prefs.cpp` (SD key/value file + Preferences mirror, save+reboot) vs SPEC §7 NVS-authoritative model — see the Phase 1 config entry below |
 
 Rows **not** yet verified first-hand (still as-spec): AVI container layout
 (partially — the write path was studied, the header byte table was not),
-NULL-frame recovery, playback timing, timelapse, upload, WebDAV, HA discovery,
-config store, logging, and every "defer/out of scope" row. They are
-re-verified when their phase begins.
+playback timing, timelapse, upload, WebDAV, HA discovery, and every
+"defer/out of scope" row. They are re-verified when their phase begins.
 
 ## Storage and `checkFreeStorage` — 2026-11-15 (D2 run, source + hardware)
 
@@ -361,6 +365,163 @@ re-verified when their phase begins.
   FAT32 8,051,032,064 B usable = 99 % of CSD, self-test OK, 2,791 ms),
   re-mounted by VisionCam in
   `docs/evidence/phase0-smoke-boot-12-postformat.log`.
+
+## HTTP server and MJPEG streaming — 2026-11-16 (Phase 1)
+
+- **Studied:** R1 `webServer.cpp:682-775` (server config + URI table),
+  `streamServer.cpp:1-240` (`showStream`), `appGlobals.h:54-96` (budget
+  constants) @ abe84d8; R2 README "JPEG HTTP Stream" / "JPEG HTTP Capture"
+  examples @ b3f7fe8.
+- **What it does / limits / failure modes:** R1 runs a single
+  `esp_http_server` with `lru_purge_enable = true`, `max_open_sockets =
+  HTTP_CLIENTS(3) + MAX_STREAMS(4) = 7`, and a 4 KB server stack on ESP32
+  (7 KB on S3) — each sustained response (stream/playback/download) owns one
+  of the 4 stream slots, so the socket count is a hard concurrency limit, not
+  a tuning knob. The stream is `multipart/x-mixed-replace` with a fixed
+  boundary; the capture task `memcpy`s each JPEG into a per-stream buffer
+  **only if the consumer has cleared the previous one** (binary semaphore),
+  otherwise that frame is skipped — that skip *is* R1's drop policy for slow
+  consumers. The handler sends boundary + part header (`Content-Length`) +
+  payload as chunks, sets no-cache headers, detects a gone client either from
+  the send error or a `MSG_PEEK` probe on the socket, and aborts after 10
+  consecutive frame timeouts (~12 s). Two failure modes R1 had to fix by
+  hand: on exit the producer must be unblocked (buffer size cleared) or it
+  deadlocks waiting for a consumer that will never return; and a stalled
+  consumer must be logged rate-limited or it floods the log. R2's documented
+  handler shape: set the multipart content type, then loop
+  `fb_get → boundary → part header → payload → fb_return` with the return on
+  **every** exit path, and log per-frame size/ms/fps with `esp_timer`;
+  the capture handler is one `fb_get` + `image/jpeg` send + return.
+- **Decision:** **adapt** the server configuration and framing; **adopt**
+  R2's handler shape as the reference; **reject** two R1 behaviours.
+- **Reason:** LRU purge, the documented socket budget, 4 KB stack, no-cache
+  headers, disconnect detection and the stall abort are exactly what SPEC
+  §6.0 asks for. But AGENTS rule 9 forbids any handler calling
+  `esp_camera_fb_get`, so VisionCam's handler consumes **frame leases** from
+  the frame manager instead of R1's memcpy-into-shared-buffer flow.
+- **Divergence from R1:** (a) no `Access-Control-Allow-Origin: *` — a
+  LAN-only device does not need wildcard CORS (SPEC §10); (b) the stream is
+  cookie-authenticated (SPEC §6.3), never open, unlike R1 where Basic auth
+  may be empty; (c) frame delivery is refcounted leases with PSRAM copies for
+  slow consumers, not skip-if-busy memcpy.
+- **Evidence:** source lines cited above; on-hardware behaviour
+  `UNVERIFIED` until the Phase 1 stream test.
+
+## Wi-Fi connection lifecycle — 2026-11-16 (Phase 1)
+
+- **Studied:** R1 `wifiEth.cpp:330-520` (`startWifi`), `:640-720`
+  (ping-based link monitoring) @ abe84d8.
+- **What it does / limits / failure modes:** R1 manages the lifecycle
+  manually — Arduino auto-reconnect is disabled, an event group carries
+  `GOT_IP` / `DISCONNECTED` bits, each attempt is bounded to 5 s, and a
+  failure logs status/RSSI/channel plus a diagnostic scan instead of
+  blocking. Association alone is not trusted: a background `esp_ping`
+  session pings the gateway every 30 s, because a station can stay
+  *associated* to a router that no longer passes traffic; a ping timeout
+  restarts the network stack. Modem sleep is on, TX 15 dBm, HT20 on both
+  interfaces, hostname set for DHCP, `persistent(false)` to stop credential
+  churn in flash. The crash-loop counter is cleared only after a real
+  connection — a device that never reaches the network therefore keeps its
+  "Crash loop detected" warning.
+- **Decision:** **adapt** — same manual lifecycle and bounded attempts,
+  re-implemented on `esp_netif`/`esp_event`/`esp_wifi` per SPEC §1A.10.
+- **Reason:** VisionCam must work with **no internet** and no AP fallback in
+  the default path; the plan specifies station mode with exponential backoff
+  + jitter. Adopting the "association ≠ connected" principle: state is
+  `Connected` only after a real `GOT_IP` (DESIGN principle), and RSSI is
+  exposed for the status page.
+- **Divergence from R1:** no AP+STA captive-portal provisioning flow in
+  Phase 1 (credentials arrive via the `tools/nvs_provision` helper, same as
+  Phase 0); no gateway-ping monitor yet — disconnect events + backoff first,
+  link-health probing deferred to a later phase if field evidence shows
+  associated-but-dead links; crash-loop clears when **core services** are up
+  (camera + HTTP), not when Wi-Fi connects, because local operation is the
+  product promise.
+- **Evidence:** source lines cited; on-hardware behaviour `UNVERIFIED`
+  until the Phase 1 Wi-Fi test.
+
+## Frame acquisition cadence and NULL-frame recovery — 2026-11-16 (Phase 1)
+
+- **Studied:** R1 `mjpeg2sd.cpp:385-460` (`processFrame`), `:588-600`
+  (`captureTask`) @ abe84d8; R2 `esp_camera_fb_get/return` contract @ b3f7fe8.
+- **What it does / limits / failure modes:** one capture task runs at a
+  fixed period with `vTaskDelayUntil` (it catches up after a long cycle
+  rather than drifting), and `processFrame()` is the only place that takes a
+  frame. NULL recovery is time-gated: at most one attempt per 2 s, at most
+  10 consecutive attempts, each failure yields 10 ms so the task watchdog is
+  never starved, recovery is a sensor reset plus reapplying the frame size,
+  and the counters reset the moment a valid frame arrives. Frames with
+  `len == 0` or larger than the PSRAM buffer maximum are rejected and counted
+  rather than passed downstream. When the attempt limit is hit R1 only logs
+  "requires hard reset" — consumers keep running against a dead camera,
+  which is exactly the gap SPEC §9.1 closes by raising `CameraFailed` and
+  stopping consumers cleanly.
+- **Decision:** **adopt** the cadence, the recovery ladder and the
+  invalid-frame rejection; **adapt** the terminal failure path per SPEC §9.1
+  (event + clean shutdown instead of an eternal log line), and the ladder
+  gains the PWDN power-cycle + full re-init step (R1 only resets the
+  sensor).
+- **Reason:** SPEC §9.1 is explicit and derived from this code; the PWDN
+  rung is already hardware-verified in Phase 0 (`attempts=2 -> OK`).
+- **Divergence from R1:** terminal `CameraFailed` event with consumers
+  stopped and state exposed; per-attempt recovery cost bounded (2 s gate)
+  stays identical.
+- **Evidence:** source lines cited; Phase 0 proved the PWDN re-init rung on
+  hardware; the full ladder `UNVERIFIED` until the Phase 1 camera test.
+
+## Logging, RTC ring log and crash-loop detection — 2026-11-16 (Phase 1)
+
+- **Studied:** R1 `utilsLog.cpp:41-80` (RTC buffer + counters),
+  `:755-775` (crash-loop logic), `:838-915` (task monitor) @ abe84d8.
+- **What it does / limits / failure modes:** R1 keeps a ~6.6 KB message log
+  in RTC slow memory with `RTC_NOINIT_ATTR` (the no-init attribute is what
+  lets it survive a soft reset — RTC memory is only cleared on power-on),
+  plus a `crashLoop` counter with a magic value written at every boot and
+  cleared only when the device reaches a healthy state; if the magic is
+  already present at boot, the device has rebooted before reaching health
+  and it prints "Crash loop detected, check log (brownout)", using the
+  reset reason to add the brownout hint. Panic backtrace addresses and the
+  offending task are also parked in RTC memory for post-mortem. A task
+  monitor periodically samples `vTaskGetSystemState` for CPU% and stack
+  high-water marks.
+- **Decision:** **adopt** all four concepts with a fresh implementation:
+  a bounded RTC ring log, the magic-counter crash-loop detector (health
+  point redefined for VisionCam), the brownout hint from `esp_reset_reason()`,
+  and stack watermarks in the resource monitor.
+- **Reason:** SPEC §8.4.1 asks for exactly this; R1's design is behavioural
+  and the implementation will be written from the description above.
+- **Divergence from R1:** health point = camera running + HTTP serving
+  (Wi-Fi optional); log mirrored to serial in Phase 1 (SD/WS mirroring
+  deferred — SD logging slows recording, R1's own lesson).
+- **Evidence:** source lines cited; hardware `UNVERIFIED` until the Phase 1
+  crash/restart test.
+
+## Configuration store — 2026-11-16 (Phase 1)
+
+- **Studied:** R1 `prefs.cpp:1-60, 135-230, 700-730, 846-866` @ abe84d8
+  (plus the reference finding already recorded in SPEC §7).
+- **What it does / limits / failure modes:** R1's settings live in a key/
+  value file on SD loaded into a PSRAM vector, mirrored with `Preferences`
+  for the few critical keys (SSID, Wi-Fi password, auth password); a version
+  key detects obsolete files; secrets are masked with a filler in status
+  output but the model needs "Save + reboot" for most changes because
+  runtime state is a forest of globals updated from the vector. Failure
+  modes: the SD file is the source of truth (removable media can be edited
+  or absent), and split-brain between file and NVS needs reconciliation
+  logic (`loadConfig` prefers one then falls back).
+- **Decision:** **adopt** the lessons, **reject** the mechanism: NVS is the
+  single authoritative store, versioned with explicit migration, secrets in
+  separate keys never returned by GET (booleans like
+  `password_configured` instead), and camera/network settings apply live
+  without reboot (SPEC §7's update process: parse → validate → candidate →
+  persist → apply → roll back on failure → return sanitized config).
+- **Reason:** SPEC §7 mandates it; R1's file-on-SD model conflicts with
+  AGENTS rule 17 (no secrets in logs/responses) and the local-first
+  promise.
+- **Divergence from R1:** everything above; R1's masking trick (`FILLSTAR`)
+  is kept only as a reminder that GET responses must never echo secrets.
+- **Evidence:** source lines cited; hardware `UNVERIFIED` until the Phase 1
+  settings-persistence test.
 
 ## Deliberate divergences from R1 — do not "fix" these back
 
