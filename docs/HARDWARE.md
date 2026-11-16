@@ -14,10 +14,10 @@ serial log or tool output to back it (AGENTS rule 26).
 | Decision | Answer | Date |
 |---|---|---|
 | D1 Licence | **A — clean-room**; R1 never copied or linked | 2026-11-15 |
-| D2 R1 baseline | **Run during Phase 0** — **executed 2026-11-15**: R1 flashed unmodified, driven over HTTP, FPS/heap/SD-speed/heap rows in §4. Remaining: the owner's lamp observation, the printed card label (D5) and the weak-supply drill (§3.5 items 4–6) | 2026-11-15 |
+| D2 R1 baseline | **Run during Phase 0** — **executed 2026-11-15**: R1 flashed unmodified, driven over HTTP, FPS/heap/SD-speed/heap rows in §4. All three follow-ups **closed 2026-11-16**: GPIO4 lamp observed under R1 (§4), D5 answered (SanDisk 8 GB, no class marking), weak-supply drill skipped by owner decision | 2026-11-15 |
 | D3 FPS tolerance | **10 %** | 2026-11-15 |
 | D4 TFLM | pending (needed by Phase 6) | — |
-| D5 SD card model | pending (needed by Phase 9) | — |
+| D5 SD card model | **genuine SanDisk 8 GB, no speed-class marking visible** (owner 2026-11-16); reformatted MBR+FAT32 same day (§4.2.1) | 2026-11-16 |
 
 ---
 
@@ -157,6 +157,9 @@ use for VisionCam's parity test.
 | R1 joins the owner's LAN (measured over HTTP from this PC) | ✅ verified | 2026-11-15 | `Wifi Station IP, use 'http://192.168.43.171'`, `/status` HTTP 200 (procedure 3.7) |
 | Baseline table (section 4) filled | ✅ **verified** | 2026-11-15 | 8 recording runs; `docs/evidence/phase0-d2-r1-avi-stats-blocks.txt` |
 | No brownout / panic / WDT during the whole R1 run | ✅ verified | 2026-11-15 | `grep` for `BROWNOUT|panic|WDT|rst:0x` over `phase0-d2-r1-serial-run.txt` → 0 hits; `printResetReason: Power on reset` |
+| GPIO4/lamp observed under R1 (§3.5 item 4) | ✅ **verified — owner observed** | 2026-11-16 | lamp flashed in the boot window **and** repeated blink afterwards; R1 timeline: SD mount `00:00:00.572`, lamp feature init `00:00:01.277` (`setupLamp`) — see §4 lamp rows; `docs/evidence/phase0-d2-r1-lamp-run.log` |
+| Exact SD card model (§3.5 item 6) | ✅ **verified** | 2026-11-16 | owner: genuine **SanDisk 8 GB**, **no speed-class marking visible** → D5 recorded as such |
+| Weak-supply brownout drill (§3.5 item 5) | ⏭️ **skipped — owner decision** | 2026-11-16 | owner chose to skip; normal-supply behaviour verified brownout-free on both builds (boots 10–12, full D2 run) |
 
 ### 3.7 Provisioning R1 onto the LAN (how section 4 was measured)
 
@@ -316,13 +319,13 @@ standalone one-shot tool `tools/sd_format/` (flash, run `format`, type
 | Item | Value | Status |
 |---|---|---|
 | SD card identity as seen by the driver | `Name: SD16G`, `Type: SDHC`, `Size: 7680MB`, CSD v2, 15,728,640 sectors | measured 2026-11-15 (smoke boot 4) |
-| SD card printed label / class | **SanDisk, genuine, 8 GB** — printed speed class still unread | brand/capacity owner-confirmed 2026-11-16 (D5); class pending |
+| SD card printed label / class | **SanDisk, genuine, 8 GB; no speed-class marking visible** on the card | owner-read 2026-11-16 → **D5 closed** (class recorded as "no marking"; Phase 9 measures the card's real throughput anyway) |
 | FAT volume usable on this card | **8,051,032,064 B (7.50 GiB), 8,050,999,296 B free, 32 KB clusters** — reformatted MBR+FAT32, see §4.2.1 | measured 2026-11-16 (`phase0-sd-format.log`, re-confirmed by boot 12) |
 | PSRAM size | **8,388,608 B fitted; 4,192,024 B in the free heap pool, largest block 4,128,768 B; 4 MB mapped** | measured 2026-11-15 |
 | GPIO4 lamp with SD mounted | **OFF for the whole boot** — the ESP-IDF SDMMC 1-bit driver does *not* light the lamp (owner observed a full boot, 2026-11-15) | verified 2026-11-15 (VisionCam build) |
-| GPIO4 lamp with SD mounted | **not yet observed under R1/Arduino `SD_MMC`.** R1's config keeps the lamp off (`lampMode=0`, `lampLevel=0`), but R1's SD library may light GPIO4 during mount — exactly what its own workaround comment claims (`utilsFS.cpp:81-84`). Needs the owner's eyes (§3.5 item 4) | ⬜ pending owner observation |
+| GPIO4 lamp under R1 / Arduino `SD_MMC` | **Owner observed 2026-11-16:** a flash in the boot window **and** a repeating blink afterwards. R1's own timeline separates the two: SD mounts at `00:00:00.572`, but R1's lamp feature does not exist until `setupLamp` at `00:00:01.277` — and `setLamp()` then forces Medium brightness whenever `!appSetupDone`, so the later repeating blink is R1's **status pattern** (setup incomplete: Wi-Fi association failed, `Need to connect to AP to setup router`), **not** SD activity. The early flash is consistent with Arduino `SD_MMC` initialising pin 4 during mount — exactly R1's own workaround comment (`utilsFS.cpp:81-84`) — but the two events are only 0.7 s apart, so vision alone cannot fully isolate them. What **is** proven on hardware: VisionCam's ESP-IDF driver leaves the lamp **OFF for the whole boot** (2026-11-15) while R1 lights it during boot — the stacks differ, and VisionCam's post-mount drive-low stays as belt-and-braces | ✅ observed 2026-11-16 | `docs/evidence/phase0-d2-r1-lamp-run.log` (mount + `setupLamp` timestamps) |
 | Brownout symptom observed (VisionCam build) | **none** — single `POWERON_RESET`, no `BROWNOUT`/panic/WDT across the full smoke run incl. 3 s of Wi-Fi beacon TX | verified 2026-11-15 (smoke boot 11); still none on boot 12 (2026-11-16) |
-| Brownout / reset behaviour (R1 run) | **none in the whole D2 run** — 8 recordings, HTTP + serial traffic, `printResetReason: Power on reset`, zero `BROWNOUT`/panic/WDT lines | verified for this run 2026-11-15; weak-supply drill still owed |
+| Brownout / reset behaviour (R1 run) | **none in the whole D2 run** — 8 recordings, HTTP + serial traffic, `printResetReason: Power on reset`, zero `BROWNOUT`/panic/WDT lines | verified 2026-11-15; weak-supply drill **skipped by owner decision 2026-11-16** (§3.6) |
 | D3 FPS tolerance agreed | **10 %** | agreed 2026-11-15 |
 
 ---

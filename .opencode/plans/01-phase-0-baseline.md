@@ -150,11 +150,13 @@ every later phase is measured against.
 - [x] Camera and SD operate together; stable power under Wi-Fi TX + camera
       (`step 14 result: OK`, 2 networks heard, 3 s beacon TX).
 - [x] Brownout/reset behaviour recorded — **this run**: 1 boot,
-      `POWERON_RESET`, none observed. Weak-supply drill still owed with D2.
+      `POWERON_RESET`, none observed. Weak-supply drill **skipped by owner
+      decision 2026-11-16** (`docs/HARDWARE.md` §3.6).
 - [x] R1 baseline table complete — `docs/HARDWARE.md` §4 filled 2026-11-15
       from 8 measured runs (`docs/evidence/phase0-d2-r1-avi-stats-blocks.txt`).
-      Three §3.5 sub-items need the owner's eyes/hands and are asked for in
-      one message: card label → D5, R1 lamp check, weak-supply drill.
+      All three §3.5 sub-items **closed 2026-11-16**: D5 answered (genuine
+      SanDisk 8 GB, no class marking), R1 lamp check observed
+      (`phase0-d2-r1-lamp-run.log`), weak-supply drill skipped by owner.
 - [x] Phase 0 exit-gate smoke + `pio run` green after the D2 firmware
       touch-up: VisionCam reflashed and re-verified
       (`docs/evidence/phase0-d2-vc-fat-crosscheck-boot.log` —

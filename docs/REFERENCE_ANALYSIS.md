@@ -70,7 +70,12 @@ revisited before any R1 code is reused.
   hardware confirmation **now done for the IDF driver, 2026-11-15: the lamp
   stayed OFF for the whole boot** — the ESP-IDF SDMMC 1-bit driver does not
   light GPIO4, so R1's workaround is Arduino-`SD_MMC`-specific and VisionCam's
-  post-mount drive-low is belt-and-braces (`docs/HARDWARE.md` §5, step 13).
+  post-mount drive-low is belt-and-braces. **R1 side observed 2026-11-16:**
+  owner saw a boot-window flash under R1 (consistent with `SD_MMC`
+  initialising pin 4 at mount `00:00:00.572`, before R1's own lamp feature
+  exists at `00:00:01.277`) plus a repeating blink afterwards, which the
+  source timeline identifies as R1's status pattern while setup is
+  incomplete — `docs/HARDWARE.md` §4, `docs/evidence/phase0-d2-r1-lamp-run.log`.
 
 ## SDMMC mount — two divergences from SPEC §2.3's snippet — 2026-11-15
 

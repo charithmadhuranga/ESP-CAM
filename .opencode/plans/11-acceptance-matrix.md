@@ -19,7 +19,7 @@ Maintain the live status in `docs/TEST_PLAN.md`; this file is the map.
 | Camera and SD operate together | 0 | `visioncam-hardware-validation` | **RUN PASS** 2026-11-15 (`step 14 result: OK`, Wi-Fi off and on) |
 | Flash LED behaviour documented with SD mounted | 0 | `visioncam-hardware-validation` | **RUN PASS** 2026-11-15 (OFF for the whole boot — IDF driver does not light it) |
 | Stable power under Wi-Fi TX and camera load | 0 | `visioncam-hardware-validation` | **RUN PASS** 2026-11-15 (3 s beacon TX + scan + camera/SD cycles, no reset) |
-| Brownout behavior recorded | 0 | `visioncam-hardware-validation` | **RUN PASS** 2026-11-15 for the normal supply (1 boot, none observed); weak-supply drill still owed with **D2** |
+| Brownout behavior recorded | 0 | `visioncam-hardware-validation` | **RUN PASS** 2026-11-15 for the normal supply (1 boot, none observed); weak-supply drill **skipped by owner decision 2026-11-16** (recorded in `docs/HARDWARE.md` §3.6) |
 | SD card usable volume covers the card (or the gap is explained) | 0 | `visioncam-hardware-validation` | **RUN PASS** 2026-11-16 — gap explained (Linux Mint image) and resolved: `tools/sd_format/` wrote MBR+FAT32, 8,051,032,064 B usable = 99 % of CSD; VisionCam boot 12 mounts it with no warning (`docs/evidence/phase0-sd-format.log`, `phase0-smoke-boot-12-postformat.log`; TEST_PLAN 0.13) |
 
 ## 11.2 Authentication → Phase 1
@@ -133,7 +133,7 @@ Maintain the live status in `docs/TEST_PLAN.md`; this file is the map.
 
 | Item | Phase | Skill | Status |
 |---|---|---|---|
-| R1 baseline recorded on owner's board and card | 0 | `visioncam-reference-first` | **RUN PASS** 2026-11-15 (8 runs: QVGA 30.8, VGA 20.6, SVGA 20.4, XGA 5.3, SXGA 6.2 FPS at q12, VGA at q8/q16; SD 0.48–0.51 MB/s; `docs/HARDWARE.md` §4). Owner items remaining: printed SD **speed class** (brand/capacity known → D5 mostly closed), R1/Arduino `SD_MMC` lamp check, weak-supply drill |
+| R1 baseline recorded on owner's board and card | 0 | `visioncam-reference-first` | **RUN PASS** 2026-11-15 (8 runs: QVGA 30.8, VGA 20.6, SVGA 20.4, XGA 5.3, SXGA 6.2 FPS at q12, VGA at q8/q16; SD 0.48–0.51 MB/s; `docs/HARDWARE.md` §4). All owner follow-ups closed 2026-11-16: GPIO4 lamp observed under R1, D5 = SanDisk 8 GB (no class marking), weak-supply drill skipped by owner decision |
 | VisionCam recording FPS at VGA and QVGA within tolerance | 3, 9 | `visioncam-hardware-validation` | TODO |
 | GPIO4 lamp stays off with SD mounted | 0, 9 | `visioncam-hardware-validation` | TODO |
 | Camera init retry + PWDN power-cycle verified by forced failure | 0, 1 | `visioncam-hardware-validation` | TODO |

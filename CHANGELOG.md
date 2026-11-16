@@ -8,6 +8,17 @@ tagged once Phase 9 release criteria pass.
 
 ### Added
 
+- **Phase 0 closed — all owner questions answered (2026-11-16).** The three
+  D2 follow-ups are recorded with evidence: **GPIO4 lamp under R1 observed**
+  (boot-window flash consistent with Arduino `SD_MMC` initialising pin 4 at
+  mount `00:00:00.572` — before R1's own lamp feature exists at `00:00:01.277`,
+  so the later repeating blink is R1's status pattern, not SD activity; the
+  ESP-IDF driver still provably leaves the lamp off for the whole boot —
+  `docs/evidence/phase0-d2-r1-lamp-run.log`); **D5 answered** (genuine
+  SanDisk 8 GB, no speed-class marking visible; card reformatted the same
+  day); **weak-supply brownout drill skipped by owner decision**
+  (normal-supply behaviour verified brownout-free). `docs/HARDWARE.md` §1/§3.6/§4,
+  `docs/TEST_PLAN.md` 0.11, plans updated.
 - **`tools/sd_format/` — one-shot SD card formatter (2026-11-16).** The
   owner's 8 GB SanDisk card shipped with a bootable Linux Mint image (the
   "5 MB FAT volume" of `docs/HARDWARE.md` §4.2 was its EFI partition; the
@@ -141,12 +152,11 @@ tagged once Phase 9 release criteria pass.
   brownout/panic/WDT. Verdict line: `camera: OK | sd: OK | psram: OK |
   wifi(step14): OK | forced-retry: OK`. Recorded in `docs/HARDWARE.md` §5.
 - **D2 R1 baseline recorded** — measurements are **not** `UNVERIFIED` any more
-  (`docs/HARDWARE.md` §4). Three items are still owed **to the owner's eyes or
-  hands** and are asked for in one message (`owner-decisions.md` D2): the
-  printed SD card label (→ D5), the GPIO4 lamp check **while R1 records** (R1
-  asserts Arduino's `SD_MMC` lights GPIO4 on mount; the ESP-IDF driver
-  measurably does not — the sharpest difference between the two stacks), and
-  the optional weak-supply brownout drill. Phase 0's own phase-end
+  (`docs/HARDWARE.md` §4). The three items owed to the owner's eyes/hands
+  (`owner-decisions.md` D2) were asked for in one message and are **all closed
+  2026-11-16** (see the Phase 0 closure entry above): D5 answered (genuine
+  SanDisk 8 GB, no class marking), GPIO4 lamp observed under R1, weak-supply
+  drill skipped by owner decision. Phase 0's own phase-end
   stack-HWM/FPS row stays `UNVERIFIED` until a capture loop exists (Phase 1+).
 - **Two R1 behaviours recorded as rejected** (`docs/REFERENCE_ANALYSIS.md`):
   `checkFreeStorage()`'s oldest-folder deletion loop, which on a volume

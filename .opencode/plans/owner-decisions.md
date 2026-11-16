@@ -43,17 +43,21 @@ this workstation while R1's own serial stats were captured. Results in
 | Free heap while recording | 72,024–75,072 B; largest block 40,948–42,996 B; lifetime min 53,504 B; pSRAM free 914,892 B |
 | Brownout/reset behaviour | none — 8 recordings + Wi-Fi TX, zero `BROWNOUT`/panic/WDT |
 
-**Three items still need the owner's eyes or hands** (§3.5 items 4–6), and
-they are asked for in one message rather than three:
+**All three items are now closed (2026-11-16)** — they were asked for in
+one message and answered together:
 
-1. Watch the **GPIO4 lamp** during an R1 recording — R1's own comment claims
-   Arduino's `SD_MMC` lights the pin on mount even in 1-line mode
-   (`utilsFS.cpp:81-84`), while the ESP-IDF driver measurably does not. The
-   lamp is the sharpest difference between the two storage stacks.
-2. Read the **printed SD speed class** — brand and capacity are already
-   known (genuine SanDisk 8 GB, owner 2026-11-16 → D5 mostly closed), but
-   the class (Class 4/10, U1) printed on the card is still unread.
-3. Optionally run the **weak-supply brownout drill** on R1.
+1. **GPIO4 lamp under R1:** owner observed a flash in the boot window and a
+   repeating blink afterwards. R1's source timeline separates the two —
+   SD mounts at `00:00:00.572`, R1's lamp feature starts at
+   `00:00:01.277` and forces brightness while setup is incomplete — so the
+   later blink is R1's status pattern, and the early flash matches its
+   `SD_MMC` pin-4 workaround comment (`utilsFS.cpp:81-84`). VisionCam's
+   IDF driver leaves the lamp off for the whole boot. Recorded in
+   `docs/HARDWARE.md` §4; evidence `docs/evidence/phase0-d2-r1-lamp-run.log`.
+2. **Printed SD speed class:** **no class marking visible** on the card →
+   D5 recorded as genuine SanDisk 8 GB, class "no marking".
+3. **Weak-supply brownout drill:** **skipped by owner decision** —
+   normal-supply behaviour is verified brownout-free on both builds.
 
 **Storage surprise — RESOLVED 2026-11-16:** the card's CSD reports
 8,053,063,680 B and its CID calls it `SD16G`, but both FATFS implementations
@@ -97,4 +101,4 @@ no-name "Class 6" card about 3x slower than a genuine Sandisk 4 GB Class 2).
 | D2 | R1 baseline run | **Run during Phase 0.** Owner flashes R1 unmodified and records the baseline table; procedure is Phase 0 task 1. | 2026-11-15 |
 | D3 | FPS tolerance | **10 %.** Acceptance bar for Phase 3 / Phase 9 parity tests (SPEC §11.10). | 2026-11-15 |
 | D4 | TFLM supported / unsupported | *(pending)* | |
-| D5 | SD card model | **Partially answered:** genuine **SanDisk 8 GB** (owner, 2026-11-16) — was pre-flashed with Linux Mint, reformatted MBR+FAT32 by `tools/sd_format/` same day (§4.2.1). **Still owed:** the printed speed class (e.g. Class 4/10, U1), read off the card | 2026-11-16 |
+| D5 | SD card model | **Answered: genuine SanDisk 8 GB, no speed-class marking visible** (owner 2026-11-16). Was pre-flashed with Linux Mint; reformatted MBR+FAT32 by `tools/sd_format/` same day (`docs/HARDWARE.md` §4.2.1). Class recorded as "no marking" — Phase 9 measures real throughput instead | 2026-11-16 |
