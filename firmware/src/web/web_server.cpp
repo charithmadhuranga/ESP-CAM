@@ -30,6 +30,7 @@
 #include "network_manager.h"
 #include "resource_monitor.h"
 #include "ring_log.h"
+#include "web_assets_manifest.h"
 
 namespace visioncam {
 
@@ -145,6 +146,48 @@ esp_err_t replyUnauthenticated(httpd_req_t* req, uint32_t rid) {
     return httpd_resp_set_status(req, "401 Unauthorized") == ESP_OK
                ? httpReplyError(req, rid, ErrCode::Unauthenticated,
                                 "no valid session")
+               : ESP_FAIL;
+}
+
+// --- static asset server -----------------------------------------------------
+// Looks up the request URI in the embedded asset manifest and serves the
+// gzip-compressed bytes with Content-Encoding: gzip. Unknown URIs fall
+// through to index.html (SPA fallback for client-side routing).
+static esp_err_t assetHandler(httpd_req_t* req) {
+    const char* uri = req->uri;
+    for (size_t i = 0; i < web_assets_count; ++i) {
+        if (std::strcmp(uri, web_assets[i].url) == 0) {
+            httpd_resp_set_type(req, web_assets[i].mime);
+            httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+            httpd_resp_set_hdr(req, "Cache-Control", "public, max-age=31536000");
+            char len_buf[16];
+            std::snprintf(len_buf, sizeof(len_buf), "%u",
+                          static_cast<unsigned>(web_assets[i].comp_size));
+            httpd_resp_set_hdr(req, "Content-Length", len_buf);
+            return httpd_resp_send(req,
+                                   reinterpret_cast<const char*>(
+                                       web_assets[i].data),
+                                   web_assets[i].comp_size);
+        }
+    }
+    // Not found — serve index.html as SPA fallback (client-side routing).
+    for (size_t i = 0; i < web_assets_count; ++i) {
+        if (std::strcmp("/", web_assets[i].url) == 0) {
+            httpd_resp_set_type(req, "text/html");
+            httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+            httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+            char len_buf[16];
+            std::snprintf(len_buf, sizeof(len_buf), "%u",
+                          static_cast<unsigned>(web_assets[i].comp_size));
+            httpd_resp_set_hdr(req, "Content-Length", len_buf);
+            return httpd_resp_send(req,
+                                   reinterpret_cast<const char*>(
+                                       web_assets[i].data),
+                                   web_assets[i].comp_size);
+        }
+    }
+    return httpd_resp_set_status(req, "404 Not Found") == ESP_OK
+               ? httpd_resp_send(req, "Not found", 9)
                : ESP_FAIL;
 }
 
@@ -640,6 +683,9 @@ static const httpd_uri_t s_routes[] = {
     {"/camera/status", HTTP_GET, cameraStatusHandler, nullptr},
     {"/camera/settings", HTTP_GET, cameraSettingsGetHandler, nullptr},
     {"/camera/settings", HTTP_PUT, cameraSettingsPutHandler, nullptr},
+    // Catch-all static asset server (SPA fallback for unknown routes).
+    // Specific API routes are registered above and match first.
+    {"/*", HTTP_GET, assetHandler, nullptr},
     {nullptr, static_cast<httpd_method_t>(0), nullptr, nullptr},
 };
 

@@ -41,7 +41,15 @@ idf_component_register(
         "frame/frame_manager.cpp"
         "auth/auth.cpp"
         "web/web_server.cpp"
-    INCLUDE_DIRS "../include"
+        "web_assets/web_asset_0.c"
+        "web_assets/web_asset_1.c"
+        "web_assets/web_asset_2.c"
+        "web_assets/web_asset_3.c"
+        "web_assets/web_asset_4.c"
+        "web_assets/web_assets_manifest.c"
+    INCLUDE_DIRS
+        "../include"
+        "web_assets"
     PRIV_REQUIRES
         esp_psram
         espressif__esp32-camera
