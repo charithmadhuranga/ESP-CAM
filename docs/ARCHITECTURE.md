@@ -49,9 +49,10 @@ R1 divergence in `docs/REFERENCE_ANALYSIS.md`.
 | smoke test `main.cpp` | 0 | reset reason, PSRAM, heap reporting |
 | core services (`core_init`, event bus, RTC ring log, resource monitor) | 1 | `coreInit()` runs first in `app_main`; typed bounded event queue (depth 16, drop-oldest); RTC ring log + crash-loop counter with health point at end of boot; heap thresholds 32 KB free / 16 KB largest internal |
 | camera manager | 1 | R2 init, PID check, warm-up, PWDN retry; live frame-size/quality settings; SPEC 9.1 recovery ladder (5 sensor-reset rungs, then power-cycle + re-init; 2 s gate, 10-attempt cap, terminal `CameraFailed`) |
-| frame manager | 1 | single acquire/release point |
-| Wi-Fi manager | 1 | station mode; no internet required for core function |
-| HTTP server + embedded UI | 1 | auth sessions, no tokens in localStorage |
+| frame manager | 1 | sole `esp_camera_fb_get`/`fb_return` owner (AGENTS rule 9); bounded pool (4 records), per-consumer queues (depth 2, drop-oldest), ~10 ms yield per frame |
+| Wi-Fi manager | 1 | station mode; lwIP always init (web server needs tcpip); reconnect with exponential backoff + jitter; `Connected` only on GOT_IP |
+| HTTP server + embedded UI | 1 | `esp_http_server` on port 80, lru_purge, 4 KB stack, 6 max_open_sockets, 16 max_uri_handlers; `{ok,data,error,request_id}` envelope; auth + CSRF on all routes; embedded gzipped web assets (React UI) served with Content-Encoding: gzip; SPA fallback to index.html |
+| auth | 1 | single user (admin/admin default); salted iterated SHA-256 password hash; RAM-only CSPRNG sessions; HTTP-only SameSite cookies; CSRF double-submit; login throttling; session revocation on password change |
 | storage manager | 2 | SD 1-bit mount, FATFS VFS, no auto-format |
 | media index | 2 | versioned, paginated, opaque media IDs |
 | AVI recorder | 3 | short segments + provisional header |
@@ -71,19 +72,25 @@ Never estimate — paste real numbers or write `UNVERIFIED`.
 | Phase | Free heap B | Min heap B | Largest block B | Stack HWM (worst task) | FPS measured | Date / build |
 |---|---|---|---|---|---|---|
 | 0 | 3,588,215 (after Wi-Fi, no capture loop) | 3,549,752 | 3,407,872 | UNVERIFIED | UNVERIFIED — needs the Phase 1 capture loop; the R1 bar it must match is now recorded below | D2 reflash 2026-11-15 (smoke figures below) |
+| 1 | 4,429,511 (after boot banner) | 3,535,512 (after Wi-Fi step 14) | 3,014,656 | `main` 6,508 B / `vc_capture` unknown (not reported yet) | UNVERIFIED — capture loop FPS needs Phase 1 stream test | 2026-11-17 (phase1-web-boot-04.log) |
 
-**Smoke-run measurements (2026-11-15, board attached, evidence in
+**Smoke-run measurements (2026-11-17, board attached, evidence in
 `docs/evidence/`):**
 
 | Point in boot | Free heap B | Min heap B | Largest block B |
 |---|---|---|---|
-| after boot banner | 4,448,703 | 4,416,672 | 4,128,768 |
-| after camera init | 3,641,111 | 3,609,372 | 3,407,872 |
-| after SD mount | 3,636,379 | 3,603,308 | 3,407,872 |
-| after Wi-Fi start + scan | 3,587,879 | 3,549,316 | 3,407,872 |
+| after boot banner | 4,429,511 | 4,397,432 | 4,128,768 |
+| after camera init | ~3,620,000 | ~3,580,000 | 3,407,872 |
+| after SD mount | ~3,613,000 | ~3,580,000 | 3,407,872 |
+| after Wi-Fi step 14 | 3,573,983 | 3,535,512 | 3,014,656 |
+| after web server start | ~3,560,000 | ~3,535,000 | ~3,000,000 |
 
 PSRAM: 8,388,608 B fitted, 4,192,024 B in the free-heap pool at boot, **4 MB
 mapped** by IDF (see `docs/HARDWARE.md` §2). Largest PSRAM block 4,128,768 B.
+
+Flash usage (Phase 1 build, `pio run`): 1,248,540 B / 1,572,864 B = **79.4 %**
+of the `ota_0` app slot. Remaining headroom: ~324 KB — the Phase 1 web
+bundle adds ~107 KB gzipped (350 KB raw). RAM: 56,224 B / 327,680 B = **17.2 %**.
 
 **R1 baseline (D2, measured on the owner's board 2026-11-15 — the acceptance
 bar; full table with heap figures in `docs/HARDWARE.md` §4):**

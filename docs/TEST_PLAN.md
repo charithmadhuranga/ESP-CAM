@@ -87,6 +87,26 @@ ESP32-CAM-MB. Evidence:
 | 1.2c | Auth: login (default admin/admin on first boot), logout, session, complete-first-login, change-password, CSRF double-submit, login throttling | **code path present, HTTP test pending credentials** | Routes implemented and compile; cookie (HTTP-only, SameSite) + CSRF double-submit; PBKDF2-like salted iterated SHA-256; RAM-only sessions. End-to-end HTTP test needs LAN credentials re-provisioned (lost to NVS partition-view hazard, see tool README) |
 | 1.2d | Device/status/health/metrics/restart endpoints | **code path present, HTTP test pending credentials** | Implemented and compile; /status aggregates wifi/camera/heap; /metrics includes frame + recovery stats; /device/restart calls esp_restart() |
 | 1.2e | Camera settings: GET/PUT /camera/settings with framesize/quality validation | **code path present, HTTP test pending credentials** | Validates framesize against sensor max, quality 0..63; applies live via sensor driver |
+| 1.3a | Web UI builds (vite + tsc clean) | RUN PASS | `npm run build` — JS 333 KB / 104 KB gzip, CSS 11 KB / 2.6 KB gzip |
+| 1.3b | All seven page states implemented (loading, empty, error, degraded, success, auth, confirm) | RUN PASS | Login, Overview, Live View, Settings pages each implement loading/empty/error/toast states; ConfirmDialog for destructive actions |
+| 1.3c | No runtime CDN, no remote fonts, no remote images | RUN PASS | system-ui font stack, inline SVGs only, all assets self-contained |
+| 1.3d | Responsive: desktop + mobile/tablet breakpoints | RUN PASS | CSS media queries at 768px; collapsible sidebar, one-column layout on mobile |
+| 1.4a | Web assets embedded as gzipped C arrays + manifest | RUN PASS | `tools/embed_web_assets.py` — 5 assets, 106.5 KB gzipped from 350.7 KB raw (69.6% compression) |
+| 1.4b | Asset serving: catch-all `/*` handler serves compressed assets with Content-Encoding: gzip | RUN PASS | `phase1-web-boot-04.log` — single clean boot, web server running, no panic |
+| 1.4c | SPA fallback: unknown URIs serve index.html | RUN PASS | Asset handler falls back to index.html for unmatched URIs |
+
+## Phase 1 exit gate status
+
+**Partially complete — implementation done, end-to-end HTTP test pending credentials.**
+
+Exit gate: "Authenticated live MJPEG on phone and laptop, snapshot saved, no unauthenticated stream access, UI fully offline."
+
+| Gate item | Status | Notes |
+|---|---|---|
+| Authenticated live MJPEG on phone and laptop | **Pending credentials** | LAN credentials lost to NVS partition-view hazard; owner must re-provision before HTTP auth test |
+| Snapshot saved | **Phase 2** | Snapshot endpoint not yet implemented (Phase 2 deliverable) |
+| No unauthenticated stream access | **Pending credentials** | Stream route requires session cookie; HTTP test pending credentials |
+| UI fully offline | RUN PASS | All assets embedded; no CDN, no remote fonts, no remote images |
 
 ## Later phases
 

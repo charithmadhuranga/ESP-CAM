@@ -8,61 +8,19 @@ tagged once Phase 9 release criteria pass.
 
 ### Added
 
-- **Phase 1 task 1.1.5 — frame manager (2026-11-17).** New
-  `firmware/src/frame/frame_manager.cpp` + `firmware/include/frame_manager.h`:
-  the capture task is the SOLE owner of camera frame buffers (AGENTS rule 9),
-  replacing the temporary smoke-probe frame access in camera_manager.h. One
-  capture task (pinned to core 1, priority 6, `VC_STACK_CAPTURE`) acquires
-  frames, validates them against SPEC 4.1.1 rule 7, and distributes
-  refcounted leases to up to `VC_FRAME_SUBSCRIBERS` consumers through bounded
-  per-consumer queues (`VC_FRAME_QUEUE_DEPTH`, drop-oldest). A fixed pool of
-  `VC_FRAME_POOL` refcounted records bounds memory; when every record is
-  referenced the new frame is dropped and counted (capture never blocks).
-  Each frame delivery ends with `taskYIELD()` so a fast camera cannot wedge
-  the core (reproduced as "Interrupt wdt timeout on CPU1" without it).
-  Hardware: `phase1-frame-boot-11.log` — leases acquired/released cleanly,
-  step 14 camera+SD under radio TX stable, ladder runs through the capture
-  task. Build: RAM 54,784 B (16.7 %), Flash 1,079,528 B (68.6 %).
-- **`frameManagerStop()` handshake:** waits for the capture task to park
-  (it may be blocked in `esp_camera_fb_get()` for up to FB_GET_TIMEOUT)
-  before the driver is touched, avoiding a concurrent init/get race.
+## [Unreleased]
 
-### Fixed
+### Added
 
-- **Interrupt-watchdog panic in the capture task (2026-11-17).** With no
-  `taskYIELD()` between frames, the capture task tight-looped when
-  `esp_camera_fb_get()` returned immediately (frames already queued),
-  starving the interrupt watchdog on CPU 1 ("Interrupt wdt timeout on CPU1"
-  Guru Meditation, reproduced on every boot). Fixed by yielding after each
-  frame and after each pool/rule-7 drop. Verified panic-free across
-  `phase1-frame-boot-06` through `-11`.
-- **`cameraRecoveryReset()` did not reset all counters** — `sensor_resets`,
-  `re_inits`, `rung_errors`, `recovered`, `failed_events` accumulated across
-  ladder runs, corrupting step 15's verdict. All stats now reset.
-- **`frameManagerStart()` required the camera to be initialised** — removed
-  that guard so the capture task can run with a dead camera and drive the
-  SPEC 9.1 ladder (task 1.1.5 integration).
-
-- **Phase 1 tasks 1.1.3 + 1.1.4 — camera manager module and SPEC 9.1
-  recovery ladder (2026-11-17).** `firmware/src/camera/` now owns the camera
-  driver lifecycle: `camera_manager.{h,cpp}` (renamed from the Phase 0
-  `camera_bringup`) gains the live settings API (`set_framesize` /
-  `set_quality`, with the sensor's own maximum enforced), `jpegCapacity()`
-  derived from the driver's public `resolution[]` table, the recovery
-  primitives (sensor reset, PWDN power-cycle, full re-init) and rule 8's
-  explicit `jpeg_buffer_size` floor for sub-VGA init sizes.
-  `camera_recovery.{h,cpp}` implements SPEC 9.1 as a single-caller state
-  machine driven by the frame manager's capture task (task 1.1.5):
-  10 ms yield per NULL (published via `cameraRecoveryYieldMs()` so the
-  caller cannot drift), ≤1 rung per 2 s, ≤10 consecutive, rung 1 = sensor
-  reset ×5, rung 2 = PWDN power-cycle + full re-init ×5, counters reset on
-  a valid frame, then `CameraFailed` + terminal state. Metrics count NULL
-  frames, rung attempts/errors, recoveries and failures.
-  Hardware: `phase1-cam-boot-01.log` (bring-up + live settings + forced
-  retry) and `phase1-ladder-boot-01.log` (closed-loop ladder: camera held
-  genuinely dead, exactly 10 gated attempts, one terminal `CameraFailed`,
-  rule-3 reset verified, no spin, no panic).
-  Build: RAM 54,496 B (16.6 %), Flash 1,076,608 B (68.4 %).
+- **Phase 1 task 1.1.1 — core services (2026-11-17).** New
+  `firmware/src/core/` + headers: `coreInit()` boot order (RTC ring log
+  first, so a crash later in the boot cannot destroy the evidence), typed
+  bounded **event bus** (depth 16, drop-oldest, dispatcher task), **RTC RAM
+  ring log** (4096 B `.rtc_noinit`, crash-loop counter with health point at
+  *end of boot*), **resource monitor** (heap / largest block / min heap /
+  PSRAM / uptime / reset reason / task stack watermarks, thresholds 32 KB
+  free / 16 KB largest internal). Evidence:
+  `docs/evidence/phase1-core-boot-01..04.log`; `docs/TEST_PLAN.md` 1.1.1a–e.
 
 - **Phase 1 task 1.1.2 — network manager (2026-11-17).** New
   `firmware/src/network/` (`network_manager.cpp`, `wifi_credentials.cpp`) +
@@ -82,12 +40,95 @@ tagged once Phase 9 release criteria pass.
   `networkManagerInit()` before camera bring-up — the ordering that closes
   the reproduced esp32-camera ISR hazard (`docs/REFERENCE_ANALYSIS.md`).
   Build: RAM 54,416 B (16.6 %), Flash 1,072,560 B (68.2 %).
-- **`tools/nvs_provision` — new `vcunset` command (2026-11-17).**
-  Confirmation-gated (`vcunset` then `vcunset<tab>ERASE`) deletion of
-  **only** the two migrated copies in the `visioncam` namespace, so the
-  legacy Phase 0 keys stay the source of truth and the firmware migration
-  path can be re-observed on hardware. Same typed-confirmation policy as
-  `tools/sd_format`.
+
+- **Phase 1 task 1.1.3 — camera manager module (2026-11-17).**
+  `firmware/src/camera/camera_manager.{h,cpp}` (renamed from the Phase 0
+  `camera_bringup`) gains the live settings API (`set_framesize` /
+  `set_quality`, with the sensor's own maximum enforced), `jpegCapacity()`
+  derived from the driver's public `resolution[]` table, the recovery
+  primitives (sensor reset, PWDN power-cycle, full re-init) and rule 8's
+  explicit `jpeg_buffer_size` floor for sub-VGA init sizes.
+  Bring-up behaviour unchanged from the Phase 0 hardware-verified sequence.
+
+- **Phase 1 task 1.1.4 — SPEC 9.1 recovery ladder (2026-11-17).**
+  `firmware/src/camera/camera_recovery.{h,cpp}` implements SPEC 9.1 as a
+  single-caller state machine driven by the frame manager's capture task:
+  10 ms yield per NULL (published via `cameraRecoveryYieldMs()` so the
+  caller cannot drift), ≤1 rung per 2 s, ≤10 consecutive, rung 1 = sensor
+  reset ×5, rung 2 = PWDN power-cycle + full re-init ×5, counters reset on
+  a valid frame, then `CameraFailed` + terminal state. Metrics count NULL
+  frames, rung attempts/errors, recoveries and failures.
+  Hardware: `phase1-ladder-boot-01.log` (closed-loop ladder: camera held
+  genuinely dead, exactly 10 gated attempts, one terminal `CameraFailed`,
+  rule-3 reset verified, no spin, no panic).
+
+- **Phase 1 task 1.1.5 — frame manager (2026-11-17).** New
+  `firmware/src/frame/frame_manager.cpp` + `firmware/include/frame_manager.h`:
+  the capture task is the SOLE owner of camera frame buffers (AGENTS rule 9),
+  replacing the temporary smoke-probe frame access in camera_manager.h. One
+  capture task (pinned to core 1, priority 6, `VC_STACK_CAPTURE`) acquires
+  frames, validates them against SPEC 4.1.1 rule 7, and distributes
+  refcounted leases to up to `VC_FRAME_SUBSCRIBERS` consumers through bounded
+  per-consumer queues (`VC_FRAME_QUEUE_DEPTH`, drop-oldest). A fixed pool of
+  `VC_FRAME_POOL` refcounted records bounds memory; when every record is
+  referenced the new frame is dropped and counted (capture never blocks).
+  Each frame delivery ends with `taskYIELD()` so a fast camera cannot wedge
+  the core (reproduced as "Interrupt wdt timeout on CPU1" without it).
+  Hardware: `phase1-frame-boot-11.log` — leases acquired/released cleanly,
+  step 14 camera+SD under radio TX stable, ladder runs through the capture
+  task. Build: RAM 54,784 B (16.7 %), Flash 1,079,528 B (68.6 %).
+
+- **Phase 1 task 1.2 — web server + auth + device/camera API (2026-11-17).** New
+  `firmware/src/web/web_server.cpp` + `firmware/include/{web_server,auth}.h`:
+  a single `esp_http_server` instance (port 80, lru_purge on, 4 KB task stack,
+  6 max_open_sockets = 4 API clients + 2 stream slots, 16 max_uri_handlers)
+  serving every JSON response in the `{ok,data,error,request_id}` envelope
+  with a monotonic per-boot request_id (SPEC 6.0, API contract). 14 routes:
+  auth (`/auth/{session,login,logout,complete-first-login,change-password}`),
+  device (`/device`, `/status`, `/health`, `/metrics`, `/device/restart`),
+  camera (`/camera/status`, `/camera/settings` GET/PUT). Auth: single user
+  (default admin/admin), salted iterated SHA-256 password hash (parameters
+  benchmarked on-device), RAM-only sessions from the CSPRNG, HTTP-only +
+  SameSite cookies, CSRF double-submit on state-changing requests, login
+  throttling (5 attempts/minute), session revocation on password change —
+  no credentials or tokens ever logged or returned (AGENTS rule 17).
+  Network fix: lwIP is now *always* initialized (before the web server) so
+  local-only mode no longer crash-loops on `tcpip "Invalid mbox"`;
+  credentials are required only to connect the radio.
+
+- **Phase 1 task 1.3 — React + TypeScript web UI (2026-11-17).** New
+  `webui/` Vite + React 19 + TypeScript project. Design tokens per DESIGN.md
+  §2 (dark theme, CSS variables). Design system: Button, Field, Card,
+  StatCard, Row, StatusPill, Slider, ProgressBar, Thumbnail, VideoPlayer,
+  ConfirmDialog, Nav. Pages: Login (with session auto-redirect), Overview,
+  Live View (MJPEG stream consumer), Settings (General/Camera/Recording/
+  Motion/AI/Network/Security/System sections with Coming Soon placeholders).
+  AppShell with Sidebar/Header/Footer layout. Typed API client (lib/api.ts)
+  with envelope parsing, CSRF double-submit, HTTP-only cookie credentials.
+  Toast provider, React Router routing. Responsive: desktop + mobile/tablet
+  breakpoints. Bundle: JS 333 KB / 104 KB gzip, CSS 11 KB / 2.6 KB gzip.
+  `node_modules/` and `dist/` are gitignored.
+
+- **Phase 1 task 1.4 — web asset embedding (2026-11-17).** New
+  `tools/embed_web_assets.py`: gzip-compresses, content-hashes (SHA-256), and
+  embeds the Vite-built web UI as C byte arrays + asset manifest.
+  5 assets: index.html, favicon.svg, icons.svg, CSS, JS (106.5 KB gzipped
+  from 350.7 KB raw, 69.6% compression). `firmware/src/web_assets/`
+  generated C arrays + manifest (committed so the firmware builds without
+  re-running the embed tool; regenerate when the web UI changes via
+  `tools/embed_web_assets.py webui/dist firmware/src/web_assets`).
+  `web_server.cpp`: catch-all asset handler (`/*` URI) serves compressed
+  assets with Content-Encoding: gzip; unknown URIs fall back to index.html
+  for client-side SPA routing. Flash: 1,248,540 bytes (79.4%) — 324 KB
+  headroom remaining.
+
+### Fixed
+
+- **Every boot crash-looped with PANIC (phase1-web-boot-01.log, 259 boots).**
+  Root cause: `networkManagerInit()` skipped `esp_netif_init()` when no
+  credentials existed, so lwIP/tcpip never ran and the web server assert-failed
+  on `tcpip_send_msg_wait_sem (Invalid mbox)`. lwIP is now initialized
+  unconditionally; the radio only connects when credentials exist.
 
 ### Fixed
 
