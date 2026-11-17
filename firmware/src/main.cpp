@@ -1,7 +1,7 @@
 // Phase 0 smoke firmware — plan 01-phase-0-baseline.md, task 0.3.
 //
 //   step 10  reset reason, PSRAM, heap reporting
-//   step 11  camera bring-up        (visioncam::cameraBringup)
+//   step 11  camera bring-up        (visioncam::cameraManagerInit)
 //   step 12  SD 1-bit mount + write/read/delete  (visioncam::sdMount/sdSelfTest)
 //   step 13  GPIO4 / flash-lamp behaviour with the SD mounted
 //   step 14  camera + SD together with Wi-Fi off, then Wi-Fi on
@@ -15,11 +15,13 @@
 #include "esp_log.h"
 #include "esp_psram.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 #include "board_profile.h"
-#include "camera_bringup.h"
+#include "camera_manager.h"
+#include "camera_recovery.h"
 #include "core_init.h"
 #include "event_bus.h"
 #include "network_manager.h"
@@ -49,12 +51,13 @@ static void logHeap(const char* where) {
 }
 
 // One camera grab + one SD write/read/delete — the "camera and SD running
-// together" probe of plan 0.3 step 14. Frame access stays in camera_bringup
-// (AGENTS rule 9) and file access in sd_bringup (rule 10); this helper only
+// together" probe of plan 0.3 step 14. The grab is the temporary smoke
+// probe of camera_manager.h (replaced by a frame/ lease in task 1.1.5)
+// and file access stays in sd_bringup (AGENTS rule 10); this helper only
 // orchestrates the two.
 static bool togetherCycle(const char* phase) {
     size_t bytes = 0;
-    const bool cam_ok = visioncam::cameraGrabProbe(&bytes);
+    const bool cam_ok = visioncam::cameraManagerGrabProbe(&bytes);
     const bool sd_ok = visioncam::sdSelfTest() == ESP_OK;
     ESP_LOGI(TAG, "step 14 [%s]: camera=%s (%u B), sd=%s",
              phase, cam_ok ? "OK" : "FAIL", static_cast<unsigned>(bytes),
@@ -71,6 +74,7 @@ extern "C" void app_main(void) {
     // calls before esp_log_level_set could see them.
     esp_log_level_set("vc_smoke", ESP_LOG_INFO);
     esp_log_level_set("vc_cam", ESP_LOG_INFO);
+    esp_log_level_set("vc_camrec", ESP_LOG_INFO);
     esp_log_level_set("vc_sd", ESP_LOG_INFO);
     esp_log_level_set("vc_core", ESP_LOG_INFO);
     esp_log_level_set("vc_resmon", ESP_LOG_INFO);
@@ -162,7 +166,7 @@ extern "C" void app_main(void) {
 
     // --- step 11: camera bring-up ------------------------------------------
     visioncam::CameraReport cam;
-    const esp_err_t camErr = visioncam::cameraBringup(cam);
+    const esp_err_t camErr = visioncam::cameraManagerInit(cam);
     if (camErr != ESP_OK) {
         ESP_LOGE(TAG, "CAMERA FAIL: %s (attempts=%u, initialised=%d, pid=0x%04x)",
                  esp_err_to_name(camErr), cam.init_attempts,
@@ -270,7 +274,7 @@ extern "C" void app_main(void) {
             // final wifiStop() runs with the camera UP (observed safe on
             // boot 4 of phase1-core-boot-03.log); the hazard is on the
             // wifiStart side only.
-            visioncam::cameraShutdown();
+            visioncam::cameraManagerShutdown();
             visioncam::WifiReport wr;
             const esp_err_t werr = visioncam::wifiStart(wr);
             if (werr != ESP_OK) {
@@ -278,7 +282,7 @@ extern "C" void app_main(void) {
                 ok = false;
             } else {
                 visioncam::CameraReport cam14;
-                const esp_err_t rerr = visioncam::cameraBringup(cam14);
+                const esp_err_t rerr = visioncam::cameraManagerInit(cam14);
                 if (rerr != ESP_OK) {
                     ESP_LOGE(TAG, "step 14: camera re-bringup after wifi start failed: %s",
                              esp_err_to_name(rerr));
@@ -306,12 +310,13 @@ extern "C" void app_main(void) {
     // --- step 11 (part 2): forced first-attempt failure -> PWDN recovery ----
     // Re-runs bring-up with PWDN held during attempt 1: the sensor is really
     // unreachable, so esp_camera_init must really fail, and the normal retry
-    // (cameraShutdown + PWDN power-cycle) must recover on attempt 2.
+    // (cameraManagerShutdown + PWDN power-cycle) must recover on attempt 2.
     const char* forced = "SKIP";
     if (camErr == ESP_OK) {
-        visioncam::cameraShutdown();
+        visioncam::cameraManagerShutdown();
         visioncam::CameraReport cam2;
-        const esp_err_t fErr = visioncam::cameraBringup(cam2, /*force=*/true);
+        const esp_err_t fErr = visioncam::cameraManagerInit(
+            cam2, visioncam::CameraInitTestMode::ForceFirstFailure);
         forced = (fErr == ESP_OK && cam2.init_attempts == 2) ? "OK" : "FAIL";
         ESP_LOGI(TAG, "forced-failure test: err=%s, attempts=%u -> %s",
                  esp_err_to_name(fErr), cam2.init_attempts, forced);
@@ -347,6 +352,89 @@ extern "C" void app_main(void) {
     visioncam::ringLogMarkHealthy();
     ESP_LOGI(TAG, "health marked: abnormal boots now %u",
              static_cast<unsigned>(visioncam::ringLogAbnormalBoots()));
+
+    // --- step 15: SPEC 9.1 NULL-frame recovery ladder ---------------------
+    // The ladder is normally driven by frame/'s capture task (task 1.1.5),
+    // which does not exist yet, so this drives it directly — honestly: the
+    // camera is held DOWN (shutdown + sticky XCLK sabotage) so every
+    // esp_camera_fb_get the ladder's rungs rely on really would return
+    // NULL, and every re-init really fails. The result must be: 5 cheap
+    // rungs (sensor reset) + 5 heavy rungs (power-cycle + re-init), each
+    // gated to one per 2 s, then exactly one terminal CameraFailed — no
+    // spin, no reset before a valid frame.
+    const char* ladder = "SKIP";
+    if (camErr == ESP_OK) {
+        visioncam::cameraManagerShutdown();
+        visioncam::cameraManagerSetTestSabotage(true);   // hold the camera dead
+        visioncam::cameraRecoveryReset();
+
+        unsigned yields = 0, recovered_rungs = 0, failed_verdicts = 0;
+        const int64_t t0 = esp_timer_get_time() / 1000;
+        int64_t tFailed = 0;
+        for (;;) {
+            const visioncam::NullFrameVerdict v =
+                visioncam::cameraRecoveryNoteNullFrame();
+            if (v == visioncam::NullFrameVerdict::Failed) {
+                ++failed_verdicts;
+                tFailed = esp_timer_get_time() / 1000;
+            } else if (v == visioncam::NullFrameVerdict::Recovered) {
+                ++recovered_rungs;
+            } else {
+                ++yields;
+            }
+            if (failed_verdicts > 0) break;
+            if ((esp_timer_get_time() / 1000) - t0 > 30000) break;  // safety cap
+            // SPEC 9.1 rule 1: the yield itself comes from the ladder API so
+            // the frame manager cannot drift from it.
+            vTaskDelay(pdMS_TO_TICKS(visioncam::cameraRecoveryYieldMs()));
+        }
+        const visioncam::CameraRecoveryStats rs = visioncam::cameraRecoveryGetStats();
+
+        // Bring the camera back and prove the rule-3 reset path: a valid
+        // frame after recovery returns the ladder to Idle.
+        visioncam::cameraManagerSetTestSabotage(false);
+        const bool ladder_terminal =
+            visioncam::cameraRecoveryState() == visioncam::CameraRecoveryState::Failed;
+        visioncam::cameraRecoveryReset();
+        visioncam::CameraReport cam15;
+        const esp_err_t backErr = visioncam::cameraManagerInit(cam15);
+        size_t frame_bytes = 0;
+        const bool frame_ok = (backErr == ESP_OK) &&
+                              visioncam::cameraManagerGrabProbe(&frame_bytes);
+        if (frame_ok) visioncam::cameraRecoveryNoteGoodFrame();
+        const bool ladder_reset =
+            visioncam::cameraRecoveryState() == visioncam::CameraRecoveryState::Idle;
+
+        // Verdict, with the SPEC 9.1 numbers that make it honest: attempts
+        // must be exactly 10, all ten gated (elapsed >= 18 s: 9 x 2 s gates),
+        // exactly one CameraFailed verdict, and the reset path must work.
+        const bool gates_ok = rs.recovery_attempts == 10 &&
+                              (tFailed - t0) >= 18000 &&
+                              rs.sensor_resets == 5 && rs.re_inits == 5 &&
+                              rs.rung_errors == 10 && failed_verdicts == 1;
+        ladder = (ladder_terminal && gates_ok && frame_ok && ladder_reset)
+                     ? "OK" : "FAIL";
+        ESP_LOGI(TAG, "step 15 result: %s (attempts=%u rung1=%u rung2=%u "
+                      "errors=%u yields=%u elapsed=%lld ms; failed_verdicts=%u "
+                      "terminal=%d; back-up frame=%u B, ladder reset=%d)",
+                 ladder, static_cast<unsigned>(rs.recovery_attempts),
+                 static_cast<unsigned>(rs.sensor_resets),
+                 static_cast<unsigned>(rs.re_inits),
+                 static_cast<unsigned>(rs.rung_errors), yields,
+                 static_cast<long long>(tFailed - t0), failed_verdicts,
+                 ladder_terminal ? 1 : 0,
+                 static_cast<unsigned>(frame_bytes), ladder_reset ? 1 : 0);
+        if (ladder[0] != 'O' || ladder[1] != 'K') {
+            ESP_LOGE(TAG, "step 15 FAILED — SPEC 9.1 ladder evidence: stats "
+                          "nulls=%u attempts=%u recovered=%u failed_events=%u",
+                     static_cast<unsigned>(rs.null_frames),
+                     static_cast<unsigned>(rs.recovery_attempts),
+                     static_cast<unsigned>(rs.recovered),
+                     static_cast<unsigned>(rs.failed_events));
+        }
+    } else {
+        ESP_LOGW(TAG, "step 15 skipped — camera not OK");
+    }
 
     // Keep the task alive so heap minima accumulate across the idle period.
     for (;;) {

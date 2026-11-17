@@ -8,6 +8,27 @@ tagged once Phase 9 release criteria pass.
 
 ### Added
 
+- **Phase 1 tasks 1.1.3 + 1.1.4 — camera manager module and SPEC 9.1
+  recovery ladder (2026-11-17).** `firmware/src/camera/` now owns the camera
+  driver lifecycle: `camera_manager.{h,cpp}` (renamed from the Phase 0
+  `camera_bringup`) gains the live settings API (`set_framesize` /
+  `set_quality`, with the sensor's own maximum enforced), `jpegCapacity()`
+  derived from the driver's public `resolution[]` table, the recovery
+  primitives (sensor reset, PWDN power-cycle, full re-init) and rule 8's
+  explicit `jpeg_buffer_size` floor for sub-VGA init sizes.
+  `camera_recovery.{h,cpp}` implements SPEC 9.1 as a single-caller state
+  machine driven by the frame manager's capture task (task 1.1.5):
+  10 ms yield per NULL (published via `cameraRecoveryYieldMs()` so the
+  caller cannot drift), ≤1 rung per 2 s, ≤10 consecutive, rung 1 = sensor
+  reset ×5, rung 2 = PWDN power-cycle + full re-init ×5, counters reset on
+  a valid frame, then `CameraFailed` + terminal state. Metrics count NULL
+  frames, rung attempts/errors, recoveries and failures.
+  Hardware: `phase1-cam-boot-01.log` (bring-up + live settings + forced
+  retry) and `phase1-ladder-boot-01.log` (closed-loop ladder: camera held
+  genuinely dead, exactly 10 gated attempts, one terminal `CameraFailed`,
+  rule-3 reset verified, no spin, no panic).
+  Build: RAM 54,496 B (16.6 %), Flash 1,076,608 B (68.4 %).
+
 - **Phase 1 task 1.1.2 — network manager (2026-11-17).** New
   `firmware/src/network/` (`network_manager.cpp`, `wifi_credentials.cpp`) +
   `firmware/include/{network_manager,wifi_credentials}.h`: ESP-IDF station

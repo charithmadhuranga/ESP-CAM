@@ -28,7 +28,6 @@
 idf_component_register(
     SRCS
         "main.cpp"
-        "camera_bringup.cpp"
         "sd_bringup.cpp"
         "wifi_bringup.cpp"
         "core/core_init.cpp"
@@ -37,6 +36,8 @@ idf_component_register(
         "core/ring_log.cpp"
         "network/network_manager.cpp"
         "network/wifi_credentials.cpp"
+        "camera/camera_manager.cpp"
+        "camera/camera_recovery.cpp"
     INCLUDE_DIRS "../include"
     PRIV_REQUIRES
         esp_psram
