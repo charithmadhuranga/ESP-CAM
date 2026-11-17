@@ -1,0 +1,128 @@
+ets Jun  8 2016 00:22:57
+
+rst:0x1 (POWERON_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+configsip: 0, SPIWP:0xee
+clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+mode:DIO, clock div:2
+load:0x3fff0040,len:6272
+load:0x40078000,len:15988
+ho 0 tail 12 room 4
+load:0x40080400,len:4016
+entry 0x4008063c
+I (29) boot: ESP-IDF 6.1.0 2nd stage bootloader
+I (29) boot: compile time Nov 17 2026 08:41:48
+I (29) boot: Multicore bootloader
+I (30) boot: chip revision: v1.0
+I (33) boot.esp32: SPI Speed      : 40MHz
+I (37) boot.esp32: SPI Mode       : DIO
+I (40) boot.esp32: SPI Flash Size : 4MB
+I (44) boot: Enabling RNG early entropy source...
+I (48) boot: Partition Table:
+I (51) boot: ## Label            Usage          Type ST Offset   Length
+I (57) boot:  0 nvs              WiFi data        01 02 00009000 00017000
+I (64) boot:  1 ota_0            OTA app          00 10 00020000 00180000
+I (70) boot:  2 ota_1            OTA app          00 11 001a0000 00180000
+I (77) boot:  3 otadata          OTA data         01 00 00320000 00002000
+I (83) boot:  4 phy_init         RF data          01 01 00322000 00001000
+I (90) boot:  5 storage          Unknown data     01 82 00323000 000dd000
+I (96) boot: End of partition table
+I (100) boot: No factory image, trying OTA 0
+I (104) esp_image: segment 0: paddr=00020020 vaddr=3f400020 size=2a71ch (173852) map
+I (177) esp_image: segment 1: paddr=0004a744 vaddr=3ffb0000 size=058d4h ( 22740) load
+I (187) esp_image: segment 2: paddr=00050020 vaddr=400d0020 size=b9aa8h (760488) map
+I (475) esp_image: segment 3: paddr=00109ad0 vaddr=3ffb58d4 size=01854h (  6228) load
+I (478) esp_image: segment 4: paddr=0010b32c vaddr=40080000 size=1abd8h (109528) load
+I (527) esp_image: segment 5: paddr=00125f0c vaddr=5000101c size=00028h (    40) load
+I (541) boot: Loaded app from partition at offset 0x20000
+I (571) boot: Set actual ota_seq=1 in otadata[0]
+I (571) boot: Disabling RNG early entropy source...
+W (582) esp_psram: Virtual address not enough for PSRAM, map as much as we can. 4MB is mapped
+---- RTC ring log (boot 1, 45 byte(s) retained) ----
+#1 4 I boot: reset=POWERON boot=1 abnormal=0
+---- end of retained log ----
+I (1115) vc_resmon: monitor up: period 5000 ms, heap low <32768 B, critical block <16384 B
+I (1115) vc_core: core services up (boot 1, abnormal 0)
+E (1125) vc_net: credential load failed: ESP_ERR_NVS_NOT_FOUND
+E (1125) vc_smoke: NETWORK init failed: ESP_ERR_NVS_NOT_FOUND  continuing without Wi-Fi
+I (1135) vc_smoke: resource snapshot: free=4431575 internal=260335 min=4399492 largest=110592 psram_free=4192024 tasks=9 boot=1 abnormal=0
+I (1145) vc_smoke: task table (worst stack first):
+I (1155) vc_smoke:   ipc0             hwm=   564 B prio=24 core=-1 state=3
+I (1155) vc_smoke:   ipc1             hwm=   572 B prio=24 core=-1 state=3
+I (1165) vc_smoke:   IDLE1            hwm=  1092 B prio=0 core=-1 state=1
+I (1175) vc_smoke:   IDLE0            hwm=  1224 B prio=0 core=-1 state=1
+I (1175) vc_smoke:   Tmr Svc          hwm=  1568 B prio=1 core=-1 state=2
+I (1185) vc_smoke:   vc_eventbus      hwm=  2560 B prio=4 core=-1 state=2
+I (1195) vc_smoke:   vc_monitor       hwm=  3292 B prio=3 core=-1 state=0
+I (1195) vc_smoke:   esp_timer        hwm=  3632 B prio=22 core=-1 state=3
+I (1205) vc_smoke:   main             hwm=  6524 B prio=1 core=-1 state=1
+I (1215) vc_smoke: ================================================
+I (1215) vc_smoke:  VisionCam Pro  Phase 1 bring-up (smoke steps)
+I (1225) vc_smoke: ================================================
+I (1225) vc_smoke: reset reason: POWERON
+I (1235) vc_smoke: PSRAM: 8388608 bytes (8.0 MB)
+I (1235) vc_smoke: heap[boot] free: 4431575 B, min ever: 4399492 B, largest block: 4128768 B
+I (1245) vc_smoke: heap[boot] PSRAM free: 4192024 B, largest PSRAM block: 4128768 B
+I (1255) vc_smoke: board: AI-Thinker ESP32-CAM, flash LED GPIO4, SD CLK/CMD/D0 = 14/15/2
+I (1255) vc_cam: PSRAM 8388608 B -> init frame size 15
+I (1455) vc_cam: sensor PID 0x0026 = OV2640
+I (1875) vc_cam: discarded 3 warm-up frame(s)
+I (1955) vc_cam: JPEG grabbed: 234849 bytes (1600x1200), capacity 384000
+I (2005) vc_cam: runtime frame size set to VGA
+I (2005) vc_smoke: CAMERA OK: pid=0x0026, attempts=1, warmup=3, jpeg=234849 B (1600x1200)
+I (2055) vc_smoke: event bus self-test: published=2 delivered=2 dropped=0 -> OK
+I (2055) vc_smoke: heap[after camera] free: 3623891 B, min ever: 3592152 B, largest block: 3407872 B
+I (2055) vc_smoke: heap[after camera] PSRAM free: 3422576 B, largest PSRAM block: 3407872 B
+I (2065) vc_sd: mounting SD: slot 1, 1-bit, freq default 20000 kHz
+W (2105) SD_HOST: esp32 doesn't support input phase delay, fallback to 0 delay
+W (2105) SD_HOST: input line delay not supported, fallback to 0 delay
+Name: SD16G
+Type: SDHC
+Speed: 20.00 MHz (limit: 20.00 MHz)
+Size: 7680MB
+CSD: ver=2, sector_size=512, capacity=15728640 read_bl_len=9
+SSR: bus_width=1
+I (2125) vc_sd: SD mounted at /sdcard, negotiated 20000 kHz
+I (2125) vc_sd: FAT volume: 8051032064 B usable, 8050933760 B free, cluster 32768 B x 245698 clusters  CSD capacity 8053063680 B
+I (2145) vc_sd: GPIO4 (flash lamp / SD D1) driven low after mount  confirm the lamp stays OFF on hardware (step 13)
+I (2205) vc_sd: SD self-test OK: wrote, read back and deleted /sdcard/vc_smoke.txt
+I (2205) vc_smoke: SD OK: width=1 bit, max 20000 kHz, self-test=pass
+I (2205) vc_smoke: step 13: GPIO4 driven low  observer must confirm the lamp is OFF
+I (2215) vc_smoke: heap[after SD] free: 3619087 B, min ever: 3586008 B, largest block: 3407872 B
+I (2225) vc_smoke: heap[after SD] PSRAM free: 3418748 B, largest PSRAM block: 3407872 B
+I (2285) vc_sd: SD self-test OK: wrote, read back and deleted /sdcard/vc_smoke.txt
+I (2285) vc_smoke: step 14 [wifi off]: camera=OK (23657 B), sd=OK
+W (2335) phy_init: failed to load RF calibration data (0x1102), falling back to full calibration
+I (5315) vc_cam: PSRAM 8388608 B -> init frame size 15
+E (5315) gpio: gpio_install_isr_service(568): GPIO isr service already installed
+W (5315) ledc: GPIO 0 is not usable, maybe conflict with others
+W (5315) gpio: conflict found for GPIO[32]
+I (5505) vc_cam: sensor PID 0x0026 = OV2640
+I (5855) vc_cam: discarded 3 warm-up frame(s)
+I (5935) vc_cam: JPEG grabbed: 208755 bytes (1600x1200), capacity 384000
+I (5975) vc_cam: runtime frame size set to VGA
+I (9025) vc_sd: SD self-test OK: wrote, read back and deleted /sdcard/vc_smoke.txt
+I (9025) vc_smoke: step 14 [wifi on]: camera=OK (15432 B), sd=OK
+I (9025) vc_smoke: step 14 result: OK (scan heard 1 network(s))
+I (9025) vc_smoke: heap[after wifi] free: 3574079 B, min ever: 3535596 B, largest block: 3014656 B
+I (9035) vc_smoke: heap[after wifi] PSRAM free: 3418300 B, largest PSRAM block: 3014656 B
+I (9045) vc_cam: PSRAM 8388608 B -> init frame size 15
+W (9055) vc_cam: forced failure test: XCLK removed  attempt 1 is expected to fail
+E (9055) gpio: gpio_install_isr_service(568): GPIO isr service already installed
+W (9065) gpio: conflict found for GPIO[32]
+E (9095) camera: Detected camera not supported.
+E (9095) camera: Camera probe failed with error 0x106(ESP_ERR_NOT_SUPPORTED)
+E (9095) vc_cam: esp_camera_init failed (attempt 1/3): ESP_ERR_NOT_SUPPORTED
+W (9105) gpio: conflict found for GPIO[32]
+E (9145) gpio: gpio_install_isr_service(568): GPIO isr service already installed
+W (9145) ledc: GPIO 0 is not usable, maybe conflict with others
+W (9145) gpio: conflict found for GPIO[32]
+I (9325) vc_cam: sensor PID 0x0026 = OV2640
+I (9675) vc_cam: discarded 3 warm-up frame(s)
+I (9755) vc_cam: JPEG grabbed: 229933 bytes (1600x1200), capacity 384000
+I (9795) vc_cam: runtime frame size set to VGA
+I (9795) vc_smoke: forced-failure test: err=ESP_OK, attempts=2 -> OK
+I (9795) vc_smoke: ------------------------------------------------
+I (9795) vc_smoke:  core: OK | camera: OK | sd: OK | psram: OK | net: Off | wifi(step14): OK | forced-retry: OK
+I (9805) vc_smoke:  events: published=2 delivered=2 dropped=0 | abnormal boots=0
+I (9815) vc_smoke: ================================================
+I (9815) vc_smoke: health marked: abnormal boots now 0

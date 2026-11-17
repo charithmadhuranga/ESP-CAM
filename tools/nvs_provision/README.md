@@ -67,3 +67,32 @@ arduino-cli upload --fqbn esp32:esp32:esp32:PSRAM=enabled,PartitionScheme=min_sp
   CH341/CH340 adapter), and R1 does **not** persist `/control` changes across
   reboots — re-apply `sdFreeSpaceMode=0` and `enableMotion=0` after every
   capture restart. Both facts were hit while measuring the baseline.
+- **`vcunset` — delete the firmware's migrated copies** (Phase 1,
+  `firmware/src/network/wifi_credentials.cpp`): the firmware copies
+  `ST_SSID`/`ST_Pass` into its own `visioncam` namespace on first use, and
+  later boots read that copy, so the migration is silent. `vcunset` (typed
+  `ERASE` confirmation, same policy as `tools/sd_format`) deletes **only**
+  those two copies, leaving the legacy keys as the source of truth. It
+  exists so the migration path can be re-observed and re-tested on hardware.
+
+### NVS partition-view hazard (learned 2026-11-17 — read before mixing tools)
+
+This tool boots with a **20 KB nvs** table (`0x9000`, matching
+arduino-esp32's `min_spiffs`); the VisionCam firmware boots with a **92 KB
+nvs** table at the same offset. Alternating the two while writing NVS can
+leave the page chain inconsistent between the two views, and the firmware's
+recovery (`nvs_init` failure → `nvs_flash_erase`, SPEC 7's one erase path)
+**erases the whole partition — credentials included**. That happened once
+during Phase 1 (evidence: the credential loss after a `vcunset` run; the
+board fell back to `no credentials configured`).
+
+Rule after running any tool with a different partition table:
+
+1. `set` the credentials again with this tool (or write the firmware's own
+   namespace), then
+2. boot the firmware **once** and confirm the Wi-Fi manager reports
+   `Connecting`/`Connected` before doing anything else.
+
+The credentials live only on the board (the workstation reads them from
+NetworkManager only while connected to that network), so a lost NVS means
+asking the owner for them again — never guess, never log.

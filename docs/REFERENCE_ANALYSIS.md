@@ -601,6 +601,59 @@ playback timing, timelapse, upload, WebDAV, HA discovery, and every
 - **Evidence:** `docs/evidence/phase1-core-boot-02.log` (EN clear) and
   `phase1-core-boot-03.log` (SW/PANIC retention ×3).
 
+## Network manager — station mode on hardware, and a credential-path bug — 2026-11-17 (Phase 1)
+
+- **Studied:** our own `firmware/src/network/` against the pinned ESP-IDF
+  6.1 APIs (`esp_wifi` event contract, `esp_netif_sntp`), then the board.
+- **What was built:** `network_manager.cpp` — one event handler on the
+  default event loop (state + events only), one reconnect task owning
+  `esp_wifi_connect()` with exponential backoff (1 s doubling to 32 s, plus
+  0..500 ms hardware-RNG jitter, counter reset on `IP_EVENT_STA_GOT_IP`),
+  `Connected` only on a real GOT_IP, SNTP started on the first GOT_IP.
+  Credentials come from NVS (SPEC 7): our `visioncam` namespace first, then
+  the Phase 0 `ESP-CAM_MJPEG` keys written by `tools/nvs_provision` as a
+  one-time migration source. Nothing but lengths is ever logged.
+- **What hardware proved (2026-11-17,
+  `docs/evidence/phase1-net-boot-01.log`):** the radio starts at
+  `networkManagerInit()`, **before** camera bring-up (1231 ms vs 2051 ms) —
+  the ordering the ISR-hazard entry above demands — and no panic occurs
+  even while the camera runs under real association traffic. Connection is
+  real: `GOT_IP 192.168.43.171 (rssi -68 dBm)` (same address R1 used in the
+  D2 run), first attempt failed, backoff retried at 2 s and connected —
+  the exponential schedule and the diagnostics counters all behave.
+  Degraded mode works too: with no credentials the driver is never touched
+  and the device stays local-only (`phase1-net-boot-04.log`).
+- **A companion hazard observation:** `cam_hal: EV-EOF-OVF` appeared once
+  in boot-01 during camera warm-up while the radio was associating — the
+  same overflow warning as the panic root cause, without the cache-off
+  window this time. Reinforces mitigation (3)/(4) of the ISR entry: keep
+  flash writes (NVS commits) out of the camera's lifetime and let
+  `cam_task` drain promptly. The run stayed panic-free and cache-error-free.
+- **A defect found and fixed (recorded so it is not re-introduced):** the
+  migration fallback was unreachable in the "our namespace exists but its
+  keys are missing" state because `nvs_get_str` returns the **NVS-specific**
+  `ESP_ERR_NVS_NOT_FOUND` (0x1102 family) and the code compared it against
+  the **generic** `ESP_ERR_NOT_FOUND` (0x0003 family) — different numbers,
+  so a plain "key missing" read propagated as a fatal credential error
+  (`phase1-net-boot-02.log`). Any NVS result-code comparison in this
+  project must use the `ESP_ERR_NVS_*` symbol.
+- **Data-loss lesson — NVS partition-view mismatch:** the credentials used
+  for boot-01 were **lost** afterwards. The provisioning tool boots with a
+  20 KB nvs table at 0x9000 while the firmware boots with a 92 KB table at
+  the same offset; alternating them while writing NVS left the page chain
+  inconsistent between the two views, and the firmware's recovery path
+  (`nvs_init` failure → `nvs_flash_erase`, SPEC 7's single erase case)
+  erased the partition — credentials included. Rule recorded in
+  `tools/nvs_provision/README.md`: after any tool with a different
+  partition table, re-provision and confirm `Connecting`/`Connected` on the
+  next firmware boot. **The owner must re-provision the LAN credentials
+  before the next connection test** — they exist nowhere else (the
+  workstation reads them from NetworkManager only while on that network).
+- **Evidence:** `phase1-net-boot-01.log` (connect + backoff + GOT_IP),
+  `-02.log` (NVS error-code bug), `-04.log` (local-only mode);
+  `tools/nvs_provision` now has a confirmation-gated `vcunset` for
+  re-testing the migration. SNTP sync line itself: `UNVERIFIED`.
+
 ## Deliberate divergences from R1 — do not "fix" these back
 
 | Area | R1 | VisionCam |

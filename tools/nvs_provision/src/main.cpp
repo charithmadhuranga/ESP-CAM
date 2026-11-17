@@ -22,6 +22,10 @@
 //     join\n                    try joining the Wi-Fi with the stored keys
 //                               and print the exact disconnect reason —
 //                               the diagnostic for a failed R1 connection
+//     vcunset\n / vcunset\tERASE  delete ONLY the firmware's migrated copies
+//                               in the "visioncam" namespace (typed
+//                               confirmation; the legacy keys above are the
+//                               source of truth and are never deleted)
 
 #include <cstdio>
 #include <cstring>
@@ -42,6 +46,14 @@ namespace {
 constexpr char kNamespace[] = "ESP-CAM_MJPEG";  // R1's APP_NAME
 constexpr char kKeySsid[]    = "ST_SSID";
 constexpr char kKeyPass[]    = "ST_Pass";
+
+// VisionCam's own namespace (firmware/include/wifi_credentials.h): the
+// firmware migrates the two legacy keys into it on first use. This command
+// can delete ONLY those copied keys, so the legacy provisioning above is
+// left as the source of truth — never a way to wipe the credentials.
+constexpr char kNsVisioncam[] = "visioncam";
+constexpr char kVcKeySsid[]   = "wifi_ssid";
+constexpr char kVcKeyPass[]   = "wifi_pass";
 // R1's buffers: ST_SSID[MAX_HOST_LEN=32], ST_Pass read with MAX_PWD_LEN=64.
 constexpr size_t kMaxSsid = 31;
 constexpr size_t kMaxPass = 63;
@@ -140,6 +152,72 @@ void handleSet(char* fields[], int count) {
                     static_cast<unsigned>(ssidLen + 1),
                     static_cast<unsigned>(passBack),
                     static_cast<unsigned>(passLen + 1));
+    }
+}
+
+// --- delete only the firmware's COPIES of the credentials ----------------
+// Why this exists: firmware's wifiCredentialsLoad() migrates the two
+// legacy keys into VisionCam's own namespace on first use. Later boots
+// then read the migrated copy and the migration path is silent. This
+// command deletes ONLY the copies, so a later boot demonstrably takes the
+// legacy-fallback path again — the check for that migration.
+// The legacy namespace and the Wi-Fi calibration data are never touched,
+// and a typed confirmation gates the destructive step (same policy as
+// tools/sd_format: nothing happens before ERASE).
+bool s_vcunset_armed = false;
+
+void handleVcUnset(char* fields[], int count) {
+    if (count != 2 || std::strcmp(fields[1], "ERASE") != 0) {
+        // First call (or a wrong confirmation): arm and stop.
+        s_vcunset_armed = true;
+        std::printf("cfgtool: vcunset deletes %s/%s and %s/%s — the legacy "
+                    "keys above are NOT touched\n",
+                    kNsVisioncam, kVcKeySsid, kNsVisioncam, kVcKeyPass);
+        std::printf("cfgtool: type 'vcunset\\tERASE' to proceed\n");
+        return;
+    }
+    if (!s_vcunset_armed) {
+        std::printf("cfgtool: run 'vcunset' once first (armed state required)\n");
+        return;
+    }
+    s_vcunset_armed = false;
+
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(kNsVisioncam, NVS_READWRITE, &handle);
+    if (err == ESP_ERR_NVS_NOT_FOUND) {
+        std::printf("cfgtool: namespace %s does not exist — nothing to do\n",
+                    kNsVisioncam);
+        return;
+    }
+    if (err != ESP_OK) {
+        std::printf("cfgtool: nvs_open(%s) failed: %s\n", kNsVisioncam,
+                    esp_err_to_name(err));
+        return;
+    }
+
+    int deleted = 0;
+    int absent = 0;
+    err = nvs_erase_key(handle, kVcKeySsid);
+    if (err == ESP_OK) ++deleted;
+    else if (err == ESP_ERR_NVS_NOT_FOUND) ++absent;
+    else std::printf("cfgtool: delete %s failed: %s\n", kVcKeySsid,
+                     esp_err_to_name(err));
+    err = nvs_erase_key(handle, kVcKeyPass);
+    if (err == ESP_OK) ++deleted;
+    else if (err == ESP_ERR_NVS_NOT_FOUND) ++absent;
+    else std::printf("cfgtool: delete %s failed: %s\n", kVcKeyPass,
+                     esp_err_to_name(err));
+    if ((err = nvs_commit(handle)) != ESP_OK) {
+        std::printf("cfgtool: nvs_commit failed: %s\n", esp_err_to_name(err));
+        nvs_close(handle);
+        return;
+    }
+    nvs_close(handle);
+    std::printf("cfgtool: namespace %s — erased %d key(s), %d already absent\n",
+                kNsVisioncam, deleted, absent);
+    if (deleted > 0) {
+        std::printf("cfgtool: a firmware boot now migrates from %s again\n",
+                    kNamespace);
     }
 }
 
@@ -351,9 +429,11 @@ extern "C" void app_main(void) {
             handleShow();
         } else if (std::strcmp(fields[0], "join") == 0) {
             handleJoin();
+        } else if (std::strcmp(fields[0], "vcunset") == 0) {
+            handleVcUnset(fields, count);
         } else {
             // Never echo the raw line: it may contain a passphrase.
-            std::printf("cfgtool: unknown command (expected 'set', 'show' or "
+            std::printf("cfgtool: unknown command (expected 'set', 'show', "
                         "'join'), %u chars ignored\n",
                         static_cast<unsigned>(len));
         }

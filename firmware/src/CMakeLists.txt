@@ -18,8 +18,10 @@
 # sdmmc          sdmmc_card_print_info, sdmmc_card_t
 # esp_driver_sdmmc  driver/sdmmc_host.h, SDMMC_HOST_DEFAULT, slot config
 # esp_driver_gpio   driver/gpio.h (GPIO4 lamp, PWDN power-cycle)
-# esp_wifi/esp_netif/esp_event  wifi_bringup.cpp (step 14: camera+SD under
-#                Wi-Fi off then on; SoftAP + scan only, no credentials)
+# esp_wifi/esp_netif/esp_event  wifi_bringup.cpp (Phase 0 smoke: SoftAP +
+#                scan only, no credentials) and network/network_manager.cpp
+#                (station mode + NTP via esp_netif's SNTP service, plan 02
+#                task 1.1.2). SNTP needs no extra component on IDF 6.1.
 # nvs_flash      Wi-Fi calibration storage required by esp_wifi_init
 # esp_timer      core/resource_monitor.cpp: esp_timer_get_time() for uptime,
 #                event timestamps and monitor sampling intervals
@@ -33,6 +35,8 @@ idf_component_register(
         "core/event_bus.cpp"
         "core/resource_monitor.cpp"
         "core/ring_log.cpp"
+        "network/network_manager.cpp"
+        "network/wifi_credentials.cpp"
     INCLUDE_DIRS "../include"
     PRIV_REQUIRES
         esp_psram

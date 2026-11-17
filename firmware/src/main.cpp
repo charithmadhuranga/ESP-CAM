@@ -22,6 +22,7 @@
 #include "camera_bringup.h"
 #include "core_init.h"
 #include "event_bus.h"
+#include "network_manager.h"
 #include "resource_monitor.h"
 #include "ring_log.h"
 #include "sd_bringup.h"
@@ -73,6 +74,8 @@ extern "C" void app_main(void) {
     esp_log_level_set("vc_sd", ESP_LOG_INFO);
     esp_log_level_set("vc_core", ESP_LOG_INFO);
     esp_log_level_set("vc_resmon", ESP_LOG_INFO);
+    esp_log_level_set("vc_net", ESP_LOG_INFO);
+    esp_log_level_set("vc_wificred", ESP_LOG_INFO);
 
     // --- core services (plan 02, task 1.1.1) ------------------------------
     // FIRST: the RTC ring log must read the previous session before this
@@ -81,6 +84,32 @@ extern "C" void app_main(void) {
     if (coreErr != ESP_OK) {
         ESP_LOGE(TAG, "CORE SERVICES FAILED: %s — continuing degraded",
                  esp_err_to_name(coreErr));
+    }
+
+    // --- network manager FIRST, before the camera (plan 02 task 1.1.2) ---
+    // The radio must be up (or deliberately left off) BEFORE the camera is
+    // initialised: esp_wifi_start() initialises the radio and reads NVS with
+    // the flash cache disabled, and that window must never overlap the
+    // camera DMA ISR (docs/REFERENCE_ANALYSIS.md, "Camera driver ISR
+    // overflow warning vs flash-cache-off windows" — reproduced as three
+    // byte-identical panics, phase1-core-boot-03.log, when Wi-Fi was
+    // started while the camera streamed).
+    //
+    // With no credentials the manager leaves the driver completely
+    // untouched and Wi-FiState::Off is the operating mode — local-first
+    // (SPEC 9). The Phase 0 SoftAP then still drives the radio below for
+    // the TX-load probe.
+    const esp_err_t netErr = visioncam::networkManagerInit();
+    if (netErr != ESP_OK) {
+        ESP_LOGE(TAG, "NETWORK init failed: %s — continuing without Wi-Fi",
+                 esp_err_to_name(netErr));
+        visioncam::eventBusPublish(visioncam::EventType::WifiDisconnected,
+                                   static_cast<uint16_t>(netErr & 0xFF));
+    } else {
+        const visioncam::WifiStatus ws = visioncam::networkManagerStatus();
+        ESP_LOGI(TAG, "network: %s (configured=%d radio_up=%d)",
+                 visioncam::wifiStateName(ws.state), ws.configured ? 1 : 0,
+                 ws.radio_up ? 1 : 0);
     }
 
     // Evidence line for the resource monitor: live heap + the monitor's
@@ -205,40 +234,70 @@ extern "C" void app_main(void) {
     // sequence is safe even when the camera is already down.
     const char* step14 = "SKIP";
     if (camErr == ESP_OK && sd.self_test_ok) {
-        // (a) radio has never been started — the "Wi-Fi off" state.
+        // (a) baseline cycle. With no credentials the radio has never been
+        // started ("Wi-Fi off"); with credentials the network manager owns
+        // it (started before the camera at boot — the safe order) and this
+        // cycle runs under whatever association it is doing.
         bool ok = togetherCycle("wifi off");
 
-        // (b) Wi-Fi on: camera down -> radio up -> camera back -> camera + SD
-        // while the radio beacons -> radio off. The final wifiStop() runs
-        // with the camera UP (observed safe on boot 4 of
-        // phase1-core-boot-03.log); the hazard is on the wifiStart side only.
-        visioncam::cameraShutdown();
-        visioncam::WifiReport wr;
-        const esp_err_t werr = visioncam::wifiStart(wr);
-        if (werr != ESP_OK) {
-            ESP_LOGE(TAG, "step 14: wifi start failed: %s", esp_err_to_name(werr));
-            ok = false;
+        if (visioncam::networkManagerRadioOwned()) {
+            // The real network manager owns the radio: its association and
+            // backoff traffic IS the TX load this test exists to survive,
+            // and a SoftAP next to a live STA would be wrong. The radio was
+            // started before the camera ISR existed (boot order above), so
+            // the camera-down dance is not needed. Three seconds of real
+            // network activity with camera + SD running concurrently.
+            const visioncam::WifiStatus ws0 = visioncam::networkManagerStatus();
+            ESP_LOGI(TAG, "step 14: network manager owns the radio (%s, "
+                          "rssi %d dBm, connects=%u) — using real TX load",
+                     visioncam::wifiStateName(ws0.state), ws0.rssi,
+                     static_cast<unsigned>(ws0.connects));
+            vTaskDelay(pdMS_TO_TICKS(3000));
+            ok = togetherCycle("wifi on (network manager)") && ok;
+            const visioncam::WifiStatus ws1 = visioncam::networkManagerStatus();
+            step14 = ok ? "OK" : "FAIL";
+            ESP_LOGI(TAG, "step 14 result: %s (network %s, rssi %d dBm, "
+                          "connects=%u disconnects=%u attempts=%u backoff=%u ms)",
+                     step14, visioncam::wifiStateName(ws1.state), ws1.rssi,
+                     static_cast<unsigned>(ws1.connects),
+                     static_cast<unsigned>(ws1.disconnects),
+                     static_cast<unsigned>(ws1.attempts),
+                     static_cast<unsigned>(ws1.backoff_ms));
         } else {
-            visioncam::CameraReport cam14;
-            const esp_err_t rerr = visioncam::cameraBringup(cam14);
-            if (rerr != ESP_OK) {
-                ESP_LOGE(TAG, "step 14: camera re-bringup after wifi start failed: %s",
-                         esp_err_to_name(rerr));
+            // No credentials → manager left the driver alone → the Phase 0
+            // SoftAP probe provides the TX load, in the hazard-safe order:
+            // camera down, radio up, camera back, cycle, radio off. The
+            // final wifiStop() runs with the camera UP (observed safe on
+            // boot 4 of phase1-core-boot-03.log); the hazard is on the
+            // wifiStart side only.
+            visioncam::cameraShutdown();
+            visioncam::WifiReport wr;
+            const esp_err_t werr = visioncam::wifiStart(wr);
+            if (werr != ESP_OK) {
+                ESP_LOGE(TAG, "step 14: wifi start failed: %s", esp_err_to_name(werr));
                 ok = false;
             } else {
-                vTaskDelay(pdMS_TO_TICKS(3000));  // sustain the beacon TX load
-                ok = togetherCycle("wifi on") && ok;
-                visioncam::WifiReport wr2;
-                const esp_err_t serr = visioncam::wifiStop(wr2);
-                if (serr != ESP_OK) {
-                    ESP_LOGE(TAG, "step 14: wifi stop failed: %s", esp_err_to_name(serr));
+                visioncam::CameraReport cam14;
+                const esp_err_t rerr = visioncam::cameraBringup(cam14);
+                if (rerr != ESP_OK) {
+                    ESP_LOGE(TAG, "step 14: camera re-bringup after wifi start failed: %s",
+                             esp_err_to_name(rerr));
                     ok = false;
+                } else {
+                    vTaskDelay(pdMS_TO_TICKS(3000));  // sustain the beacon TX load
+                    ok = togetherCycle("wifi on") && ok;
+                    visioncam::WifiReport wr2;
+                    const esp_err_t serr = visioncam::wifiStop(wr2);
+                    if (serr != ESP_OK) {
+                        ESP_LOGE(TAG, "step 14: wifi stop failed: %s", esp_err_to_name(serr));
+                        ok = false;
+                    }
                 }
             }
+            step14 = ok ? "OK" : "FAIL";
+            ESP_LOGI(TAG, "step 14 result: %s (scan heard %u network(s))",
+                     step14, static_cast<unsigned>(wr.scan_results));
         }
-        step14 = ok ? "OK" : "FAIL";
-        ESP_LOGI(TAG, "step 14 result: %s (scan heard %u network(s))",
-                 step14, static_cast<unsigned>(wr.scan_results));
         logHeap("after wifi");
     } else {
         ESP_LOGW(TAG, "step 14 skipped — camera or SD not OK");
@@ -264,11 +323,13 @@ extern "C" void app_main(void) {
     visioncam::EventBusStats ebs2;
     visioncam::eventBusGetStats(ebs2);
     ESP_LOGI(TAG, "------------------------------------------------");
-    ESP_LOGI(TAG, " core: %s | camera: %s | sd: %s | psram: %s | wifi(step14): %s | forced-retry: %s",
+    const visioncam::WifiStatus netSt = visioncam::networkManagerStatus();
+    ESP_LOGI(TAG, " core: %s | camera: %s | sd: %s | psram: %s | net: %s | wifi(step14): %s | forced-retry: %s",
              coreErr == ESP_OK ? "OK" : "FAIL",
              camErr == ESP_OK ? "OK" : "FAIL",
              sdErr == ESP_OK ? (sd.self_test_ok ? "OK" : "SELFTEST-FAIL") : "FAIL",
              psramSize > 0 ? "OK" : "MISSING",
+             visioncam::wifiStateName(netSt.state),
              step14,
              forced);
     ESP_LOGI(TAG, " events: published=%u delivered=%u dropped=%u | abnormal boots=%u",

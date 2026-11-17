@@ -8,6 +8,61 @@ tagged once Phase 9 release criteria pass.
 
 ### Added
 
+- **Phase 1 task 1.1.2 — network manager (2026-11-17).** New
+  `firmware/src/network/` (`network_manager.cpp`, `wifi_credentials.cpp`) +
+  `firmware/include/{network_manager,wifi_credentials}.h`: ESP-IDF station
+  mode with one event handler and one reconnect task owning
+  `esp_wifi_connect()` — exponential backoff (1 s doubling to a 32 s cap,
+  0..500 ms hardware-RNG jitter, counter reset on `IP_EVENT_STA_GOT_IP`).
+  `WifiState::Connected` is entered only on a real GOT_IP (DESIGN.md's
+  "real connection" rule); WifiConnected/WifiDisconnected carry RSSI /
+  driver-reason codes into the bounded event bus. SNTP via `esp_netif`'s
+  service (IDF 6.1 merged the old `esp_sntp` component into
+  esp_netif/lwip — no new dependency), started on the first GOT_IP.
+  Credentials load from NVS (`visioncam` namespace, then the Phase 0
+  `ESP-CAM_MJPEG` keys as a one-time migration source); lengths only are
+  ever logged (AGENTS rule 17).
+  **Radio-before-camera boot order is now in code**: `main.cpp` calls
+  `networkManagerInit()` before camera bring-up — the ordering that closes
+  the reproduced esp32-camera ISR hazard (`docs/REFERENCE_ANALYSIS.md`).
+  Build: RAM 54,416 B (16.6 %), Flash 1,072,560 B (68.2 %).
+- **`tools/nvs_provision` — new `vcunset` command (2026-11-17).**
+  Confirmation-gated (`vcunset` then `vcunset<tab>ERASE`) deletion of
+  **only** the two migrated copies in the `visioncam` namespace, so the
+  legacy Phase 0 keys stay the source of truth and the firmware migration
+  path can be re-observed on hardware. Same typed-confirmation policy as
+  `tools/sd_format`.
+
+### Fixed
+
+- **Network credential fallback was unreachable (2026-11-17).**
+  `wifiCredentialsLoad` compared `nvs_get_str`'s NVS-specific
+  `ESP_ERR_NVS_NOT_FOUND` against the generic `ESP_ERR_NOT_FOUND`
+  (different numbers), so "key missing" in our own namespace propagated as
+  a fatal error and the legacy migration fallback never ran. Exposed by
+  `docs/evidence/phase1-net-boot-02.log`.
+- **`esp_wifi_sta_get_rssi` takes `int*`**, not `int8_t*` (build fix).
+
+### Changed
+
+- Smoke step 14 now branches on `networkManagerRadioOwned()`: with
+  credentials the manager's real association traffic is the TX load (no
+  SoftAP next to a live STA); without them the Phase 0 SoftAP path runs in
+  the hazard-safe camera-down → radio-up → camera-up order.
+- Verdict line gains a `net:` column (`Connecting`/`Connected`/`Off`).
+
+### Known issues / owner actions
+
+- **The board's LAN credentials were lost** (NVS erase after a
+  tool/firmware partition-view mismatch — root cause, rule and recovery in
+  `docs/REFERENCE_ANALYSIS.md` and `tools/nvs_provision/README.md`). The
+  owner must re-provision (workstation → hotspot → `set`) before the next
+  connection test. Station-mode behaviour itself is already proven
+  (`phase1-net-boot-01.log`: GOT_IP 192.168.43.171, rssi −68 dBm, backoff
+  retry at 2 s).
+- **SNTP sync completion is `UNVERIFIED`** — the sync line fell outside the
+  capture window; re-test with a longer capture once credentials return.
+
 - **Phase 1 task 1.1.1 — core services (2026-11-17).** New
   `firmware/src/core/` + headers: `coreInit()` boot order (RTC ring log
   first, so a crash later in the boot cannot destroy the evidence), typed
