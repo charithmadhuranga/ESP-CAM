@@ -21,12 +21,18 @@
 # esp_wifi/esp_netif/esp_event  wifi_bringup.cpp (step 14: camera+SD under
 #                Wi-Fi off then on; SoftAP + scan only, no credentials)
 # nvs_flash      Wi-Fi calibration storage required by esp_wifi_init
+# esp_timer      core/resource_monitor.cpp: esp_timer_get_time() for uptime,
+#                event timestamps and monitor sampling intervals
 idf_component_register(
     SRCS
         "main.cpp"
         "camera_bringup.cpp"
         "sd_bringup.cpp"
         "wifi_bringup.cpp"
+        "core/core_init.cpp"
+        "core/event_bus.cpp"
+        "core/resource_monitor.cpp"
+        "core/ring_log.cpp"
     INCLUDE_DIRS "../include"
     PRIV_REQUIRES
         esp_psram
@@ -39,4 +45,5 @@ idf_component_register(
         esp_netif
         esp_event
         nvs_flash
+        esp_timer
 )

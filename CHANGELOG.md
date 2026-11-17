@@ -8,6 +8,36 @@ tagged once Phase 9 release criteria pass.
 
 ### Added
 
+- **Phase 1 task 1.1.1 — core services (2026-11-17).** New
+  `firmware/src/core/` + headers: `coreInit()` boot order (RTC ring log
+  first, so a crash later in the boot cannot destroy the evidence), typed
+  bounded **event bus** (depth 16, drop-oldest, dispatcher task), **RTC RAM
+  ring log** (4096 B `.rtc_noinit`, crash-loop counter with health point at
+  *end of boot*), **resource monitor** (heap / largest block / min heap /
+  PSRAM / uptime / reset reason / task stack watermarks, thresholds 32 KB
+  free / 16 KB largest internal). Evidence:
+  `docs/evidence/phase1-core-boot-01..04.log`; `docs/TEST_PLAN.md` 1.1.1a–e.
+- **Two hardware findings recorded in `docs/REFERENCE_ANALYSIS.md`
+  (2026-11-17):**
+  (1) *esp32-camera 2.1.9 ISR hazard* — starting the Wi-Fi radio while the
+  camera streams overflows the camera's 1–3-deep DMA event queue; the ISR's
+  overflow warning reads a flash-resident format string while the flash
+  cache is off (radio-init NVS reads) → `Cache error` panic, reproduced
+  **3× byte-identical** (`phase1-core-boot-03.log`). Upstream `master` has
+  the same unfixed macro, so no pin bump helps and patching
+  `managed_components/` is forbidden (rule 33). Mitigations adopted:
+  network-before-camera boot order, never start the radio while the camera
+  streams (smoke step 14 now does camera-down → `wifiStart()` → camera-up —
+  verified clean in `phase1-core-boot-04.log`), serialise NVS writes with
+  camera framesize reconfig (task 1.2), short frame leases (task 1.1.5).
+  (2) *RTC noinit retention* — EN-pin resets (upload / manual reset) clear
+  `.rtc_noinit`; SW/PANIC resets preserve it (proven 3×). Operational rule:
+  `boot=1` after a flash is **not** broken retention.
+- **Crash-loop blind spot found and fixed:** health used to be marked when
+  the camera came up (~0.8 s) but crashes occurred later (~2.2 s), so
+  `abnormal_boots` stayed 0; `ringLogMarkHealthy()` moved to after the boot
+  verdict (`phase1-core-boot-03.log` vs `-04.log`).
+
 - **Phase 0 closed — all owner questions answered (2026-11-16).** The three
   D2 follow-ups are recorded with evidence: **GPIO4 lamp under R1 observed**
   (boot-window flash consistent with Arduino `SD_MMC` initialising pin 4 at

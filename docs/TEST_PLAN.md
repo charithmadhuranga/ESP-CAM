@@ -62,6 +62,16 @@ ESP32-CAM-MB. Evidence:
   `File size: 12.3MB` / `3796 kB/s`. Phase 3's recorder must not copy this
   failure mode — check every write's return value.
 
+## Phase 1 — core camera and web UI (in progress)
+
+| # | Test | Status | Evidence |
+|---|---|---|---|
+| 1.1.1a | Core services boot first: ring log reads previous session, event bus round trip, resource snapshot + task table | RUN PASS | `docs/evidence/phase1-core-boot-01.log`, `-02.log` — 9 tasks, `vc_eventbus` 2572 B / `vc_monitor` 3288 B stack; event bus published=1 delivered=1 |
+| 1.1.1b | Crash-loop counter counts a crash after the health point | RUN PASS (found + fixed a blind spot) | `-03.log`: health was marked at camera-OK (~0.8 s) but the panic hit ~2.2 s → `abnormal=0`. Marker moved to end of boot; `-04.log` shows `health marked` after the verdict |
+| 1.1.1c | RTC ring log retention across resets | RUN PASS with documented limits | `-02.log` (EN reset clears `.rtc_noinit`), `-03.log` (SW/PANIC resets preserve it ×3). EN-clear is documented behaviour: a flash/manual EN reset starts a fresh log — `docs/REFERENCE_ANALYSIS.md` |
+| 1.1.1d | **Driver hazard:** camera DMA ISR overflow warning vs flash-cache-off windows — radio must never start while the camera streams | RUN FAIL reproduced ×3, mitigation verified | `-03.log` = three byte-identical panics (PC 0x40008047 in ROM `ets_printf` called from the ISR's `EV-EOF-OVF` branch during `wifiStart()`); `-04.log` = clean boot with camera-down→`wifiStart()`→camera-up order, `step 14 result: OK`, no panic. Root cause + mitigations in `docs/REFERENCE_ANALYSIS.md` ("Camera driver ISR overflow warning…"); upstream `master` has the same unfixed macro — no pin bump helps, patching `managed_components/` is forbidden (rule 33) |
+| 1.1.1e | Step 14 concurrency (camera + SD + radio) under the new order | RUN PASS | `-04.log` — `core: OK \| camera: OK \| sd: OK \| psram: OK \| wifi(step14): OK \| forced-retry: OK`, single `POWERON_RESET`, no brownout/panic |
+
 ## Later phases
 
 Not started. Every row stays `TODO` until its phase runs; see

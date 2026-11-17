@@ -20,28 +20,17 @@
 
 #include "board_profile.h"
 #include "camera_bringup.h"
+#include "core_init.h"
+#include "event_bus.h"
+#include "resource_monitor.h"
+#include "ring_log.h"
 #include "sd_bringup.h"
 #include "wifi_bringup.h"
 
 static const char* TAG = "vc_smoke";
 
-// esp_reset_reason() has no dedicated accessor for a human-readable string,
-// so map the enum explicitly rather than printing raw integers.
-static const char* resetReasonName(esp_reset_reason_t reason) {
-    switch (reason) {
-        case ESP_RST_POWERON:   return "POWERON";
-        case ESP_RST_EXT:       return "EXT";
-        case ESP_RST_SW:        return "SW";
-        case ESP_RST_PANIC:     return "PANIC";
-        case ESP_RST_INT_WDT:   return "INT_WDT";
-        case ESP_RST_TASK_WDT:  return "TASK_WDT";
-        case ESP_RST_WDT:       return "WDT";
-        case ESP_RST_DEEPSLEEP: return "DEEPSLEEP";
-        case ESP_RST_BROWNOUT:  return "BROWNOUT";
-        case ESP_RST_SDIO:      return "SDIO";
-        default:                return "UNKNOWN";
-    }
-}
+// Reset-reason spelling is shared (visioncam::resetReasonName in
+// resource_monitor.h) so the banner, ring log and metrics never diverge.
 
 static void logHeap(const char* where) {
     ESP_LOGI(TAG, "heap[%s] free: %u B, min ever: %u B, largest block: %u B",
@@ -82,14 +71,48 @@ extern "C" void app_main(void) {
     esp_log_level_set("vc_smoke", ESP_LOG_INFO);
     esp_log_level_set("vc_cam", ESP_LOG_INFO);
     esp_log_level_set("vc_sd", ESP_LOG_INFO);
+    esp_log_level_set("vc_core", ESP_LOG_INFO);
+    esp_log_level_set("vc_resmon", ESP_LOG_INFO);
+
+    // --- core services (plan 02, task 1.1.1) ------------------------------
+    // FIRST: the RTC ring log must read the previous session before this
+    // boot can reset the chip (core_init.h documents the full order).
+    const esp_err_t coreErr = visioncam::coreInit();
+    if (coreErr != ESP_OK) {
+        ESP_LOGE(TAG, "CORE SERVICES FAILED: %s — continuing degraded",
+                 esp_err_to_name(coreErr));
+    }
+
+    // Evidence line for the resource monitor: live heap + the monitor's
+    // task table (stack high-water marks, worst first).
+    visioncam::ResourceSnapshot rs;
+    visioncam::resourceMonitorSnapshot(rs);
+    ESP_LOGI(TAG, "resource snapshot: free=%u internal=%u min=%u largest=%u "
+                  "psram_free=%u tasks=%u boot=%u abnormal=%u",
+             static_cast<unsigned>(rs.free_heap),
+             static_cast<unsigned>(rs.internal_free),
+             static_cast<unsigned>(rs.min_free_heap),
+             static_cast<unsigned>(rs.largest_block),
+             static_cast<unsigned>(rs.psram_free),
+             static_cast<unsigned>(rs.task_count),
+             static_cast<unsigned>(rs.boot_count),
+             static_cast<unsigned>(rs.abnormal_boots));
+    ESP_LOGI(TAG, "task table (worst stack first):");
+    for (uint16_t i = 0; i < rs.tasks_reported; ++i) {
+        const visioncam::TaskInfo& ti = rs.tasks[i];
+        ESP_LOGI(TAG, "  %-16s hwm=%6u B prio=%u core=%d state=%u",
+                 ti.name, static_cast<unsigned>(ti.stack_hwm),
+                 static_cast<unsigned>(ti.prio), static_cast<int>(ti.core),
+                 static_cast<unsigned>(ti.state));
+    }
 
     ESP_LOGI(TAG, "================================================");
-    ESP_LOGI(TAG, " VisionCam Pro — Phase 0 smoke test");
+    ESP_LOGI(TAG, " VisionCam Pro — Phase 1 bring-up (smoke steps)");
     ESP_LOGI(TAG, "================================================");
 
     // --- step 10: reset cause (SPEC 2.4) -----------------------------------
     const esp_reset_reason_t reason = esp_reset_reason();
-    ESP_LOGI(TAG, "reset reason: %s", resetReasonName(reason));
+    ESP_LOGI(TAG, "reset reason: %s", visioncam::resetReasonName(reason));
     if (reason == ESP_RST_BROWNOUT) {
         ESP_LOGW(TAG, "brownout detected — check the 5 V supply under Wi-Fi TX load");
     }
@@ -115,11 +138,30 @@ extern "C" void app_main(void) {
         ESP_LOGE(TAG, "CAMERA FAIL: %s (attempts=%u, initialised=%d, pid=0x%04x)",
                  esp_err_to_name(camErr), cam.init_attempts,
                  cam.initialised ? 1 : 0, cam.sensor_pid);
+        visioncam::eventBusPublish(visioncam::EventType::CameraFailed,
+                                   0, camErr);
     } else {
         ESP_LOGI(TAG, "CAMERA OK: pid=0x%04x, attempts=%u, warmup=%u, jpeg=%u B (%ux%u)",
                  cam.sensor_pid, cam.init_attempts, cam.warmup_discarded,
                  static_cast<unsigned>(cam.jpeg_bytes), cam.jpeg_width, cam.jpeg_height);
+        visioncam::eventBusPublish(visioncam::EventType::CameraStarted);
+        // NOTE: the health marker for the crash-loop counter is NOT set here
+        // — it moved to the end of the boot sequence (after the verdict) so
+        // a crash later in this boot still counts as abnormal. Evidence:
+        // docs/evidence/phase1-core-boot-03.log (crash ~2.2 s, health marked
+        // at ~0.8 s -> abnormal=0). See core_init.h for the health point.
     }
+
+    // Event-bus round trip: the dispatcher runs at higher priority than
+    // this task, so delivery is complete by the time the delay returns.
+    vTaskDelay(pdMS_TO_TICKS(50));
+    visioncam::EventBusStats ebs;
+    visioncam::eventBusGetStats(ebs);
+    const bool bus_ok = ebs.published >= 1 && ebs.delivered >= 1;
+    ESP_LOGI(TAG, "event bus self-test: published=%u delivered=%u dropped=%u -> %s",
+             static_cast<unsigned>(ebs.published),
+             static_cast<unsigned>(ebs.delivered),
+             static_cast<unsigned>(ebs.dropped), bus_ok ? "OK" : "FAIL");
 
     logHeap("after camera");
 
@@ -153,26 +195,45 @@ extern "C" void app_main(void) {
     // reset reason BROWNOUT — so this log plus the following boot's banner
     // are the evidence pair for "no brownout". Wi-Fi here is only a local
     // SoftAP + scan (wifi_bringup.h): no credentials, no network joined.
+    //
+    // ORDER (docs/REFERENCE_ANALYSIS.md, "Camera driver ISR overflow warning
+    // vs flash-cache-off windows"): the radio must be started with the camera
+    // DOWN. esp_wifi_init() reads NVS with the flash cache disabled, and the
+    // camera DMA ISR's overflow warning reads a flash-resident literal —
+    // with both live the ISR faults (reproduced 3x, phase1-core-boot-03.log).
+    // cameraShutdown() is NULL-safe (cam_deinit guards cam_obj), so this
+    // sequence is safe even when the camera is already down.
     const char* step14 = "SKIP";
     if (camErr == ESP_OK && sd.self_test_ok) {
         // (a) radio has never been started — the "Wi-Fi off" state.
         bool ok = togetherCycle("wifi off");
 
-        // (b) Wi-Fi on: bring the radio up, let it beacon, run camera + SD
-        // again while it is active, then turn it back off.
+        // (b) Wi-Fi on: camera down -> radio up -> camera back -> camera + SD
+        // while the radio beacons -> radio off. The final wifiStop() runs
+        // with the camera UP (observed safe on boot 4 of
+        // phase1-core-boot-03.log); the hazard is on the wifiStart side only.
+        visioncam::cameraShutdown();
         visioncam::WifiReport wr;
         const esp_err_t werr = visioncam::wifiStart(wr);
         if (werr != ESP_OK) {
             ESP_LOGE(TAG, "step 14: wifi start failed: %s", esp_err_to_name(werr));
             ok = false;
         } else {
-            vTaskDelay(pdMS_TO_TICKS(3000));  // sustain the beacon TX load
-            ok = togetherCycle("wifi on") && ok;
-            visioncam::WifiReport wr2;
-            const esp_err_t serr = visioncam::wifiStop(wr2);
-            if (serr != ESP_OK) {
-                ESP_LOGE(TAG, "step 14: wifi stop failed: %s", esp_err_to_name(serr));
+            visioncam::CameraReport cam14;
+            const esp_err_t rerr = visioncam::cameraBringup(cam14);
+            if (rerr != ESP_OK) {
+                ESP_LOGE(TAG, "step 14: camera re-bringup after wifi start failed: %s",
+                         esp_err_to_name(rerr));
                 ok = false;
+            } else {
+                vTaskDelay(pdMS_TO_TICKS(3000));  // sustain the beacon TX load
+                ok = togetherCycle("wifi on") && ok;
+                visioncam::WifiReport wr2;
+                const esp_err_t serr = visioncam::wifiStop(wr2);
+                if (serr != ESP_OK) {
+                    ESP_LOGE(TAG, "step 14: wifi stop failed: %s", esp_err_to_name(serr));
+                    ok = false;
+                }
             }
         }
         step14 = ok ? "OK" : "FAIL";
@@ -200,15 +261,31 @@ extern "C" void app_main(void) {
     }
 
     // --- verdict -----------------------------------------------------------
+    visioncam::EventBusStats ebs2;
+    visioncam::eventBusGetStats(ebs2);
     ESP_LOGI(TAG, "------------------------------------------------");
-    ESP_LOGI(TAG, " camera: %s | sd: %s | psram: %s | wifi(step14): %s | forced-retry: %s",
+    ESP_LOGI(TAG, " core: %s | camera: %s | sd: %s | psram: %s | wifi(step14): %s | forced-retry: %s",
+             coreErr == ESP_OK ? "OK" : "FAIL",
              camErr == ESP_OK ? "OK" : "FAIL",
              sdErr == ESP_OK ? (sd.self_test_ok ? "OK" : "SELFTEST-FAIL") : "FAIL",
              psramSize > 0 ? "OK" : "MISSING",
              step14,
              forced);
-    ESP_LOGI(TAG, " next: flash this build and fill docs/HARDWARE.md section 5");
+    ESP_LOGI(TAG, " events: published=%u delivered=%u dropped=%u | abnormal boots=%u",
+             static_cast<unsigned>(ebs2.published),
+             static_cast<unsigned>(ebs2.delivered),
+             static_cast<unsigned>(ebs2.dropped),
+             static_cast<unsigned>(visioncam::ringLogAbnormalBoots()));
     ESP_LOGI(TAG, "================================================");
+
+    // Health point for the crash-loop counter (plan 02 task 1.1.1): reached
+    // only when the whole boot sequence completed — anything that reset the
+    // chip before this line increments abnormal_boots on the next boot.
+    // When web/ lands (task 1.2) this stays at end-of-boot but the criterion
+    // becomes "camera + HTTP serving"; Wi-Fi remains optional (SPEC 9).
+    visioncam::ringLogMarkHealthy();
+    ESP_LOGI(TAG, "health marked: abnormal boots now %u",
+             static_cast<unsigned>(visioncam::ringLogAbnormalBoots()));
 
     // Keep the task alive so heap minima accumulate across the idle period.
     for (;;) {

@@ -68,3 +68,15 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 # the same table (byte-identical to the IDF-side output).
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# --- FreeRTOS trace facility -------------------------------------------------
+# uxTaskGetSystemState() — the resource monitor's task enumeration
+# (core/resource_monitor.cpp; SPEC 8.4 requires task stack high-water marks
+# for EVERY task, not just ones that cooperate). The function is inside
+# "#if ( configUSE_TRACE_FACILITY == 1 )" in tasks.c and IDF's Kconfig
+# default is n, so without this line it does not exist at link time.
+# Cost: a few KB of flash in tasks.c. Effective only if the generated
+# sdkconfig.h contains "#define CONFIG_FREERTOS_USE_TRACE_FACILITY 1" —
+# this file's own rule: never assume a line took effect (plan 02 task
+# 1.1.1, verified at the first Phase 1 build).
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y

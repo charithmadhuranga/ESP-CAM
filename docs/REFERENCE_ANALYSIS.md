@@ -523,6 +523,84 @@ playback timing, timelapse, upload, WebDAV, HA discovery, and every
 - **Evidence:** source lines cited; hardware `UNVERIFIED` until the Phase 1
   settings-persistence test.
 
+## Camera driver ISR overflow warning vs flash-cache-off windows — 2026-11-17 (Phase 1)
+
+- **Studied:** pinned esp32-camera 2.1.9 `driver/cam_hal.c:250-263`
+  (`ll_cam_send_event`), `:119-129` (`CAM_WARN_THROTTLE`),
+  `target/esp32/ll_cam.c:243` (DMA ISR); ESP-IDF fatal-errors doc (IRAM
+  interrupt contract); upstream `master` `cam_hal.c` fetched 2026-11-17.
+- **What it does / limits / failure modes:** the camera DMA ISR is allocated
+  with `ESP_INTR_FLAG_IRAM`, so every instruction it executes and every byte
+  it reads must be in IRAM/DRAM — the flash cache may be disabled at any
+  instant by any other task doing flash I/O (NVS read/write, partition
+  read). On a **queue overflow** (`ll_cam_send_event` failing to enqueue),
+  the overflow branch runs `CAM_WARN_THROTTLE` → `ets_printf("EV-EOF-OVF")`
+  — the format string lives in flash (`0x3f404898`, confirmed by disassembly
+  of `ll_cam_send_event`: `l32r a11, … (3f404898 …)`), so if the overflow
+  lands inside a cache-off window the ISR faults: `Cache error, Cache
+  disabled but cached memory region accessed`, PC `0x40008047` (inside ROM
+  `ets_printf`), backtrace joining `ll_cam_dma_isr` → `_xt_lowint1` and the
+  interrupted task's NVS→`esp_flash_read` chain. The event queue is only
+  `dma_half_buffer_cnt − 1` deep (`cam_hal.c:633`), so one or two frames of
+  stall overflows it — the stall comes from radio-init bursts starving
+  `cam_task` while `wifi_nvs_validate_lr_info` etc. read NVS with the cache
+  off.
+- **Reproduced on hardware 2026-11-17:** three byte-identical panics during
+  step 14's `wifiStart()` with the camera streaming (PC/A0/A1 identical ×3;
+  `docs/evidence/phase1-core-boot-03.log`). `EV-EOF-OVF` itself appears in
+  the same window on a boot that survived — the overflow is deterministic
+  during radio init; the *panic* only when the warning fires inside a
+  cache-off window.
+- **Upstream status:** the same `CAM_WARN_THROTTLE` macro is still present
+  on `master` (fetched 2026-11-17) — **a pin bump cannot fix this**, and
+  patching `managed_components/` would violate AGENTS rule 33 (never fork
+  the driver).
+- **Decision:** **defer to ordering mitigations** (no code change to the
+  driver): (1) boot the **network before the camera** — the plan's task
+  order 1.1.2 → 1.1.3 already does this, and this finding is the
+  evidence-based reason for it: `esp_wifi_init`'s NVS reads must happen
+  while no camera ISR exists; (2) never start/stop the radio while the
+  camera streams — smoke step 14 now does `cameraShutdown()` →
+  `wifiStart()` → `cameraBringup()` → `togetherCycle("wifi on")`, keeping
+  the camera+SD+beacon concurrency check while removing the radio-init
+  burst from the camera's lifetime; (3) config endpoints (task 1.2) must
+  serialise NVS writes with camera framesize reconfiguration so a cache-off
+  window never coincides with a framesize switch that stalls `cam_task`;
+  (4) keep frame leases short (task 1.1.5) so `cam_task` drains the event
+  queue promptly.
+- **Reason:** the defect is in a pinned third-party ISR we may not modify;
+  every viable fix is on our side of the boundary — ordering, serialising
+  and bounded leases.
+- **Evidence:** `docs/evidence/phase1-core-boot-03.log` (three panics +
+  the surviving `EV-EOF-OVF`), addr2line/objdump decode recorded in this
+  session, upstream `master` source check 2026-11-17.
+
+## RTC noinit retention: EN reset clears it, SW/PANIC resets preserve it — 2026-11-17 (Phase 1)
+
+- **Studied:** our own `ring_log.cpp` (`.rtc_noinit` symbols verified in the
+  ELF at `0x50000000–0x5000101c`), observed across four consecutive boots.
+- **What was found:** the RTC-no-init ring survives **software and panic
+  resets** (`rst:0x3 (SW_RESET)` and `reset=PANIC` boot markers both
+  retained predecessors' lines — proven 3× in one capture: boots 2, 3 and 4
+  each dumped the full prior history including crash markers), but an
+  **EN-pin reset** (DTR pulse / upload's hard reset, which the ROM reports
+  as `POWERON_RESET`) **clears** `.rtc_noinit` — observed twice (fresh
+  `boot=1` after upload; fresh `boot=1` after an EN pulse with no flash in
+  between). Healthy-to-healthy SW-reset retention (boot counter increments
+  with history intact, no crash in between) is *not yet directly
+  demonstrated* — no restart trigger exists yet; re-test when task 1.2's
+  restart endpoint lands.
+- **Decision:** **adopt as-is** with the documented semantics: the ring log
+  is crash evidence, and crashes on this chip are SW/PANIC resets, which
+  preserve it. `ringLogInit()`'s magic check correctly re-initialises after
+  an EN/power-on clear, so nothing changes in code. The operational rule:
+  **an EN reset (re-flash, manual reset button wired to EN) starts a fresh
+  log — do not read `boot=1` after a flash as "retention broken".**
+- **Reason:** this is chip behaviour, not a defect; documenting it prevents
+  a future session from misdiagnosing retention.
+- **Evidence:** `docs/evidence/phase1-core-boot-02.log` (EN clear) and
+  `phase1-core-boot-03.log` (SW/PANIC retention ×3).
+
 ## Deliberate divergences from R1 — do not "fix" these back
 
 | Area | R1 | VisionCam |

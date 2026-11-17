@@ -47,6 +47,7 @@ R1 divergence in `docs/REFERENCE_ANALYSIS.md`.
 |---|---|---|
 | `board_profile.h` | 0 | the only place pin constants exist |
 | smoke test `main.cpp` | 0 | reset reason, PSRAM, heap reporting |
+| core services (`core_init`, event bus, RTC ring log, resource monitor) | 1 | `coreInit()` runs first in `app_main`; typed bounded event queue (depth 16, drop-oldest); RTC ring log + crash-loop counter with health point at end of boot; heap thresholds 32 KB free / 16 KB largest internal |
 | camera manager | 1 | R2 init, PID check, warm-up, PWDN retry |
 | frame manager | 1 | single acquire/release point |
 | Wi-Fi manager | 1 | station mode; no internet required for core function |
