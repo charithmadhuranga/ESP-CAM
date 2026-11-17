@@ -1,0 +1,137 @@
+ets Jun  8 2016 00:22:57
+
+rst:0x1 (POWERON_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+configsip: 0, SPIWP:0xee
+clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+mode:DIO, clock div:2
+load:0x3fff0040,len:6272
+load:0x40078000,len:15988
+ho 0 tail 12 room 4
+load:0x40080400,len:4016
+entry 0x4008063c
+I (29) boot: ESP-IDF 6.1.0 2nd stage bootloader
+I (29) boot: compile time Nov 17 2026 15:34:02
+I (29) boot: Multicore bootloader
+I (30) boot: chip revision: v1.0
+I (33) boot.esp32: SPI Speed      : 40MHz
+I (36) boot.esp32: SPI Mode       : DIO
+I (40) boot.esp32: SPI Flash Size : 4MB
+I (44) boot: Enabling RNG early entropy source...
+I (48) boot: Partition Table:
+I (51) boot: ## Label            Usage          Type ST Offset   Length
+I (57) boot:  0 nvs              WiFi data        01 02 00009000 00017000
+I (64) boot:  1 ota_0            OTA app          00 10 00020000 00180000
+I (70) boot:  2 ota_1            OTA app          00 11 001a0000 00180000
+I (77) boot:  3 otadata          OTA data         01 00 00320000 00002000
+I (83) boot:  4 phy_init         RF data          01 01 00322000 00001000
+I (90) boot:  5 storage          Unknown data     01 82 00323000 000dd000
+I (96) boot: End of partition table
+I (99) boot: No factory image, trying OTA 0
+I (103) esp_image: segment 0: paddr=00020020 vaddr=3f400020 size=2e2d0h (189136) map
+I (183) esp_image: segment 1: paddr=0004e2f8 vaddr=3ffb0000 size=01d20h (  7456) load
+I (186) esp_image: segment 2: paddr=00050020 vaddr=400d0020 size=c5e00h (810496) map
+I (493) esp_image: segment 3: paddr=00115e28 vaddr=3ffb1d20 size=054e8h ( 21736) load
+I (503) esp_image: segment 4: paddr=0011b318 vaddr=40080000 size=1ad58h (109912) load
+I (551) esp_image: segment 5: paddr=00136078 vaddr=5000101c size=00028h (    40) load
+I (565) boot: Loaded app from partition at offset 0x20000
+I (594) boot: Set actual ota_seq=1 in otadata[0]
+I (594) boot: Disabling RNG early entropy source...
+W (605) esp_psram: Virtual address not enough for PSRAM, map as much as we can. 4MB is mapped
+---- RTC ring log (boot 1, 45 byte(s) retained) ----
+#1 4 I boot: reset=POWERON boot=1 abnormal=0
+---- end of retained log ----
+I (1158) vc_resmon: monitor up: period 5000 ms, heap low <32768 B, critical block <16384 B
+I (1158) vc_core: core services up (boot 1, abnormal 0)
+I (1168) vc_wificred: no credentials configured  local-only operation
+I (1168) vc_net: not configured  lwIP up, radio stays Off (local-only mode)
+I (1178) vc_smoke: network: Off (configured=0 radio_up=0)
+I (1178) vc_smoke: resource snapshot: free=4421619 internal=250051 min=4389588 largest=102400 psram_free=4191968 tasks=9 boot=1 abnormal=0
+I (1198) vc_smoke: task table (worst stack first):
+I (1198) vc_smoke:   ipc0             hwm=   564 B prio=24 core=-1 state=3
+I (1208) vc_smoke:   ipc1             hwm=   572 B prio=24 core=-1 state=3
+I (1208) vc_smoke:   IDLE1            hwm=  1092 B prio=0 core=-1 state=1
+I (1218) vc_smoke:   IDLE0            hwm=  1224 B prio=0 core=-1 state=1
+I (1228) vc_smoke:   Tmr Svc          hwm=  1568 B prio=1 core=-1 state=2
+I (1228) vc_smoke:   vc_eventbus      hwm=  2572 B prio=4 core=-1 state=2
+I (1238) vc_smoke:   vc_monitor       hwm=  3288 B prio=3 core=-1 state=0
+I (1248) vc_smoke:   esp_timer        hwm=  3632 B prio=22 core=-1 state=3
+I (1248) vc_smoke:   main             hwm=  6508 B prio=1 core=-1 state=1
+I (1258) vc_smoke: ================================================
+I (1268) vc_smoke:  VisionCam Pro  Phase 1 bring-up (smoke steps)
+I (1268) vc_smoke: ================================================
+I (1278) vc_smoke: reset reason: POWERON
+I (1278) vc_smoke: PSRAM: 8388608 bytes (8.0 MB)
+I (1288) vc_smoke: heap[boot] free: 4421619 B, min ever: 4389588 B, largest block: 4128768 B
+I (1288) vc_smoke: heap[boot] PSRAM free: 4191968 B, largest PSRAM block: 4128768 B
+I (1298) vc_smoke: board: AI-Thinker ESP32-CAM, flash LED GPIO4, SD CLK/CMD/D0 = 14/15/2
+I (1308) vc_cam: PSRAM 8388608 B -> init frame size 15
+I (1498) vc_cam: sensor PID 0x0026 = OV2640
+I (1848) vc_cam: discarded 3 warm-up frame(s)
+I (1928) vc_cam: JPEG grabbed: 206638 bytes (1600x1200), capacity 384000
+I (1968) vc_cam: frame size set to 10 (640x480), jpeg capacity 61440 B
+I (1968) vc_smoke: CAMERA OK: pid=0x0026, attempts=1, warmup=3, jpeg=206638 B (1600x1200)
+I (1968) vc_smoke: frame manager running for consumer 0
+I (2018) vc_smoke: event bus self-test: published=1 delivered=1 dropped=0 -> OK
+I (2018) vc_smoke: web server running
+I (2018) vc_smoke: heap[after camera] free: 3600439 B, min ever: 3568700 B, largest block: 3407872 B
+I (2018) vc_smoke: heap[after camera] PSRAM free: 3422376 B, largest PSRAM block: 3407872 B
+I (2028) vc_sd: mounting SD: slot 1, 1-bit, freq default 20000 kHz
+W (2068) SD_HOST: esp32 doesn't support input phase delay, fallback to 0 delay
+W (2068) SD_HOST: input line delay not supported, fallback to 0 delay
+Name: SD16G
+Type: SDHC
+Speed: 20.00 MHz (limit: 20.00 MHz)
+Size: 7680MB
+CSD: ver=2, sector_size=512, capacity=15728640 read_bl_len=9
+SSR: bus_width=1
+I (2088) vc_sd: SD mounted at /sdcard, negotiated 20000 kHz
+I (2088) vc_sd: FAT volume: 8051032064 B usable, 8050933760 B free, cluster 32768 B x 245698 clusters  CSD capacity 8053063680 B
+I (2108) vc_sd: GPIO4 (flash lamp / SD D1) driven low after mount  confirm the lamp stays OFF on hardware (step 13)
+I (2168) vc_sd: SD self-test OK: wrote, read back and deleted /sdcard/vc_smoke.txt
+I (2168) vc_smoke: SD OK: width=1 bit, max 20000 kHz, self-test=pass
+I (2168) vc_smoke: step 13: GPIO4 driven low  observer must confirm the lamp is OFF
+I (2178) vc_smoke: heap[after SD] free: 3595731 B, min ever: 3562652 B, largest block: 3407872 B
+I (2188) vc_smoke: heap[after SD] PSRAM free: 3418548 B, largest PSRAM block: 3407872 B
+I (2248) vc_sd: SD self-test OK: wrote, read back and deleted /sdcard/vc_smoke.txt
+I (2248) vc_smoke: step 14 [wifi off]: camera=OK (lease id=1, 59512 B), sd=OK
+W (6238) cam_hal: Failed to get frame: timeout
+I (6348) vc_cam: sensor reset (frame size 10 re-applied)
+W (6348) vc_camrec: rung 1 (sensor reset) attempt 1/10: ESP_OK
+I (9368) vc_cam: PSRAM 8388608 B -> init frame size 15
+E (9368) gpio: gpio_install_isr_service(568): GPIO isr service already installed
+W (9368) ledc: GPIO 0 is not usable, maybe conflict with others
+W (9368) gpio: conflict found for GPIO[32]
+I (9558) vc_cam: sensor PID 0x0026 = OV2640
+I (9908) vc_cam: discarded 3 warm-up frame(s)
+I (9988) vc_cam: JPEG grabbed: 197188 bytes (1600x1200), capacity 384000
+I (10028) vc_cam: frame size set to 10 (640x480), jpeg capacity 61440 B
+W (14028) vc_smoke: step 14 [wifi on]: no fresh frame (capture task parked), continuing on SD only
+I (14078) vc_sd: SD self-test OK: wrote, read back and deleted /sdcard/vc_smoke.txt
+I (14078) vc_smoke: step 14 [wifi on]: camera=no-fresh-frame (lease id=0, 0 B), sd=OK
+I (14088) vc_smoke: step 14 result: OK (scan heard 2 network(s))
+I (14088) vc_camrec: valid frame after recovery  counters reset
+I (14088) vc_smoke: heap[after wifi] free: 3558755 B, min ever: 3520184 B, largest block: 2621440 B
+I (14098) vc_smoke: heap[after wifi] PSRAM free: 3418144 B, largest PSRAM block: 2621440 B
+I (14108) vc_cam: PSRAM 8388608 B -> init frame size 15
+W (14118) vc_cam: test sabotage (mode 1, sticky 0): XCLK removed  attempt 1 fails (then recovers)
+E (14128) gpio: gpio_install_isr_service(568): GPIO isr service already installed
+W (14128) gpio: conflict found for GPIO[32]
+E (14168) camera: Detected camera not supported.
+E (14168) camera: Camera probe failed with error 0x106(ESP_ERR_NOT_SUPPORTED)
+E (14168) vc_cam: esp_camera_init failed (attempt 1/3): ESP_ERR_NOT_SUPPORTED
+W (14178) gpio: conflict found for GPIO[32]
+E (14218) gpio: gpio_install_isr_service(568): GPIO isr service already installed
+W (14218) ledc: GPIO 0 is not usable, maybe conflict with others
+W (14218) gpio: conflict found for GPIO[32]
+I (14398) vc_cam: sensor PID 0x0026 = OV2640
+I (14748) vc_cam: discarded 3 warm-up frame(s)
+I (14828) vc_cam: JPEG grabbed: 202090 bytes (1600x1200), capacity 384000
+I (14868) vc_cam: frame size set to 10 (640x480), jpeg capacity 61440 B
+I (14868) vc_smoke: forced-failure test: err=ESP_OK, attempts=2 -> OK
+I (14868) vc_smoke: ------------------------------------------------
+I (14868) vc_smoke:  core: OK | camera: OK | sd: OK | psram: OK | net: Off | wifi(step14): OK | forced-retry: OK
+I (14878) vc_smoke:  events: published=2 delivered=2 dropped=0 | abnormal boots=0
+I (14888) vc_smoke: ================================================
+I (14898) vc_smoke: health marked: abnormal boots now 0
+W (14898) vc_cam: TEST SABOTAGE ARMED  every camera init will fail (XCLK removed) until disarmed
+I (14908) vc_camrec: recovery ladder reset

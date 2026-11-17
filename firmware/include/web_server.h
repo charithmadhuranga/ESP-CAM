@@ -1,0 +1,114 @@
+// web_server.h — esp_http_server core + the API response envelope (plan 02
+// task 1.2; SPEC section 6, API contract skill).
+//
+// ONE server instance for the whole device (R1 pattern: 7 sockets total,
+// R1 used HTTP_CLIENTS + MAX_STREAMS = 7; we start smaller on the original
+// ESP32: 4 API clients + 2 stream slots = 6 max_open_sockets). Each
+// long-running response (stream, playback, download) owns one stream slot
+// until it returns — a hard limit enforced by a bounded slot pool.
+//
+// Every JSON response uses the envelope:
+//   { "ok": bool, "data": object|null, "error": {code,message}|null,
+//     "request_id": "req-000001" }
+// request_id is monotonic per boot (SPEC 6.0, API contract).
+//
+// Auth: every management/media/snapshot/stream/download route requires a
+// valid session cookie (SPEC 4.2). State-changing cookie-authenticated
+// requests additionally require a CSRF token (Origin/Host validated).
+// Secrets are never returned: GET responses use password_configured-style
+// booleans instead (AGENTS rule 17).
+//
+// Media/snapshot/stream routes take opaque IDs (med-…, rec-…, evt-…),
+// never filesystem paths (SPEC 6.0, AGENTS rule 15).
+
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+
+#include "esp_err.h"
+#include "esp_http_server.h"
+
+#include "auth.h"   // session/CSRF contract (task 1.2 auth)
+#include "frame_manager.h"
+
+namespace visioncam {
+
+// --- server configuration --------------------------------------------------
+
+// Total concurrent sockets the server may hold. Documented total: 4 API
+// clients + 2 stream slots = 6 (smaller than R1's 7; the ESP32's RAM and
+// the single-core capture task make a larger limit pointless — a stream
+// client consumes one slot for the whole connection).
+constexpr int kHttpMaxOpenSockets = 6;
+
+// The server task stack (R1: 4 KB on ESP32). Measured HWM recorded in
+// docs/ARCHITECTURE.md §4 at Phase 1 end.
+constexpr int kHttpServerStack = 4096;
+
+// LRU purge is always on (R1): evicts the least-recently-used cached
+// static asset when flash is under pressure.
+constexpr bool kHttpLruPurge = true;
+
+// --- envelope helpers ------------------------------------------------------
+
+// Standardised error codes (API contract skill).
+enum class ErrCode : uint16_t {
+    Ok = 0,
+    Unauthenticated = 1,
+    SessionExpired = 2,
+    CsrfInvalid = 3,
+    ValidationFailed = 4,
+    NotFound = 5,
+    SdNotMounted = 6,
+    SdFull = 7,
+    SdWriteFailed = 8,
+    StreamSlotLimit = 9,
+    PlaybackBusy = 10,
+    TimeUnsynchronised = 11,
+    RateLimited = 12,
+    Internal = 13,
+};
+
+// Writes an OK envelope: {ok:true, data:<payload>, error:null, request_id:N}.
+// payload may be nullptr (data omitted). Content-Type application/json.
+esp_err_t httpReplyOk(httpd_req_t* req, uint32_t request_id,
+                      const char* payload = nullptr);
+
+// Writes an error envelope: {ok:false, data:null, error:{code,message},
+// request_id:N}. message is caller-supplied and must never contain secrets
+// or stack traces.
+esp_err_t httpReplyError(httpd_req_t* req, uint32_t request_id,
+                         ErrCode code, const char* message);
+
+// Sends raw bytes as a JPEG/PNG/etc. with the given content type and
+// Content-Length. Used by /camera/stream parts and /snapshots/{id}/image.
+esp_err_t httpReplyBytes(httpd_req_t* req, const char* content_type,
+                         const uint8_t* data, size_t len,
+                         const char* cache_control = "no-cache");
+
+// Returns the next monotonic request_id (per boot). First is 1.
+uint32_t httpNextRequestId();
+
+// --- server lifecycle ------------------------------------------------------
+
+// Creates and starts the HTTP server on port 80. Idempotent-safe.
+esp_err_t webServerStart();
+
+// Stops the server and frees its resources. Safe when already stopped.
+esp_err_t webServerStop();
+
+// True while the server is running.
+bool webServerRunning();
+
+// --- routes ----------------------------------------------------------------
+
+// Registers every Phase 1 route (auth, device, camera, system). Call after
+// webServerStart(). Auth/CSRF middleware is wired here (task 1.2 auth).
+esp_err_t webServerRegisterRoutes();
+
+// A stream slot is held for the lifetime of a long-running response.
+// frameManagerAcquireFrame() etc. are called by the stream handler via
+// frame leases (AGENTS rule 9 — the handler never calls fb_get itself).
+
+}  // namespace visioncam

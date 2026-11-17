@@ -39,6 +39,8 @@ idf_component_register(
         "camera/camera_manager.cpp"
         "camera/camera_recovery.cpp"
         "frame/frame_manager.cpp"
+        "auth/auth.cpp"
+        "web/web_server.cpp"
     INCLUDE_DIRS "../include"
     PRIV_REQUIRES
         esp_psram
@@ -52,4 +54,6 @@ idf_component_register(
         esp_event
         nvs_flash
         esp_timer
+        # mbedtls: auth.cpp PBKDF2-HMAC-SHA256 + SHA-256 token hashing
+        mbedtls
 )

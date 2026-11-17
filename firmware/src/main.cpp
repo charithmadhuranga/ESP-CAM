@@ -31,6 +31,7 @@
 #include "resource_monitor.h"
 #include "ring_log.h"
 #include "sd_bringup.h"
+#include "web_server.h"
 #include "wifi_bringup.h"
 
 static const char* TAG = "vc_smoke";
@@ -225,6 +226,19 @@ extern "C" void app_main(void) {
              static_cast<unsigned>(ebs.published),
              static_cast<unsigned>(ebs.delivered),
              static_cast<unsigned>(ebs.dropped), bus_ok ? "OK" : "FAIL");
+
+    // --- web server (plan 02 task 1.2) --------------------------------------
+    // Started after the camera/frame manager so /camera/status reflects a
+    // live device. The server itself needs no Wi-Fi: in local-only mode it
+    // simply listens on the STA interface once the radio is up, or on AP if
+    // the radio were started (the Phase 0 SoftAP path is superseded by the
+    // network manager when credentials exist).
+    if (visioncam::webServerStart() == ESP_OK &&
+        visioncam::webServerRegisterRoutes() == ESP_OK) {
+        ESP_LOGI(TAG, "web server running");
+    } else {
+        ESP_LOGE(TAG, "web server start FAILED — no HTTP API");
+    }
 
     logHeap("after camera");
 

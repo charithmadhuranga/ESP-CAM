@@ -262,22 +262,27 @@ esp_err_t networkManagerInit() {
         return err;
     }
     s_configured.store(found);
+
+    // lwIP (esp_netif) is ALWAYS initialized: the web server needs it even
+    // in local-only mode (no credentials). Initializing it here, before
+    // the web server starts, prevents the tcpip "Invalid mbox" assert.
+    err = esp_netif_init();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
+    err = esp_event_loop_create_default();
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
+
     if (!found) {
-        // Local-first operating mode (SPEC 9): the driver is left
-        // completely untouched, so other radio users keep working.
+        // Local-first operating mode (SPEC 9): lwIP is up (needed by the
+        // web server) but the radio stays off — nothing to connect to.
         setState(WifiState::Off);
-        ESP_LOGI(TAG, "not configured — Wi-Fi stays Off (local-only mode)");
-        VC_RING_INFO("wifi", "not configured — local-only mode");
+        ESP_LOGI(TAG, "not configured — lwIP up, radio stays Off "
+                      "(local-only mode)");
+        VC_RING_INFO("wifi", "not configured — lwIP up, radio off");
         return ESP_OK;
     }
     // Lengths only — NEVER the values (AGENTS rule 17).
     ESP_LOGI(TAG, "credentials loaded (ssid %u B, pass %u B) — starting radio",
              static_cast<unsigned>(ssid_len), static_cast<unsigned>(pass_len));
-
-    err = esp_netif_init();
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
-    err = esp_event_loop_create_default();
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
 
     esp_netif_t* sta = esp_netif_create_default_wifi_sta();
     if (sta == nullptr) return ESP_FAIL;
