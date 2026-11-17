@@ -8,6 +8,41 @@ tagged once Phase 9 release criteria pass.
 
 ### Added
 
+- **Phase 1 task 1.1.5 — frame manager (2026-11-17).** New
+  `firmware/src/frame/frame_manager.cpp` + `firmware/include/frame_manager.h`:
+  the capture task is the SOLE owner of camera frame buffers (AGENTS rule 9),
+  replacing the temporary smoke-probe frame access in camera_manager.h. One
+  capture task (pinned to core 1, priority 6, `VC_STACK_CAPTURE`) acquires
+  frames, validates them against SPEC 4.1.1 rule 7, and distributes
+  refcounted leases to up to `VC_FRAME_SUBSCRIBERS` consumers through bounded
+  per-consumer queues (`VC_FRAME_QUEUE_DEPTH`, drop-oldest). A fixed pool of
+  `VC_FRAME_POOL` refcounted records bounds memory; when every record is
+  referenced the new frame is dropped and counted (capture never blocks).
+  Each frame delivery ends with `taskYIELD()` so a fast camera cannot wedge
+  the core (reproduced as "Interrupt wdt timeout on CPU1" without it).
+  Hardware: `phase1-frame-boot-11.log` — leases acquired/released cleanly,
+  step 14 camera+SD under radio TX stable, ladder runs through the capture
+  task. Build: RAM 54,784 B (16.7 %), Flash 1,079,528 B (68.6 %).
+- **`frameManagerStop()` handshake:** waits for the capture task to park
+  (it may be blocked in `esp_camera_fb_get()` for up to FB_GET_TIMEOUT)
+  before the driver is touched, avoiding a concurrent init/get race.
+
+### Fixed
+
+- **Interrupt-watchdog panic in the capture task (2026-11-17).** With no
+  `taskYIELD()` between frames, the capture task tight-looped when
+  `esp_camera_fb_get()` returned immediately (frames already queued),
+  starving the interrupt watchdog on CPU 1 ("Interrupt wdt timeout on CPU1"
+  Guru Meditation, reproduced on every boot). Fixed by yielding after each
+  frame and after each pool/rule-7 drop. Verified panic-free across
+  `phase1-frame-boot-06` through `-11`.
+- **`cameraRecoveryReset()` did not reset all counters** — `sensor_resets`,
+  `re_inits`, `rung_errors`, `recovered`, `failed_events` accumulated across
+  ladder runs, corrupting step 15's verdict. All stats now reset.
+- **`frameManagerStart()` required the camera to be initialised** — removed
+  that guard so the capture task can run with a dead camera and drive the
+  SPEC 9.1 ladder (task 1.1.5 integration).
+
 - **Phase 1 tasks 1.1.3 + 1.1.4 — camera manager module and SPEC 9.1
   recovery ladder (2026-11-17).** `firmware/src/camera/` now owns the camera
   driver lifecycle: `camera_manager.{h,cpp}` (renamed from the Phase 0

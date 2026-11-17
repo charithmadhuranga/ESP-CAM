@@ -38,6 +38,7 @@ idf_component_register(
         "network/wifi_credentials.cpp"
         "camera/camera_manager.cpp"
         "camera/camera_recovery.cpp"
+        "frame/frame_manager.cpp"
     INCLUDE_DIRS "../include"
     PRIV_REQUIRES
         esp_psram

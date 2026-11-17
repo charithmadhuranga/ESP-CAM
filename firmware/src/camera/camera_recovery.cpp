@@ -154,6 +154,11 @@ void cameraRecoveryReset() {
     s_failed.store(false);
     s_state.store(CameraRecoveryState::Idle);
     s_recovery_attempts.store(0);
+    s_sensor_resets.store(0);
+    s_re_inits.store(0);
+    s_rung_errors.store(0);
+    s_recovered.store(0);
+    s_failed_events.store(0);
     s_last_attempt_ms.store(0);
     ESP_LOGI(TAG, "recovery ladder reset");
 }

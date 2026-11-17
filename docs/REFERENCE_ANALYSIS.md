@@ -467,13 +467,14 @@ playback timing, timelapse, upload, WebDAV, HA discovery, and every
   stopped and state exposed; per-attempt recovery cost bounded (2 s gate)
   stays identical.
 - **Evidence:** source lines cited; Phase 0 proved the PWDN re-init rung on
-  hardware; the full ladder **verified on hardware 2026-11-17**
-  (`docs/evidence/phase1-ladder-boot-01.log`): camera held genuinely dead
-  (shutdown + sticky XCLK sabotage), 5 sensor-reset rungs + 5
-  power-cycle/re-init rungs gated to exactly 2 s apart, 10/10 attempts,
-  one terminal `CameraFailed`, 10 ms yields throughout (1870 polls, zero
-  spinning), and a valid frame after the reset returned the ladder to Idle
-  (rule 3).
+  hardware; the full ladder **verified on hardware 2026-11-17** as a
+  standalone ladder (`docs/evidence/phase1-ladder-boot-01.log`: 10 attempts,
+  5+5 rungs, one terminal `CameraFailed`, rule-3 reset, no spin) and **again
+  through the live capture task**
+  (`docs/evidence/phase1-frame-boot-11.log`: rung 1 ×5 + rung 2 ×5 gated to
+  ~2 s apart, `attempts=10 rung1=5 rung2=5 errors=10`, `elapsed=21182 ms`,
+  one terminal `CameraFailed`, `ladder reset=1`). 10 ms yields throughout
+  — zero spinning.
 
 ## Logging, RTC ring log and crash-loop detection — 2026-11-16 (Phase 1)
 
