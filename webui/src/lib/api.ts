@@ -1,0 +1,198 @@
+// VisionCam Pro — typed API client (SPEC §6, API contract skill).
+//
+// - Every request sends credentials: "include" so the HTTP-only session
+//   cookie travels with it. No credentials in query strings or URLs.
+// - State-changing requests (POST/PUT/DELETE) add X-CSRF-Token read from
+//   the csrf cookie (double-submit pattern; the session cookie itself is
+//   HttpOnly, the csrf cookie is readable by JS).
+// - Every response is parsed as the {ok,data,error,request_id} envelope.
+//   Non-ok envelopes and network failures throw ApiError.
+// - A 401 (unauthenticated / session-expired) is surfaced so the shell can
+//   redirect to login.
+// - AbortController support lets callers cancel stale requests on navigation.
+// - No `fetch` outside this module; all page code calls the typed methods.
+
+import {
+  ApiError,
+} from "./types";
+import type {
+  CameraSettings,
+  ChangePasswordRequest,
+  CompleteFirstLoginRequest,
+  DeviceInfo,
+  Envelope,
+  HealthPayload,
+  LoginRequest,
+  MetricsPayload,
+  RestartResponse,
+  SessionView,
+  StatusPayload,
+  CameraStatus,
+} from "./types";
+
+const BASE = ""; // same-origin; the embedded server is on port 80
+
+let onUnauthenticated: (() => void) | null = null;
+let abortControllers = new Set<AbortController>();
+
+export function setOnUnauthenticated(cb: () => void) {
+  onUnauthenticated = cb;
+}
+
+export function cancelAllRequests() {
+  abortControllers.forEach((c) => c.abort());
+  abortControllers = new Set();
+}
+
+function readCsrfToken(): string | null {
+  const match = document.cookie.match(
+    /(?:^|; )\s*visioncam_csrf=([^;]+)/
+  );
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+async function parseEnvelope<T>(
+  res: Response
+): Promise<Envelope<T>> {
+  const requestId = res.headers.get("x-request-id") ?? undefined;
+  let body: Envelope<T>;
+  const contentType = res.headers.get("content-type") ?? "";
+  if (contentType.includes("application/json")) {
+    body = (await res.json()) as Envelope<T>;
+  } else {
+    const text = await res.text();
+    body = {
+      ok: res.ok,
+      data: null,
+      error: res.ok
+        ? null
+        : { code: "Internal", message: text || res.statusText },
+      request_id: requestId ?? "",
+    };
+  }
+  return { ...body, request_id: body.request_id ?? requestId ?? "" };
+}
+
+function throwIfNotOk<T>(env: Envelope<T>, status: number): T {
+  if (!env.ok) {
+    throw new ApiError(
+      env.error?.code ?? "Internal",
+      env.error?.message ?? "Request failed",
+      status,
+      env.request_id
+    );
+  }
+  if (env.data === null && env.data !== undefined) {
+    // data is explicitly null — nothing to return
+    return null as unknown as T;
+  }
+  return env.data;
+}
+
+function headersFor(method: string): HeadersInit {
+  const h: HeadersInit = { "Content-Type": "application/json" };
+  const isStateChange = method === "POST" || method === "PUT" || method === "DELETE";
+  if (isStateChange) {
+    const token = readCsrfToken();
+    if (token) {
+      const headers = h as Record<string, string>;
+      headers["X-CSRF-Token"] = token;
+    }
+  }
+  return h;
+}
+
+export async function api<T>(
+  path: string,
+  { method = "GET", body, signal }: { method?: string; body?: unknown; signal?: AbortSignal } = {}
+): Promise<T> {
+  const opts: RequestInit = {
+    method,
+    credentials: "include",
+    headers: headersFor(method),
+    signal,
+  };
+  if (body !== undefined) {
+    opts.body = JSON.stringify(body);
+  }
+  const res = await fetch(`${BASE}${path}`, opts);
+  if (res.status === 401) {
+    if (onUnauthenticated) onUnauthenticated();
+  }
+  const env = await parseEnvelope<T>(res);
+  return throwIfNotOk(env, res.status);
+}
+
+// Convenience wrappers -------------------------------------------------------
+export const get = <T>(path: string, signal?: AbortSignal) =>
+  api<T>(path, { method: "GET", signal });
+
+export const post = <T>(path: string, body?: unknown, signal?: AbortSignal) =>
+  api<T>(path, { method: "POST", body, signal });
+
+export const put = <T>(path: string, body?: unknown, signal?: AbortSignal) =>
+  api<T>(path, { method: "PUT", body, signal });
+
+export const del = <T>(path: string, signal?: AbortSignal) =>
+  api<T>(path, { method: "DELETE", signal });
+
+// --- Auth -------------------------------------------------------------------
+export async function login(body: LoginRequest): Promise<SessionView> {
+  return post<SessionView>("/auth/login", body);
+}
+
+export async function logout(): Promise<{ ok: boolean }> {
+  return post<{ ok: boolean }>("/auth/logout");
+}
+
+export async function getSession(): Promise<SessionView> {
+  return get<SessionView>("/auth/session");
+}
+
+export async function completeFirstLogin(
+  body: CompleteFirstLoginRequest
+): Promise<{ password_change_required: boolean }> {
+  return post("/auth/complete-first-login", body);
+}
+
+export async function changePassword(
+  body: ChangePasswordRequest
+): Promise<Record<string, never>> {
+  return post("/auth/change-password", body);
+}
+
+// --- Device -----------------------------------------------------------------
+export async function getDevice(): Promise<DeviceInfo> {
+  return get<DeviceInfo>("/device");
+}
+
+export async function getStatus(): Promise<StatusPayload> {
+  return get<StatusPayload>("/status");
+}
+
+export async function getHealth(): Promise<HealthPayload> {
+  return get<HealthPayload>("/health");
+}
+
+export async function getMetrics(): Promise<MetricsPayload> {
+  return get<MetricsPayload>("/metrics");
+}
+
+export async function restartDevice(): Promise<RestartResponse> {
+  return post<RestartResponse>("/device/restart");
+}
+
+// --- Camera -----------------------------------------------------------------
+export async function getCameraStatus(): Promise<CameraStatus> {
+  return get<CameraStatus>("/camera/status");
+}
+
+export async function getCameraSettings(): Promise<CameraSettings> {
+  return get<CameraSettings>("/camera/settings");
+}
+
+export async function putCameraSettings(
+  body: CameraSettings
+): Promise<CameraSettings> {
+  return put<CameraSettings>("/camera/settings", body);
+}

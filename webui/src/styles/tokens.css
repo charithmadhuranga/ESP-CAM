@@ -1,0 +1,97 @@
+/* VisionCam Pro — design tokens (DESIGN.md §2). Dark theme default. */
+/* All colours as CSS variables on :root so a light theme can override. */
+:root {
+  /* --- Colour (dark theme) --- */
+  --bg: #101318;            /* app background, input fill */
+  --sidebar: #171c23;       /* sidebar */
+  --surface: #1d242d;       /* cards */
+  --elevated: #252e39;      /* active nav item, secondary buttons, pills, progress track */
+  --border: #303a46;        /* all dividers and card/button borders */
+  --text: #f1f5f9;          /* primary text */
+  --text-2: #a3afbd;        /* labels, secondary text, inactive nav */
+  --accent: #4f9cf9;        /* primary action, progress fill, links, "AI" tags */
+  --success: #2fbf71;       /* online, connected, on, validated, OK */
+  --warning: #e6a23c;       /* motion, capturing, not tested, caution */
+  --danger: #f26b6b;        /* errors, delete, REC, factory reset (text) */
+  --danger-fill: #e05252;   /* danger fills and borders */
+  --video: #0a0d11;         /* video / thumbnail placeholder */
+
+  /* --- Typography --- */
+  --font-stack: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --size-base: 13px;
+  --line-base: 1.4;
+  --size-page-title: 22px;
+  --weight-page-title: 600;
+  --size-card-title: 14px;
+  --weight-card-title: 600;
+  --size-body: 13px;
+  --size-label: 12px;
+  --size-wordmark: 13px;
+
+  /* --- Spacing, radius, size --- */
+  --space-4: 4px;
+  --space-8: 8px;
+  --space-12: 12px;
+  --space-16: 16px;
+  --space-24: 24px;
+  --pad-card: 16px;
+  --pad-page: 24px;
+  --gap-grid: 16px;
+  --radius-card: 14px;
+  --radius-video: 10px;
+  --radius-button: 8px;
+  --radius-input: 8px;
+  --radius-nav: 8px;
+  --radius-pill: 99px;
+  --radius-progress: 5px;
+  --sidebar-width: 230px;
+  --header-height: 60px;
+  --footer-height: 36px;
+  --touch-target: 44px;
+}
+
+html {
+  box-sizing: border-box;
+}
+*,
+*::before,
+*::after {
+  box-sizing: inherit;
+}
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-stack);
+  font-size: var(--size-base);
+  line-height: var(--line-base);
+  overflow-x: hidden;
+}
+a {
+  color: inherit;
+  text-decoration: none;
+}
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+button {
+  background: none;
+  border: none;
+  margin: 0;
+  padding: 0;
+  cursor: pointer;
+}
+img,
+video {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
