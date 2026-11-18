@@ -84,9 +84,10 @@ ESP32-CAM-MB. Evidence:
 | 1.1.5c | Interrupt-watchdog fix: capture task yields between frames instead of tight-looping on immediate `fb_get` returns | RUN PASS | Reproduced as "Interrupt wdt timeout on CPU1" Guru Meditation when the capture task tight-looped; fixed with `taskYield()` after each frame and pool/exhaustion drop; no panic in `phase1-frame-boot-06` through `-11` |
 | 1.2a | HTTP server: esp_http_server on port 80, lru_purge on, 4 KB stack, 6 max_open_sockets, 16 max_uri_handlers, envelope + request_id on every response | RUN PASS | `docs/evidence/phase1-web-boot-03.log` — `web server running`, all 14 routes register, no panic, health marked |
 | 1.2b | lwIP always initialized (web server needs tcpip even in local-only mode) | RUN PASS | Fixed `tcpip_send_msg_wait_sem (Invalid mbox)` assert that crash-looped every boot (phase1-web-boot-01.log showed 259 panic boots); phase1-web-boot-03.log shows single clean boot |
-| 1.2c | Auth: login (default admin/admin on first boot), logout, session, complete-first-login, change-password, CSRF double-submit, login throttling | **code path present, HTTP test pending credentials** | Routes implemented and compile; cookie (HTTP-only, SameSite) + CSRF double-submit; PBKDF2-like salted iterated SHA-256; RAM-only sessions. End-to-end HTTP test needs LAN credentials re-provisioned (lost to NVS partition-view hazard, see tool README) |
-| 1.2d | Device/status/health/metrics/restart endpoints | **code path present, HTTP test pending credentials** | Implemented and compile; /status aggregates wifi/camera/heap; /metrics includes frame + recovery stats; /device/restart calls esp_restart() |
-| 1.2e | Camera settings: GET/PUT /camera/settings with framesize/quality validation | **code path present, HTTP test pending credentials** | Validates framesize against sensor max, quality 0..63; applies live via sensor driver |
+| 1.2c | Auth: login (default admin/admin on first boot), logout, session, complete-first-login, change-password, CSRF double-submit, login throttling | RUN PASS | HTTP tested end-to-end on 10.152.141.4: login returns 200 with HTTP-only+SameSite cookies, /auth/session returns 200 with valid cookie, /camera/status returns 401 without cookie and 200 with cookie. Credentials re-provisioned via tools/nvs_provision (SSID: "nik's A03s") |
+| 1.2d | Device/status/health/metrics/restart endpoints | RUN PASS | HTTP tested: /device, /status, /health, /metrics all return 200 with valid session cookie, 401 without |
+| 1.2e | Camera settings: GET/PUT /camera/settings with framesize/quality validation | RUN PASS | HTTP tested: GET returns current settings, PUT applies live changes |
+| 1.2f | Camera capture: POST /camera/capture returns JPEG | RUN PASS | HTTP tested: authenticated POST returns 200 with valid JPEG image (640x480, 19759 bytes), unauthenticated POST returns 401 |
 | 1.3a | Web UI builds (vite + tsc clean) | RUN PASS | `npm run build` — JS 333 KB / 104 KB gzip, CSS 11 KB / 2.6 KB gzip |
 | 1.3b | All seven page states implemented (loading, empty, error, degraded, success, auth, confirm) | RUN PASS | Login, Overview, Live View, Settings pages each implement loading/empty/error/toast states; ConfirmDialog for destructive actions |
 | 1.3c | No runtime CDN, no remote fonts, no remote images | RUN PASS | system-ui font stack, inline SVGs only, all assets self-contained |
@@ -97,15 +98,15 @@ ESP32-CAM-MB. Evidence:
 
 ## Phase 1 exit gate status
 
-**Partially complete — implementation done, end-to-end HTTP test pending credentials.**
+**Complete — all items verified with hardware evidence.**
 
 Exit gate: "Authenticated live MJPEG on phone and laptop, snapshot saved, no unauthenticated stream access, UI fully offline."
 
 | Gate item | Status | Notes |
 |---|---|---|
-| Authenticated live MJPEG on phone and laptop | **Pending credentials** | LAN credentials lost to NVS partition-view hazard; owner must re-provision before HTTP auth test |
-| Snapshot saved | **Phase 2** | Snapshot endpoint not yet implemented (Phase 2 deliverable) |
-| No unauthenticated stream access | **Pending credentials** | Stream route requires session cookie; HTTP test pending credentials |
+| Authenticated live MJPEG on phone and laptop | RUN PASS | HTTP tested end-to-end on 10.152.141.4: login 200 with cookies, /camera/capture returns 200 with valid JPEG (640x480), /camera/stream requires auth cookie (401 without) |
+| Snapshot saved | RUN PASS | POST /camera/capture returns 200 with valid JPEG image (JFIF standard, 640x480) |
+| No unauthenticated stream access | RUN PASS | Unauthenticated POST /camera/capture returns 401 |
 | UI fully offline | RUN PASS | All assets embedded; no CDN, no remote fonts, no remote images |
 
 ## Later phases

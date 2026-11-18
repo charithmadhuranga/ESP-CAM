@@ -1,0 +1,271 @@
+ets Jun  8 2016 00:22:57
+
+rst:0x1 (POWERON_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+configsip: 0, SPIWP:0xee
+clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+mode:DIO, clock div:2
+load:0x3fff0040,len:6272
+load:0x40078000,len:15988
+ho 0 tail 12 room 4
+load:0x40080400,len:4016
+entry 0x4008063c
+I (29) boot: ESP-IDF 6.1.0 2nd stage bootloader
+I (29) boot: compile time Nov 18 2026 07:23:06
+I (29) boot: Multicore bootloader
+I (30) boot: chip revision: v1.0
+I (33) boot.esp32: SPI Speed      : 40MHz
+I (37) boot.esp32: SPI Mode       : DIO
+I (40) boot.esp32: SPI Flash Size : 4MB
+I (44) boot: Enabling RNG early entropy source...
+I (48) boot: Partition Table:
+I (51) boot: ## Label            Usage          Type ST Offset   Length
+I (57) boot:  0 nvs              WiFi data        01 02 00009000 00017000
+I (64) boot:  1 ota_0            OTA app          00 10 00020000 00180000
+I (70) boot:  2 ota_1            OTA app          00 11 001a0000 00180000
+I (77) boot:  3 otadata          OTA data         01 00 00320000 00002000
+I (83) boot:  4 phy_init         RF data          01 01 00322000 00001000
+I (90) boot:  5 storage          Unknown data     01 82 00323000 000dd000
+I (96) boot: End of partition table
+I (100) esp_image: segment 0: paddr=00020020 vaddr=3f400020 size=49150h (299344) map
+I (220) esp_image: segment 1: paddr=00069178 vaddr=3ffb0000 size=06ea0h ( 28320) load
+I (233) esp_image: segment 2: paddr=00070020 vaddr=400d0020 size=c624ch (811596) map
+I (540) esp_image: segment 3: paddr=00136274 vaddr=3ffb6ea0 size=00368h (   872) load
+I (541) esp_image: segment 4: paddr=001365e4 vaddr=40080000 size=1ad58h (109912) load
+I (593) esp_image: segment 5: paddr=00151344 vaddr=5000101c size=00028h (    40) load
+I (606) boot: Loaded app from partition at offset 0x20000
+I (607) boot: Disabling RNG early entropy source...
+W (618) esp_psram: Virtual address not enough for PSRAM, map as much as we can. 4MB is mapped
+---- RTC ring log (boot 1, 45 byte(s) retained) ----
+#1 4 I boot: reset=POWERON boot=1 abnormal=0
+---- end of retained log ----
+I (1181) vc_resmon: monitor up: period 5000 ms, heap low <32768 B, critical block <16384 B
+I (1181) vc_core: core services up (boot 1, abnormal 0)
+I (1191) vc_net: credentials loaded (ssid 11 B, pass 9 B)  starting radio
+W (1221) wifi:Password length matches WPA2 standards, authmode threshold changes from OPEN to WPA2
+I (1301) vc_net: radio starting in STA mode (first connect from event handler)
+I (1301) vc_smoke: network: Connecting (configured=1 radio_up=1)
+I (1311) vc_smoke: resource snapshot: free=4378839 internal=207795 min=4346628 largest=77824 psram_free=4191444 tasks=9 boot=1 abnormal=0
+I (1311) vc_smoke: task table (worst stack first):
+I (1321) vc_smoke:   ipc0             hwm=   564 B prio=24 core=-1 state=3
+I (1321) vc_smoke:   ipc1             hwm=   572 B prio=24 core=-1 state=3
+I (1331) vc_smoke:   IDLE1            hwm=   980 B prio=0 core=-1 state=1
+I (1341) vc_smoke:   IDLE0            hwm=  1224 B prio=0 core=-1 state=1
+I (1341) vc_smoke:   Tmr Svc          hwm=  1568 B prio=1 core=-1 state=2
+I (1351) vc_smoke:   vc_eventbus      hwm=  2564 B prio=4 core=-1 state=2
+I (1361) vc_smoke:   vc_monitor       hwm=  3280 B prio=3 core=-1 state=0
+I (1361) vc_smoke:   esp_timer        hwm=  3632 B prio=22 core=-1 state=3
+I (1371) vc_smoke:   main             hwm=  6492 B prio=1 core=-1 state=1
+I (1381) vc_smoke: ================================================
+I (1381) vc_smoke:  VisionCam Pro  Phase 1 bring-up (smoke steps)
+I (1391) vc_smoke: ================================================
+I (1391) vc_smoke: reset reason: POWERON
+I (1401) vc_smoke: PSRAM: 8388608 bytes (8.0 MB)
+I (1401) vc_smoke: heap[boot] free: 4377011 B, min ever: 4342288 B, largest block: 4128768 B
+I (1411) vc_smoke: heap[boot] PSRAM free: 4191444 B, largest PSRAM block: 4128768 B
+I (1421) vc_smoke: board: AI-Thinker ESP32-CAM, flash LED GPIO4, SD CLK/CMD/D0 = 14/15/2
+I (1421) vc_cam: PSRAM 8388608 B -> init frame size 15
+I (1621) vc_cam: sensor PID 0x0026 = OV2640
+cam_hal: NO-EOI - JPEG end marker missing
+I (2321) vc_cam: discarded 3 warm-up frame(s)
+I (2391) vc_net: GOT_IP 10.152.141.4 (rssi -54 dBm, connects=1)
+I (2441) vc_cam: JPEG grabbed: 254162 bytes (1600x1200), capacity 384000
+I (2491) vc_cam: frame size set to 10 (640x480), jpeg capacity 61440 B
+I (2491) vc_smoke: CAMERA OK: pid=0x0026, attempts=1, warmup=3, jpeg=254162 B (1600x1200)
+I (2491) vc_smoke: frame manager running for consumer 0
+I (2541) vc_smoke: event bus self-test: published=2 delivered=2 dropped=0 -> OK
+I (2541) vc_web: HTTP server on port 80, max_open_sockets=6, stack=4096 B
+I (2541) vc_web: route /auth/session 1
+I (2541) vc_web: route /auth/login 3
+I (2551) vc_web: route /auth/logout 3
+I (2551) vc_web: route /auth/complete-first-login 3
+I (2551) vc_web: route /auth/change-password 3
+I (2561) vc_web: route /device 1
+I (2561) vc_web: route /status 1
+I (2561) vc_web: route /health 1
+I (2571) vc_web: route /metrics 1
+I (2571) vc_web: route /device/restart 3
+I (2571) vc_web: route /camera/status 1
+I (2581) vc_web: route /camera/settings 1
+I (2581) vc_web: route /camera/settings 4
+I (2581) vc_web: route /* 1
+I (2591) vc_smoke: web server running
+I (2591) vc_smoke: heap[after camera] free: 3555711 B, min ever: 3523972 B, largest block: 3407872 B
+I (2601) vc_smoke: heap[after camera] PSRAM free: 3421860 B, largest PSRAM block: 3407872 B
+I (2611) vc_sd: mounting SD: slot 1, 1-bit, freq default 20000 kHz
+W (2651) SD_HOST: esp32 doesn't support input phase delay, fallback to 0 delay
+W (2651) SD_HOST: input line delay not supported, fallback to 0 delay
+Name: SD16G
+Type: SDHC
+Speed: 20.00 MHz (limit: 20.00 MHz)
+Size: 7680MB
+CSD: ver=2, sector_size=512, capacity=15728640 read_bl_len=9
+SSR: bus_width=1
+I (2671) vc_sd: SD mounted at /sdcard, negotiated 20000 kHz
+I (2671) vc_sd: FAT volume: 8051032064 B usable, 8050933760 B free, cluster 32768 B x 245698 clusters  CSD capacity 8053063680 B
+I (2691) vc_sd: GPIO4 (flash lamp / SD D1) driven low after mount  confirm the lamp stays OFF on hardware (step 13)
+I (2751) vc_sd: SD self-test OK: wrote, read back and deleted /sdcard/vc_smoke.txt
+I (2751) vc_smoke: SD OK: width=1 bit, max 20000 kHz, self-test=pass
+I (2751) vc_smoke: step 13: GPIO4 driven low  observer must confirm the lamp is OFF
+I (2761) vc_smoke: heap[after SD] free: 3551003 B, min ever: 3517924 B, largest block: 3407872 B
+I (2771) vc_smoke: heap[after SD] PSRAM free: 3418032 B, largest PSRAM block: 3407872 B
+I (2831) vc_sd: SD self-test OK: wrote, read back and deleted /sdcard/vc_smoke.txt
+I (2831) vc_smoke: step 14 [wifi off]: camera=OK (lease id=1, 48387 B), sd=OK
+I (2831) vc_smoke: step 14: network manager owns the radio (Connected, rssi -54 dBm, connects=1)  using real TX load
+I (3461) vc_auth: create: token=71f0a4fd..., hash=2121b096
+I (3461) vc_auth: session created id=1 complete=0
+I (5771) vc_web: cookie: b64=cfCk/Wgndoq9gsfSaE87DA==, len=24
+I (5771) vc_web: cookie: decoded=16 bytes, first=71f0a4fd
+I (5771) vc_auth: validate: token_len=16, hash=2121b096
+I (5781) vc_auth: validate: MATCH found for session id=1
+I (5891) vc_sd: SD self-test OK: wrote, read back and deleted /sdcard/vc_smoke.txt
+I (5891) vc_smoke: step 14 [wifi on (network manager)]: camera=OK (lease id=2, 19447 B), sd=OK
+I (5891) vc_smoke: step 14 result: OK (network Connected, rssi -54 dBm, connects=1 disconnects=0 attempts=1 backoff=0 ms)
+I (5901) vc_smoke: heap[after wifi] free: 3549919 B, min ever: 3512260 B, largest block: 3407872 B
+I (5911) vc_smoke: heap[after wifi] PSRAM free: 3417996 B, largest PSRAM block: 3407872 B
+I (5921) vc_cam: PSRAM 8388608 B -> init frame size 15
+W (5921) vc_cam: test sabotage (mode 1, sticky 0): XCLK removed  attempt 1 fails (then recovers)
+E (5931) gpio: gpio_install_isr_service(568): GPIO isr service already installed
+W (5941) gpio: conflict found for GPIO[32]
+E (5971) camera: Detected camera not supported.
+E (5971) camera: Camera probe failed with error 0x106(ESP_ERR_NOT_SUPPORTED)
+E (5971) vc_cam: esp_camera_init failed (attempt 1/3): ESP_ERR_NOT_SUPPORTED
+W (5981) gpio: conflict found for GPIO[32]
+E (6021) gpio: gpio_install_isr_service(568): GPIO isr service already installed
+W (6021) ledc: GPIO 0 is not usable, maybe conflict with others
+W (6021) gpio: conflict found for GPIO[32]
+I (6211) vc_cam: sensor PID 0x0026 = OV2640
+I (6491) vc_net: NTP time sync OK (1794966845.149331 s)
+I (6631) vc_cam: discarded 3 warm-up frame(s)
+I (6821) vc_cam: JPEG grabbed: 214738 bytes (1600x1200), capacity 384000
+I (6861) vc_cam: frame size set to 10 (640x480), jpeg capacity 61440 B
+I (6861) vc_smoke: forced-failure test: err=ESP_OK, attempts=2 -> OK
+I (6861) vc_smoke: ------------------------------------------------
+I (6861) vc_smoke:  core: OK | camera: OK | sd: OK | psram: OK | net: Connected | wifi(step14): OK | forced-retry: OK
+I (6871) vc_smoke:  events: published=2 delivered=2 dropped=0 | abnormal boots=0
+I (6881) vc_smoke: ================================================
+I (6891) vc_smoke: health marked: abnormal boots now 0
+W (6891) vc_cam: TEST SABOTAGE ARMED  every camera init will fail (XCLK removed) until disarmed
+I (6901) vc_camrec: recovery ladder reset
+W (9921) cam_hal: Failed to get frame: timeout
+W (9921) vc_cam: sensor reset unavailable  camera not initialised
+W (9921) vc_camrec: rung 1 (sensor reset) attempt 1/10: ESP_ERR_INVALID_STATE
+W (11921) vc_cam: sensor reset unavailable  camera not initialised
+W (11921) vc_camrec: rung 1 (sensor reset) attempt 2/10: ESP_ERR_INVALID_STATE
+W (13921) vc_cam: sensor reset unavailable  camera not initialised
+W (13921) vc_camrec: rung 1 (sensor reset) attempt 3/10: ESP_ERR_INVALID_STATE
+W (15921) vc_cam: sensor reset unavailable  camera not initialised
+W (15921) vc_camrec: rung 1 (sensor reset) attempt 4/10: ESP_ERR_INVALID_STATE
+W (17921) vc_cam: sensor reset unavailable  camera not initialised
+W (17921) vc_camrec: rung 1 (sensor reset) attempt 5/10: ESP_ERR_INVALID_STATE
+W (19921) gpio: conflict found for GPIO[32]
+I (19961) vc_cam: PSRAM 8388608 B -> init frame size 15
+W (19961) vc_cam: test sabotage (mode 0, sticky 1): XCLK removed  attempt 1 fails (all attempts)
+E (19961) gpio: gpio_install_isr_service(568): GPIO isr service already installed
+W (19971) gpio: conflict found for GPIO[32]
+E (20001) camera: Detected camera not supported.
+E (20001) camera: Camera probe failed with error 0x106(ESP_ERR_NOT_SUPPORTED)
+E (20001) vc_cam: esp_camera_init failed (attempt 1/3): ESP_ERR_NOT_SUPPORTED
+W (20011) gpio: conflict found for GPIO[32]
+E (20051) gpio: gpio_install_isr_service(568): GPIO isr service already installed
+W (20051) gpio: conflict found for GPIO[32]
+E (20081) camera: Detected camera not supported.
+E (20081) camera: Camera probe failed with error 0x106(ESP_ERR_NOT_SUPPORTED)
+E (20081) vc_cam: esp_camera_init failed (attempt 2/3): ESP_ERR_NOT_SUPPORTED
+W (20091) gpio: conflict found for GPIO[32]
+E (20131) gpio: gpio_install_isr_service(568): GPIO isr service already installed
+W (20131) gpio: conflict found for GPIO[32]
+E (20161) camera: Detected camera not supported.
+E (20161) camera: Camera probe failed with error 0x106(ESP_ERR_NOT_SUPPORTED)
+E (20161) vc_cam: esp_camera_init failed (attempt 3/3): ESP_ERR_NOT_SUPPORTED
+E (20171) vc_cam: camera bring-up failed after 3 attempt(s)
+W (20171) vc_camrec: rung 2 (power-cycle + re-init) attempt 6/10: ESP_ERR_NOT_SUPPORTED
+W (21921) gpio: conflict found for GPIO[32]
+I (21961) vc_cam: PSRAM 8388608 B -> init frame size 15
+W (21961) vc_cam: test sabotage (mode 0, sticky 1): XCLK removed  attempt 1 fails (all attempts)
+E (21961) gpio: gpio_install_isr_service(568): GPIO isr service already installed
+W (21971) gpio: conflict found for GPIO[32]
+E (22001) camera: Detected camera not supported.
+E (22001) camera: Camera probe failed with error 0x106(ESP_ERR_NOT_SUPPORTED)
+E (22001) vc_cam: esp_camera_init failed (attempt 1/3): ESP_ERR_NOT_SUPPORTED
+W (22011) gpio: conflict found for GPIO[32]
+E (22051) gpio: gpio_install_isr_service(568): GPIO isr service already installed
+W (22051) gpio: conflict found for GPIO[32]
+E (22081) camera: Detected camera not supported.
+E (22081) camera: Camera probe failed with error 0x106(ESP_ERR_NOT_SUPPORTED)
+E (22081) vc_cam: esp_camera_init failed (attempt 2/3): ESP_ERR_NOT_SUPPORTED
+W (22091) gpio: conflict found for GPIO[32]
+E (22131) gpio: gpio_install_isr_service(568): GPIO isr service already installed
+W (22131) gpio: conflict found for GPIO[32]
+E (22161) camera: Detected camera not supported.
+E (22161) camera: Camera probe failed with error 0x106(ESP_ERR_NOT_SUPPORTED)
+E (22161) vc_cam: esp_camera_init failed (attempt 3/3): ESP_ERR_NOT_SUPPORTED
+E (22171) vc_cam: camera bring-up failed after 3 attempt(s)
+W (22171) vc_camrec: rung 2 (power-cycle + re-init) attempt 7/10: ESP_ERR_NOT_SUPPORTED
+W (23921) gpio: conflict found for GPIO[32]
+I (23961) vc_cam: PSRAM 8388608 B -> init frame size 15
+W (23961) vc_cam: test sabotage (mode 0, sticky 1): XCLK removed  attempt 1 fails (all attempts)
+E (23961) gpio: gpio_install_isr_service(568): GPIO isr service already installed
+W (23971) gpio: conflict found for GPIO[32]
+E (24001) camera: Detected camera not supported.
+E (24001) camera: Camera probe failed with error 0x106(ESP_ERR_NOT_SUPPORTED)
+E (24001) vc_cam: esp_camera_init failed (attempt 1/3): ESP_ERR_NOT_SUPPORTED
+W (24011) gpio: conflict found for GPIO[32]
+E (24051) gpio: gpio_install_isr_service(568): GPIO isr service already installed
+W (24051) gpio: conflict found for GPIO[32]
+E (24081) camera: Detected camera not supported.
+E (24081) camera: Camera probe failed with error 0x106(ESP_ERR_NOT_SUPPORTED)
+E (24081) vc_cam: esp_camera_init failed (attempt 2/3): ESP_ERR_NOT_SUPPORTED
+W (24091) gpio: conflict found for GPIO[32]
+E (24131) gpio: gpio_install_isr_service(568): GPIO isr service already installed
+W (24131) gpio: conflict found for GPIO[32]
+E (24161) camera: Detected camera not supported.
+E (24161) camera: Camera probe failed with error 0x106(ESP_ERR_NOT_SUPPORTED)
+E (24161) vc_cam: esp_camera_init failed (attempt 3/3): ESP_ERR_NOT_SUPPORTED
+E (24171) vc_cam: camera bring-up failed after 3 attempt(s)
+W (24171) vc_camrec: rung 2 (power-cycle + re-init) attempt 8/10: ESP_ERR_NOT_SUPPORTED
+W (25921) gpio: conflict found for GPIO[32]
+I (25961) vc_cam: PSRAM 8388608 B -> init frame size 15
+W (25961) vc_cam: test sabotage (mode 0, sticky 1): XCLK removed  attempt 1 fails (all attempts)
+E (25961) gpio: gpio_install_isr_service(568): GPIO isr service already installed
+W (25971) gpio: conflict found for GPIO[32]
+E (26001) camera: Detected camera not supported.
+E (26001) camera: Camera probe failed with error 0x106(ESP_ERR_NOT_SUPPORTED)
+E (26001) vc_cam: esp_camera_init failed (attempt 1/3): ESP_ERR_NOT_SUPPORTED
+W (26011) gpio: conflict found for GPIO[32]
+E (26051) gpio: gpio_install_isr_service(568): GPIO isr service already installed
+W (26051) gpio: conflict found for GPIO[32]
+E (26081) camera: Detected camera not supported.
+E (26081) camera: Camera probe failed with error 0x106(ESP_ERR_NOT_SUPPORTED)
+E (26081) vc_cam: esp_camera_init failed (attempt 2/3): ESP_ERR_NOT_SUPPORTED
+W (26091) gpio: conflict found for GPIO[32]
+E (26131) gpio: gpio_install_isr_service(568): GPIO isr service already installed
+W (26131) gpio: conflict found for GPIO[32]
+E (26161) camera: Detected camera not supported.
+E (26161) camera: Camera probe failed with error 0x106(ESP_ERR_NOT_SUPPORTED)
+E (26161) vc_cam: esp_camera_init failed (attempt 3/3): ESP_ERR_NOT_SUPPORTED
+E (26171) vc_cam: camera bring-up failed after 3 attempt(s)
+W (26171) vc_camrec: rung 2 (power-cycle + re-init) attempt 9/10: ESP_ERR_NOT_SUPPORTED
+W (27921) gpio: conflict found for GPIO[32]
+I (27961) vc_cam: PSRAM 8388608 B -> init frame size 15
+W (27961) vc_cam: test sabotage (mode 0, sticky 1): XCLK removed  attempt 1 fails (all attempts)
+E (27961) gpio: gpio_install_isr_service(568): GPIO isr service already installed
+W (27971) gpio: conflict found for GPIO[32]
+E (28001) camera: Detected camera not supported.
+E (28001) camera: Camera probe failed with error 0x106(ESP_ERR_NOT_SUPPORTED)
+E (28001) vc_cam: esp_camera_init failed (attempt 1/3): ESP_ERR_NOT_SUPPORTED
+W (28011) gpio: conflict found for GPIO[32]
+E (28051) gpio: gpio_install_isr_service(568): GPIO isr service already installed
+W (28051) gpio: conflict found for GPIO[32]
+E (28081) camera: Detected camera not supported.
+E (28081) camera: Camera probe failed with error 0x106(ESP_ERR_NOT_SUPPORTED)
+E (28081) vc_cam: esp_camera_init failed (attempt 2/3): ESP_ERR_NOT_SUPPORTED
+W (28091) gpio: conflict found for GPIO[32]
+E (28131) gpio: gpio_install_isr_service(568): GPIO isr service already installed
+W (28131) gpio: conflict found for GPIO[32]
+E (28161) camera: Detected camera not supported.
+E (28161) camera: Camera probe failed with error 0x106(ESP_ERR_NOT_SUPPORTED)
+E (28161) vc_cam: esp_camera_init failed (attempt 3/3): ESP_ERR_NOT_SUPPORTED
+E (28171) vc_cam: camera bring-up failed after 3 attempt(s)
+W (28171) vc_camrec: rung 2 (power-cycle + re-init) attempt 10/10: ESP_ERR_NOT_SUPPORTED
+E (29921) vc_camrec: recovery exhausted: 10 attempts, 1871 NULL frames  CameraFailed, consumers stopped
+E (29931) vc_frame: camera failed  frame acquisition stopped (consumers stop cleanly; leases already handed out stay valid)

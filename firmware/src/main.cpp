@@ -101,6 +101,8 @@ extern "C" void app_main(void) {
     esp_log_level_set("vc_resmon", ESP_LOG_INFO);
     esp_log_level_set("vc_net", ESP_LOG_INFO);
     esp_log_level_set("vc_wificred", ESP_LOG_INFO);
+    esp_log_level_set("vc_auth", ESP_LOG_INFO);
+    esp_log_level_set("vc_web", ESP_LOG_INFO);
 
     // --- core services (plan 02, task 1.1.1) ------------------------------
     // FIRST: the RTC ring log must read the previous session before this

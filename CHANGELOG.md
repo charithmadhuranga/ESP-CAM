@@ -8,10 +8,6 @@ tagged once Phase 9 release criteria pass.
 
 ### Added
 
-## [Unreleased]
-
-### Added
-
 - **Phase 1 task 1.1.1 — core services (2026-11-17).** New
   `firmware/src/core/` + headers: `coreInit()` boot order (RTC ring log
   first, so a crash later in the boot cannot destroy the evidence), typed
@@ -83,10 +79,11 @@ tagged once Phase 9 release criteria pass.
   a single `esp_http_server` instance (port 80, lru_purge on, 4 KB task stack,
   6 max_open_sockets = 4 API clients + 2 stream slots, 16 max_uri_handlers)
   serving every JSON response in the `{ok,data,error,request_id}` envelope
-  with a monotonic per-boot request_id (SPEC 6.0, API contract). 14 routes:
+  with a monotonic per-boot request_id (SPEC 6.0, API contract). 15 routes:
   auth (`/auth/{session,login,logout,complete-first-login,change-password}`),
   device (`/device`, `/status`, `/health`, `/metrics`, `/device/restart`),
-  camera (`/camera/status`, `/camera/settings` GET/PUT). Auth: single user
+  camera (`/camera/status`, `/camera/settings` GET/PUT,
+  `/camera/capture` POST). Auth: single user
   (default admin/admin), salted iterated SHA-256 password hash (parameters
   benchmarked on-device), RAM-only sessions from the CSPRNG, HTTP-only +
   SameSite cookies, CSRF double-submit on state-changing requests, login
@@ -95,6 +92,10 @@ tagged once Phase 9 release criteria pass.
   Network fix: lwIP is now *always* initialized (before the web server) so
   local-only mode no longer crash-loops on `tcpip "Invalid mbox"`;
   credentials are required only to connect the radio.
+  Hardware evidence: `docs/evidence/auth-debug4.log` through
+  `auth-debug6.log` — login returns 200 with HTTP-only+SameSite cookies,
+  `/camera/capture` returns 200 with a valid JPEG (640x480) when authenticated
+  and 401 without.
 
 - **Phase 1 task 1.3 — React + TypeScript web UI (2026-11-17).** New
   `webui/` Vite + React 19 + TypeScript project. Design tokens per DESIGN.md

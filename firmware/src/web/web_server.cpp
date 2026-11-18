@@ -320,14 +320,13 @@ static esp_err_t authLoginHandler(httpd_req_t* req) {
     char token_b64[64] = {};
     vc_b64e(static_cast<const uint8_t*>(token), tlen, token_b64,
             sizeof(token_b64));
-    char set_cookie[300] = {};
+    // Combine both cookies into one Set-Cookie header because
+    // httpd_resp_set_hdr() replaces rather than appends.
+    char set_cookie[512] = {};
     std::snprintf(set_cookie, sizeof(set_cookie),
-                  "%s=%s; Path=/; HttpOnly; SameSite=Lax", kSessionCookie,
-                  token_b64);
-    httpd_resp_set_hdr(req, "Set-Cookie", set_cookie);
-    std::snprintf(set_cookie, sizeof(set_cookie),
-                  "%s=%s; Path=/; HttpOnly; SameSite=Lax", kCsrfCookie,
-                  csrf_b64);
+                  "%s=%s; Path=/; HttpOnly; SameSite=Lax, %s=%s; Path=/; "
+                  "HttpOnly; SameSite=Lax",
+                  kSessionCookie, token_b64, kCsrfCookie, csrf_b64);
     httpd_resp_set_hdr(req, "Set-Cookie", set_cookie);
     return httpReplyOk(req, rid,
                        change_required
@@ -342,10 +341,8 @@ static esp_err_t authLogoutHandler(httpd_req_t* req) {
     authRevokeAllSessions();
     httpd_resp_set_hdr(req, "Set-Cookie",
                        "visioncam_session=; Path=/; HttpOnly; SameSite=Lax; "
-                       "Max-Age=0");
-    httpd_resp_set_hdr(req, "Set-Cookie",
-                       "visioncam_csrf=; Path=/; HttpOnly; SameSite=Lax; "
-                       "Max-Age=0");
+                       "Max-Age=0, visioncam_csrf=; Path=/; HttpOnly; "
+                       "SameSite=Lax; Max-Age=0");
     return httpReplyOk(req, rid, "{\"ok\":true}");
 }
 
@@ -619,6 +616,32 @@ static esp_err_t cameraSettingsPutHandler(httpd_req_t* req) {
     return httpReplyOk(req, rid, payload);
 }
 
+// --- POST /camera/capture ----------------------------------------------------
+static esp_err_t cameraCaptureHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    if (!cameraManagerInitialised()) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "camera not initialised");
+    }
+    // Ensure capture is running (step 15 stops it after the ladder test).
+    if (!frameManagerGetStats().running) {
+        frameManagerStart();
+    }
+    // Acquire a frame lease from the frame manager (sole fb owner, rule 9).
+    FrameLease lease;
+    if (!frameAcquire(0, lease, /*timeout_ms=*/2000)) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "no frame available");
+    }
+    // Return the JPEG as image/jpeg. The lease is released after the
+    // response is sent (httpd_resp_send copies the data internally).
+    esp_err_t err = httpReplyBytes(req, "image/jpeg", lease.data,
+                                   lease.len, "no-cache");
+    frameRelease(lease);
+    return err;
+}
+
 }  // namespace visioncam
 
 namespace visioncam {
@@ -683,6 +706,7 @@ static const httpd_uri_t s_routes[] = {
     {"/camera/status", HTTP_GET, cameraStatusHandler, nullptr},
     {"/camera/settings", HTTP_GET, cameraSettingsGetHandler, nullptr},
     {"/camera/settings", HTTP_PUT, cameraSettingsPutHandler, nullptr},
+    {"/camera/capture", HTTP_POST, cameraCaptureHandler, nullptr},
     // Catch-all static asset server (SPA fallback for unknown routes).
     // Specific API routes are registered above and match first.
     {"/*", HTTP_GET, assetHandler, nullptr},

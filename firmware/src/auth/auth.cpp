@@ -120,9 +120,38 @@ void sha256(const uint8_t* data, size_t data_len, uint8_t out[32]) {
     mbedtls_md_init(&ctx);
     const mbedtls_md_info_t* info =
         mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-    mbedtls_md_setup(&ctx, info, 0);   // 0 = plain hash, not HMAC
-    mbedtls_md_update(&ctx, data, data_len);
-    mbedtls_md_finish(&ctx, out);
+    if (info == nullptr) {
+        ESP_LOGE(TAG, "sha256: mbedtls_md_info_from_type returned NULL");
+        std::memset(out, 0, 32);
+        return;
+    }
+    // mbedtls_md_setup(ctx, info, hmac) where hmac=0 means plain hash,
+    // hmac=1 means HMAC. With hmac=0, mbedtls_md_starts/init/update/finish
+    // work as a plain hash.
+    if (mbedtls_md_setup(&ctx, info, 0) != 0) {
+        ESP_LOGE(TAG, "sha256: mbedtls_md_setup failed");
+        mbedtls_md_free(&ctx);
+        std::memset(out, 0, 32);
+        return;
+    }
+    if (mbedtls_md_starts(&ctx) != 0) {
+        ESP_LOGE(TAG, "sha256: mbedtls_md_starts failed");
+        mbedtls_md_free(&ctx);
+        std::memset(out, 0, 32);
+        return;
+    }
+    if (mbedtls_md_update(&ctx, data, data_len) != 0) {
+        ESP_LOGE(TAG, "sha256: mbedtls_md_update failed");
+        mbedtls_md_free(&ctx);
+        std::memset(out, 0, 32);
+        return;
+    }
+    if (mbedtls_md_finish(&ctx, out) != 0) {
+        ESP_LOGE(TAG, "sha256: mbedtls_md_finish failed");
+        mbedtls_md_free(&ctx);
+        std::memset(out, 0, 32);
+        return;
+    }
     mbedtls_md_free(&ctx);
 }
 
@@ -256,9 +285,15 @@ size_t vc_b64e(const uint8_t* data, size_t len, char* out,
             v = (v << 8) | data[i + j];
         }
         v <<= (3 - n) * 8;
+        // Number of base64 output chars for this group: 4 for 3 bytes,
+        // 3 for 2 bytes, 2 for 1 byte. Position j (3=first char, 0=last)
+        // is data if 3-j < out_chars, otherwise padding.
+        size_t out_chars = (n == 3) ? 4 : (n == 2) ? 3 : 2;
         for (int j = 3; j >= 0; --j) {
             if (o + 1 >= out_cap) return o;
-            out[o++] = (j <= n) ? kB64[(v >> (j * 6)) & 0x3F] : '=';
+            out[o++] = (static_cast<size_t>(3 - j) < out_chars)
+                           ? kB64[(v >> (j * 6)) & 0x3F]
+                           : '=';
         }
         i += n;
     }
@@ -286,9 +321,11 @@ size_t vc_b64d(const char* in, size_t in_len, uint8_t* out,
         }
         i += n;
         if (n < 2) break;
-        for (int j = 2; j > 0 && o < out_cap; --j) {
-            if (n <= j) break;
-            out[o++] = static_cast<uint8_t>((v >> (j * 8)) & 0xFF);
+        // Output floor(n*6/8) bytes from the most-significant end of v.
+        size_t out_bytes = (n * 6) / 8;
+        for (size_t j = 0; j < out_bytes && o < out_cap; ++j) {
+            size_t shift = (n * 6) - (j + 1) * 8;
+            out[o++] = static_cast<uint8_t>((v >> shift) & 0xFF);
         }
     }
     return o;
