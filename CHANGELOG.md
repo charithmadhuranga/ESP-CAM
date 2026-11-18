@@ -123,6 +123,31 @@ tagged once Phase 9 release criteria pass.
   for client-side SPA routing. Flash: 1,248,540 bytes (79.4%) — 324 KB
   headroom remaining.
 
+- **Phase 2 task 2.1 — storage manager (2026-11-18).** New
+  `firmware/src/storage/` — the sole filesystem owner (AGENTS rule 10):
+  `IStorageBackend` interface (`storage_backend.h`) + `SdStorageBackend`
+  (FATFS C stdio over the already-mounted `/sdcard` from `sd_bringup.cpp`),
+  `StorageManager` (`storage_manager.cpp`/`storage_manager.h`): opaque media
+  IDs (`med-…`, `evt-…`, `rec-…`), append-only JSONL media/event indexes,
+  bounded list/lookup/pagination, retention policy get/set, delete, path
+  traversal rejection. Web API (single `/storage` dispatcher via `?action=`
+  param to stay within the 16 URI-handler limit): `status` (capacity/mount
+  state), `files` (paginated listing), `file` (metadata GET, delete DELETE+CSRF),
+  `rebuild` (rebuild indexes POST+CSRF), `retention` (read GET / write PUT+CSRF).
+  All routes require auth cookie; state-changing routes require CSRF
+  double-submit. Retention is persisted to NVS namespace `"storage"` (schema
+  version 1), loaded before SD mount, survives reboot.
+  Hardware verified: SD mounts 1-bit, FAT32 volume 8,051,032,064 B usable
+  (99% of CSD); all endpoints return proper HTTP status codes (200 with auth
+  cookie, 401 without, 404 for unknown media, 403 without CSRF, 400 for
+  invalid retention values); PUT `/storage?action=retention` returns the
+  sanitised effective policy, not `{"updated":true}`; retention survives a
+  reboot. Evidence: `docs/evidence/phase2-storage-boot-01.log`,
+  `docs/evidence/phase2-storage-boot-02.log`,
+  `docs/evidence/phase2-http-transcript.log`,
+  `docs/evidence/phase2-snapshot.jpg`. Build: RAM 56,648 B (17.3%),
+  Flash 1,267,720 B (80.6%).
+
 ### Fixed
 
 - **Every boot crash-looped with PANIC (phase1-web-boot-01.log, 259 boots).**
@@ -148,6 +173,29 @@ tagged once Phase 9 release criteria pass.
   SoftAP next to a live STA); without them the Phase 0 SoftAP path runs in
   the hazard-safe camera-down → radio-up → camera-up order.
 - Verdict line gains a `net:` column (`Connecting`/`Connected`/`Off`).
+
+### Changed
+
+- **Web layer fixes (2026-11-18).**
+  - `jsonString` → `jsonScalar` in `web_server.cpp`: the old quoted-only
+    parser silently failed on JSON numbers, so PUTs reported success while
+    writing nothing (retention PUT never persisted). `jsonScalar` accepts
+    quoted strings, bare numbers and bare literals; rejects nested `{`/`[`.
+    11 call sites renamed.
+  - `httpReplyError` now sets the HTTP status per `ErrCode`: 401
+    Unauthenticated/SessionExpired, 403 CsrfInvalid, 400 ValidationFailed,
+    404 NotFound, 429 RateLimited, 503 SdNotMounted/StreamSlotLimit/
+    PlaybackBusy/TimeUnsynchronised, 507 SdFull, 500 SdWriteFailed/Internal.
+    Contract change to be logged at release.
+  - Frame-manager flush hook: `cameraManagerSetFlushHook()` is called inside
+    `cameraManagerShutdown()` right after `esp_camera_deinit()` (while
+    `s_state` is NULL, so `esp_camera_fb_return` is a safe no-op); the frame
+    manager registers `flushQueuesOnCameraShutdown()` at init to drain all
+    subscriber queues so no record crosses a camera lifetime.
+  - Capture handler's auto `frameManagerStart()` removed — resurrecting the
+    capture task during boot-test stop windows raced `esp_camera_deinit()`
+    (panics documented at `main.cpp:409-413`); `frameAcquire` now returns
+    "no frame available" instead.
 
 ### Known issues / owner actions
 

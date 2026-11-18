@@ -1,0 +1,81 @@
+
+===== 1. login (admin) =====
+{"ok":true,"request_id":2,"error":null,"data":{"password_change_required":true}}
+
+session token length: 24  csrf token length: 24
+
+===== 1b. login with wrong password (expect 401) =====
+{"ok":false,"request_id":3,"error":{"code":1,"message":"invalid username or password"},"data":null}
+HTTP 401
+
+===== 2. GET /storage?action=status  (authed) =====
+{"ok":true,"request_id":4,"error":null,"data":{"mounted":true,"index_loaded":true,"total_bytes":8051032064,"used_bytes":360448,"free_bytes":8050671616,"media_count":0,"schema_version":1}}
+HTTP 200
+
+===== 3. GET /storage?action=status  (no cookie -> expect 401) =====
+HTTP 401
+
+===== 4. GET /storage?action=files  (authed) =====
+{"ok":true,"request_id":6,"error":null,"data":{"has_more":false,"count":0,"offset":0,"limit":5,"items":[]}}
+HTTP 200
+
+===== 5. GET /storage?action=file&id=med-000001  (expect 404) =====
+{"ok":false,"request_id":7,"error":{"code":5,"message":"media not found"},"data":null}
+HTTP 404
+
+===== 6. DELETE /storage?action=file&id=med-000001 + CSRF (expect 404) =====
+{"ok":false,"request_id":8,"error":{"code":5,"message":"media not found"},"data":null}
+HTTP 404
+
+===== 7. DELETE without CSRF (expect 403 + envelope body) =====
+{"ok":false,"request_id":9,"error":{"code":3,"message":"CSRF token missing or invalid"},"data":null}
+HTTP 403
+
+===== 8. POST /storage?action=rebuild + CSRF =====
+{"ok":true,"request_id":10,"error":null,"data":{"rebuilt":true}}
+HTTP 200
+
+===== 9. GET /storage?action=retention (defaults) =====
+{"ok":true,"request_id":11,"error":null,"data":{"retention_days_manual":30,"retention_days_motion":7,"retention_days_detection":30,"retention_days_timelapse":90,"max_used_percent":85,"enabled":true,"schema_version":1}}
+HTTP 200
+
+===== 10. PUT /storage?action=retention (80) + CSRF -> expect effective policy =====
+{"ok":true,"request_id":12,"error":null,"data":{"retention_days_manual":30,"retention_days_motion":7,"retention_days_detection":30,"retention_days_timelapse":90,"max_used_percent":80,"enabled":true,"schema_version":1}}
+HTTP 200
+
+===== 11. GET /storage?action=retention (expect max_used_percent 80) =====
+{"ok":true,"request_id":13,"error":null,"data":{"retention_days_manual":30,"retention_days_motion":7,"retention_days_detection":30,"retention_days_timelapse":90,"max_used_percent":80,"enabled":true,"schema_version":1}}
+HTTP 200
+
+===== 12. PUT retention max_used_percent 150 (expect 400 validation) =====
+{"ok":false,"request_id":14,"error":{"code":4,"message":"retention value out of range"},"data":null}
+HTTP 400
+
+===== 13. PUT retention max_used_percent abc (expect 400 validation) =====
+{"ok":false,"request_id":15,"error":{"code":4,"message":"max_used_percent must be 0..100"},"data":null}
+HTTP 400
+
+===== 14. PUT retention without CSRF (expect 403) =====
+{"ok":false,"request_id":16,"error":{"code":3,"message":"CSRF token missing or invalid"},"data":null}
+HTTP 403
+
+===== 15. PUT /camera/settings numeric JSON (webui contract, expect 200) =====
+{"ok":true,"request_id":17,"error":null,"data":{"framesize":10,"quality":12,"schema_version":1}}
+HTTP 200
+
+===== 16. GET /camera/settings (expect framesize 10, quality 12) =====
+{"ok":true,"request_id":18,"error":null,"data":{"framesize":10,"quality":12,"schema_version":1}}
+HTTP 200
+
+===== 17. POST /camera/capture (valid JPEG?) =====
+HTTP 200 type=image/jpeg size=19978
+/tmp/opencode/phase2-snapshot.jpg OK 19978 bytes (640, 480) EOI=True
+
+===== 18. POST /camera/capture without cookie (expect 401) =====
+HTTP 401
+
+===== 19. GET /metrics (frame_backpressure_waits present?) =====
+{"ok":true,"request_id":21,"error":null,"data":{"uptime_s":239,"heap_free_bytes":3548491,"heap_min_bytes":3500928,"heap_largest_bytes":47104,"psram_free_bytes":3418168,"psram_largest_bytes":3014656,"abnormal_boots":0,"boot_count":1,"frame_captured":2703,"frame_invalid_dropped":0,"frame_pool_dropped":0,"frame_queue_dropped":2696,"frame_backpressure_waits":0,"frame_leases_taken":5,"frame_leases_released":5,"cam_null_frames":1870,"cam_recovery_attempts":0,"cam_recovered":0,"cam_failed_events":0,"schema_versio
+HTTP 200
+
+NOTE: retention left at max_used_percent=80 for the reboot-persistence check.

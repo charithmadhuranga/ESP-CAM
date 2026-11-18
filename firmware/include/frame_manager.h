@@ -123,6 +123,11 @@ struct FrameManagerStats {
     uint32_t invalid_dropped = 0;      // SPEC 4.1.1 rule 7 (len == 0 / > capacity)
     uint32_t pool_dropped = 0;         // no free record: new frame dropped
     uint32_t queue_dropped = 0;        // drop-oldest, all consumers summed
+                                       // (incl. frames dropped early by
+                                       //  evictForCapture before acquire)
+    uint32_t backpressure_waits = 0;   // fb_get skipped: all driver buffers
+                                       // held by in-flight leases (never a
+                                       //  camera-failure ladder attempt)
     uint32_t leases_taken = 0;
     uint32_t leases_released = 0;
     uint32_t subscribers = 0;

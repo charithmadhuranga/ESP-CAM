@@ -41,6 +41,8 @@ idf_component_register(
         "frame/frame_manager.cpp"
         "auth/auth.cpp"
         "web/web_server.cpp"
+        "storage/storage_manager.cpp"
+        "storage/sd_storage_backend.cpp"
         "web_assets/web_asset_0.c"
         "web_assets/web_asset_1.c"
         "web_assets/web_asset_2.c"

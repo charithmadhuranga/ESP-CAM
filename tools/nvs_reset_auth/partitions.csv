@@ -1,0 +1,41 @@
+# Partition table for tools/nvs_reset_auth — IDENTICAL to the root table on
+# purpose: this tool must see the same NVS pages as the firmware (92 KB at
+# 0x9000). A mismatched nvs view is exactly how the owner lost credentials
+# once (docs/REFERENCE_ANALYSIS.md). The app slot is also the firmware's
+# ota_0, so flashing this tool replaces the firmware until it is reflashed.
+#
+# VisionCam Pro partition table — 4 MB flash (AI-Thinker ESP32-CAM)
+#
+# Decision + headroom recorded in docs/adr/0001-toolchain.md (plan 01,
+# deliverable 5). Alignment rules verified against the pinned ESP-IDF 6.1.0
+# components/partition_table/gen_esp32part.py:
+#   - APP offsets must be 0x10000-aligned, APP sizes 0x1000-aligned
+#     (no secure boot yet), every DATA partition 0x1000-aligned.
+#
+# Byte map (offsets are absolute, flash ends at 0x400000):
+#
+#   0x000000  (reserved: image header / bootloader at 0x1000)
+#   0x008000  partition table          4 KB
+#   0x009000  nvs            92 KB     config, credentials, versioned schema
+#   0x020000  ota_0        1.5 MB      app slot A  <- boots first
+#   0x1a0000  ota_1        1.5 MB      app slot B
+#   0x320000  otadata         8 KB     which slot boots + rollback state
+#   0x322000  phy_init        4 KB
+#   0x323000  storage       884 KB     models / UI fallback (raw until used)
+#   0x400000  end of flash
+#
+# Why two app slots: the partition table cannot be changed later without
+# erasing the whole device, so the layout keeps the OTA option open even
+# though no OTA code exists yet (SPEC 5.4: firmware update only if a safe
+# OTA design is implemented). Each slot is 1.5 MB — 4x the current firmware —
+# so nothing is given up today. otadata/phy_init sit after the app slots
+# only because app offsets must be 0x10000-aligned and the standard
+# 0x9000-0x12000 header area would otherwise leave 56 KB unused.
+#
+# Name,     Type,  SubType, Offset,   Size,     Flags
+nvs,        data,  nvs,     0x9000,   0x17000,
+ota_0,      app,   ota_0,   0x20000,  0x180000,
+ota_1,      app,   ota_1,   0x1a0000, 0x180000,
+otadata,    data,  ota,     0x320000, 0x2000,
+phy_init,   data,  phy,     0x322000, 0x1000,
+storage,    data,  spiffs,  0x323000, 0xdd000,

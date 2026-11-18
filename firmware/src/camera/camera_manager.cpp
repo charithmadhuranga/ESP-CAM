@@ -31,6 +31,11 @@ constexpr unsigned kWarmupFrames  = 3;    // SPEC 4.1.1 rule 6
 constexpr uint32_t kXclkHz        = 20'000'000;  // rule 3: 20 MHz, do not exceed
 constexpr int      kDefaultQuality = 12;  // 0..63, lower = better (R1's default)
 constexpr framesize_t kDefaultFramesize = FRAMESIZE_VGA;  // rule 1 runtime default
+// Rule 2 / §4.1.1: 2 PSRAM buffers, GRAB_LATEST (the value used below in
+// buildCameraConfig). Exposed through cameraManagerFrameBufferCount()
+// because the frame manager must reason about driver-buffer ownership
+// against exactly this number — it is configured in one place only.
+constexpr int      kFbCount = 2;
 
 // SPEC 4.1.1 rule 8: "set jpeg_buffer_size explicitly for very small frame
 // sizes". The driver default is width*height/5 (cam_hal.c:619), which
@@ -50,6 +55,12 @@ std::atomic<int>         s_quality{kDefaultQuality};
 std::atomic<size_t>      s_jpeg_buffer_size{0};
 std::atomic<bool>        s_initialised{false};
 std::atomic<bool>        s_test_sabotage{false};   // task 1.1.4 smoke only
+
+// Flush hook (cameraManagerSetFlushHook): plain function pointer, set once
+// at startup before the first teardown can occur, read only from
+// cameraManagerShutdown — no atomics needed for a write-once/read-many
+// registration.
+void (*s_flush_hook)(void) = nullptr;
 
 // SPEC 4.1.1 rule 1: initialise at the largest frame size the PSRAM holds.
 framesize_t initFrameSizeFor(size_t psram_bytes) {
@@ -98,7 +109,7 @@ void fillConfig(camera_config_t& cfg, framesize_t fs) {
     cfg.pixel_format  = PIXFORMAT_JPEG;
     cfg.frame_size    = fs;
     cfg.jpeg_quality  = static_cast<uint8_t>(kDefaultQuality);
-    cfg.fb_count      = 2;
+    cfg.fb_count      = kFbCount;
     cfg.fb_location   = CAMERA_FB_IN_PSRAM;
     cfg.grab_mode     = CAMERA_GRAB_LATEST;
     cfg.jpeg_buffer_size = 0;             // filled in by the caller (rule 8)
@@ -129,6 +140,10 @@ sensor_t* sensorOrNull() {
 }  // namespace
 
 bool cameraManagerInitialised() { return s_initialised.load(); }
+
+unsigned cameraManagerFrameBufferCount() {
+    return static_cast<unsigned>(kFbCount);
+}
 
 framesize_t cameraManagerFramesize() { return s_framesize.load(); }
 int cameraManagerQuality() { return s_quality.load(); }
@@ -217,6 +232,11 @@ void cameraManagerSetTestSabotage(bool armed) {
     }
 }
 
+void cameraManagerSetFlushHook(void (*hook)(void)) {
+    // Set once at startup (frame manager init); read from shutdown paths.
+    s_flush_hook = hook;
+}
+
 void cameraManagerShutdown() {
     // esp_camera_init()'s doc comment still claims the module "can only be
     // called once and there is no way to de-initialize" (esp_camera.h:187-188).
@@ -233,6 +253,12 @@ void cameraManagerShutdown() {
     // Recorded in docs/REFERENCE_ANALYSIS.md ("Camera init / retry").
     esp_camera_deinit();
     s_initialised.store(false);
+    // Flush AFTER deinit, while s_state is NULL: queued records now name
+    // freed driver buffers, and fb_return inside the drain is a documented
+    // no-op (esp_camera.c:410-416). This runs on EVERY camera teardown
+    // (step 15, forced-failure, ladder rung 2 re-init, init-failure paths),
+    // so no record can ever cross a camera lifetime.
+    if (s_flush_hook != nullptr) s_flush_hook();
 }
 
 esp_err_t cameraManagerInit(CameraReport& report, CameraInitTestMode mode) {

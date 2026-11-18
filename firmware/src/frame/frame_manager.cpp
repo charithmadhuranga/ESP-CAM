@@ -70,6 +70,8 @@ std::atomic<uint32_t> s_invalid_dropped{0};
 std::atomic<uint32_t> s_pool_dropped{0};
 std::atomic<uint32_t> s_leases_taken{0};
 std::atomic<uint32_t> s_leases_released{0};
+std::atomic<uint32_t> s_backpressure_waits{0};
+std::atomic<bool>     s_in_backpressure{false};   // WARN once per episode
 std::atomic<uint32_t> s_last_len{0};
 std::atomic<uint64_t> s_last_ts{0};
 TaskHandle_t          s_task = nullptr;
@@ -95,6 +97,98 @@ void recordUnref(Record* rec) {
     if (rec->fb != nullptr) {
         esp_camera_fb_return(rec->fb);        // the ONLY return() call site
         rec->fb = nullptr;
+    }
+}
+
+// Invoked by cameraManagerShutdown() through the flush hook, AFTER
+// esp_camera_deinit(): every queued record now names a freed driver buffer,
+// and fb_return inside recordUnref is a no-op while s_state is NULL
+// (esp_camera.c:410-416). Draining here guarantees no record survives the
+// camera lifetime that produced it — otherwise the re-inited driver can
+// re-allocate and re-DMA into the same PSRAM, and a consumer would later be
+// served that stale memory as a "frame" (observed on hardware: a 1024 B
+// snapshot, SOI present, no EOI — phase2 HTTP run).
+// Safe to call from any task: queues are only pushed/popped with thread-
+// safe FreeRTOS calls, and the capture task is parked before every
+// cameraManagerShutdown() in main.cpp (or is itself the caller, via the
+// ladder's re-init rung).
+void flushQueuesOnCameraShutdown() {
+    unsigned flushed = 0;
+    for (unsigned i = 0; i < VC_FRAME_SUBSCRIBERS; ++i) {
+        Subscriber& sub = s_subs[i];
+        if (!sub.used || sub.queue == nullptr) continue;
+        Record* rec = nullptr;
+        while (xQueueReceive(sub.queue, &rec, 0) == pdPASS) {
+            if (rec != nullptr) {
+                recordUnref(rec);   // fb_return no-ops: driver already down
+                ++flushed;
+            }
+        }
+    }
+    if (flushed > 0) {
+        ESP_LOGW(TAG, "camera shutdown: flushed %u stale frame record(s) "
+                      "from consumer queues", flushed);
+    }
+}
+
+// --- driver-buffer ownership: back-pressure vs camera death --------------
+// The driver owns cameraManagerFrameBufferCount() buffers in total, so the
+// number of distinct buffers our records hold can never exceed that. A
+// record counts while it has BOTH a live reference and an fb: recordUnref()
+// drops refs first and clears fb after the return, so a record mid-release
+// on another core is at worst over-counted for one iteration (self-corrects
+// on the next check; the pointer itself is only null-tested, never
+// dereferenced here). Called only from the capture task, between frames —
+// i.e. while the capture task itself holds no record.
+unsigned buffersHeldByUs() {
+    unsigned held = 0;
+    for (unsigned i = 0; i < VC_FRAME_POOL; ++i) {
+        const Record& r = s_pool[i];
+        if (r.fb != nullptr && r.refs.load(std::memory_order_acquire) > 0) {
+            ++held;
+        }
+    }
+    return held;
+}
+
+// Evicts the OLDEST frame from the fullest consumer queue (never a lease —
+// a consumer may be mid-read) until the capture task is guaranteed a free
+// driver buffer. This is distribute()'s drop-oldest policy executed one
+// step EARLY: without it, a full subscriber queue owns every driver buffer
+// (fb_count 2, queue depth 2), fb_get() can only wait on buffers we already
+// hold, and distribute()'s own drop-oldest never gets the chance to run —
+// a structural deadlock that produced permanent 4 s NULL timeouts at rest
+// ("cam_hal: Failed to get frame: timeout" in phase1/auth logs), which the
+// SPEC 9.1 ladder misread as camera death and eventually tried to re-init
+// a healthy camera (/camera/capture -> code 13 while idle).
+// Only the capture task calls this; every eviction counts exactly like a
+// push-time drop (sub.dropped -> stats.queue_dropped). At most
+// cameraManagerFrameBufferCount() records can hold buffers, so the loop is
+// bounded by the queue contents and always terminates.
+void evictForCapture() {
+    const unsigned fb_count = cameraManagerFrameBufferCount();
+    while (buffersHeldByUs() >= fb_count) {
+        Subscriber* fullest = nullptr;
+        UBaseType_t most = 0;
+        for (unsigned i = 0; i < VC_FRAME_SUBSCRIBERS; ++i) {
+            Subscriber& sub = s_subs[i];
+            if (!sub.used || sub.queue == nullptr) continue;
+            const UBaseType_t waiting = uxQueueMessagesWaiting(sub.queue);
+            if (waiting > most) {
+                most = waiting;
+                fullest = &sub;
+            }
+        }
+        if (fullest == nullptr) {
+            return;   // everything left is an in-flight lease: wait instead
+        }
+        Record* old = nullptr;
+        if (xQueueReceive(fullest->queue, &old, 0) != pdPASS ||
+            old == nullptr) {
+            return;   // lost a race with a consumer: re-check next iteration
+        }
+        fullest->dropped++;
+        recordUnref(old);
     }
 }
 
@@ -146,6 +240,42 @@ void captureTask(void* /*arg*/) {
             continue;
         }
 
+        // (1) Guarantee the driver has a buffer to give us: drop the
+        //     oldest queued frame first (early drop-oldest, see
+        //     evictForCapture).
+        evictForCapture();
+
+        // (2) If that could not free one, every driver buffer is held by
+        //     in-flight consumer leases (evictForCapture only stops on
+        //     leases). Waiting here is OUR back-pressure: yield per SPEC
+        //     9.1 rule 1, count it, and never let it reach the ladder —
+        //     a NULL from this state is not a dead camera. A lease always
+        //     releases (HTTP handlers hold it under RAII), so this is
+        //     bounded. The initialised() guard keeps the deliberate-death
+        //     paths (step 15, ladder rungs 9/10) feeding the ladder even
+        //     if stale records still name buffers.
+        if (cameraManagerInitialised() &&
+            buffersHeldByUs() >= cameraManagerFrameBufferCount()) {
+            s_backpressure_waits.fetch_add(1);
+            if (!s_in_backpressure.exchange(true)) {
+                ESP_LOGW(TAG, "driver idle: all %u frame buffers held by "
+                              "consumers — waiting (back-pressure, not "
+                              "camera failure)",
+                         static_cast<unsigned>(
+                             cameraManagerFrameBufferCount()));
+            }
+            vTaskDelay(pdMS_TO_TICKS(cameraRecoveryYieldMs()));
+            continue;
+        }
+        if (s_in_backpressure.exchange(false)) {
+            ESP_LOGI(TAG, "back-pressure cleared (%u waits total)",
+                     s_backpressure_waits.load());
+        }
+
+        // (3) Acquire. A free driver buffer was guaranteed above, so a NULL
+        //     here means the driver held a buffer for the whole 4 s
+        //     FB_GET_TIMEOUT without producing a frame: a genuine camera
+        //     failure — exactly the condition SPEC 9.1 governs.
         camera_fb_t* fb = esp_camera_fb_get();   // R2 blocks internally with FB_GET_TIMEOUT
         if (fb == nullptr) {
             // SPEC 9.1: the ladder runs in OUR task and yields ~10 ms on
@@ -209,6 +339,11 @@ size_t frameJpegCapacity() { return cameraManagerJpegCapacity(); }
 esp_err_t frameManagerInit() {
     if (s_task_alive.load()) return ESP_ERR_INVALID_STATE;
     s_task_parked.store(false);
+    // Flush hook: every camera teardown drains our subscriber queues while
+    // the driver is down (see flushQueuesOnCameraShutdown). Registered
+    // here — before any teardown can occur (camera bring-up already
+    // succeeded; the forced-failure and step-15 tests run later).
+    cameraManagerSetFlushHook(flushQueuesOnCameraShutdown);
     // Pinned to core 1 (the application core): R2's cam_task owns core 0
     // (SPEC 4.1.1 rule 10 — "pin deliberately and measure"), and the
     // capture task must not compete with it for the same core. Priority 6
@@ -232,6 +367,10 @@ esp_err_t frameManagerSubscribe(FrameSubscriberId* out_id, const char* name) {
     if (out_id == nullptr) return ESP_ERR_INVALID_ARG;
     for (unsigned i = 0; i < VC_FRAME_SUBSCRIBERS; ++i) {
         if (s_subs[i].used) continue;
+        // Fixed depth, bounded by VC_FRAME_QUEUE_DEPTH. Overflow policy:
+        // drop-oldest, applied at push time by distribute() and one step
+        // early by evictForCapture() when the queue holds every driver
+        // buffer (both count into stats.queue_dropped). Never blocks.
         s_subs[i].queue = xQueueCreate(VC_FRAME_QUEUE_DEPTH, sizeof(Record*));
         if (s_subs[i].queue == nullptr) return ESP_ERR_NO_MEM;
         s_subs[i].used = true;
@@ -343,6 +482,7 @@ FrameManagerStats frameManagerGetStats() {
     st.frames_captured = s_frames_captured.load();
     st.invalid_dropped = s_invalid_dropped.load();
     st.pool_dropped = s_pool_dropped.load();
+    st.backpressure_waits = s_backpressure_waits.load();
     st.leases_taken = s_leases_taken.load();
     st.leases_released = s_leases_released.load();
     st.subscribers = 0;

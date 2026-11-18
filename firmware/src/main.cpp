@@ -31,6 +31,8 @@
 #include "resource_monitor.h"
 #include "ring_log.h"
 #include "sd_bringup.h"
+#include "sd_storage_backend.h"
+#include "storage_manager.h"
 #include "web_server.h"
 #include "wifi_bringup.h"
 
@@ -103,6 +105,7 @@ extern "C" void app_main(void) {
     esp_log_level_set("vc_wificred", ESP_LOG_INFO);
     esp_log_level_set("vc_auth", ESP_LOG_INFO);
     esp_log_level_set("vc_web", ESP_LOG_INFO);
+    esp_log_level_set("vc_storage", ESP_LOG_INFO);
 
     // --- core services (plan 02, task 1.1.1) ------------------------------
     // FIRST: the RTC ring log must read the previous session before this
@@ -269,6 +272,34 @@ extern "C" void app_main(void) {
 
     logHeap("after SD");
 
+    // --- storage manager (plan 02 task 2.1) ----------------------------------
+    // The storage manager owns ALL filesystem access (AGENTS rule 10). It
+    // needs the SD card already mounted (step 12) — begin() then creates the
+    // directory layout (SPEC §4.8) and loads existing indexes to resume media
+    // ID allocation across reboots. Not fatal: everything except storage
+    // keeps working without it (SPEC 2.3).
+    static visioncam::SdStorageBackend sd_backend;
+    if (sdErr == ESP_OK) {
+        const esp_err_t stErr = storageManagerInit(&sd_backend);
+        if (stErr != ESP_OK) {
+            ESP_LOGE(TAG, "storage manager init FAILED: %s", esp_err_to_name(stErr));
+        } else {
+            visioncam::StorageStatus ss;
+            if (visioncam::storageGetStatus(&ss) == ESP_OK) {
+                // Capacity is uint64: this card's FAT volume is 8,051,032,064 B
+                // (> 4 GiB), so an %u cast wraps it to 3,756,064,768 B.
+                ESP_LOGI(TAG, "storage OK: mounted=%u free=%llu B used=%llu B total=%llu B media=%u",
+                         ss.mounted ? 1 : 0,
+                         static_cast<unsigned long long>(ss.free_bytes),
+                         static_cast<unsigned long long>(ss.used_bytes),
+                         static_cast<unsigned long long>(ss.total_bytes),
+                         static_cast<unsigned>(ss.media_count));
+            }
+        }
+    } else {
+        ESP_LOGW(TAG, "storage manager skipped — SD not mounted");
+    }
+
     // --- step 14: camera + SD together, Wi-Fi off then Wi-Fi on ------------
     // A brownout during radio TX resets the chip, and the NEXT boot reports
     // reset reason BROWNOUT — so this log plus the following boot's banner
@@ -375,6 +406,19 @@ extern "C" void app_main(void) {
     // (cameraManagerShutdown + PWDN power-cycle) must recover on attempt 2.
     const char* forced = "SKIP";
     if (camErr == ESP_OK) {
+        // Park the capture task first (same rule as step 14 above): on the
+        // network-manager path step 14 leaves the task RUNNING, and
+        // esp_camera_deinit() would free the queue the task is blocked in
+        // inside esp_camera_fb_get() — that panic is
+        // docs/evidence/phase1-frame-boot-11.log's forced-failure window.
+        visioncam::frameManagerStop();
+        // Drain what the capture task queued before the stop while the old
+        // driver is still alive, so each buffer is returned to its real pool
+        // instead of being handed back to a freed cam_obj after re-init.
+        visioncam::FrameLease stale;
+        while (visioncam::frameAcquire(smoke_sub, stale, 0)) {
+            visioncam::frameRelease(stale);
+        }
         visioncam::cameraManagerShutdown();
         visioncam::CameraReport cam2;
         const esp_err_t fErr = visioncam::cameraManagerInit(
@@ -382,6 +426,11 @@ extern "C" void app_main(void) {
         forced = (fErr == ESP_OK && cam2.init_attempts == 2) ? "OK" : "FAIL";
         ESP_LOGI(TAG, "forced-failure test: err=%s, attempts=%u -> %s",
                  esp_err_to_name(fErr), cam2.init_attempts, forced);
+        const esp_err_t fStart = visioncam::frameManagerStart();
+        if (fStart != ESP_OK) {
+            ESP_LOGE(TAG, "forced-failure test: frame manager restart failed: %s",
+                     esp_err_to_name(fStart));
+        }
     } else {
         ESP_LOGW(TAG, "forced-failure test skipped — camera not OK");
     }
@@ -431,16 +480,27 @@ extern "C" void app_main(void) {
     // was proven standalone in phase1-ladder-boot-01.log; here we prove the
     // ladder runs through the live capture task with a real consumer.
     const char* ladder = "SKIP";
+    const char* restore = "SKIP";
     if (camErr == ESP_OK) {
         // The capture task drives the ladder itself (fb_get → NULL → rung),
-        // so it must be RUNNING. Park it briefly around the camera shutdown
-        // to avoid the driver race, then let it run the rungs.
-        // Shut the camera down first — the already-running capture task then
-        // sees NULL from fb_get and drives the ladder itself (app_main and
-        // the capture task share core 1, so no driver race).
-        visioncam::cameraManagerShutdown();      // camera dead
+        // so it must be RUNNING while the rungs run.
+        //
+        // Park it FIRST around the camera shutdown. app_main and the capture
+        // task sharing core 1 does NOT make the shutdown safe: a task blocked
+        // inside esp_camera_fb_get() is *not running*, so app_main runs and
+        // esp_camera_deinit() frees cam_obj (and the frame_buffer_queue the
+        // capture task is blocked on) underneath it — reproduced on hardware
+        // as LoadProhibited inside prvCopyDataFromQueue and as an
+        // interrupt-WDT spinlock panic (auth-debug.log, phase2 boot captures).
+        // frameManagerStop() waits for the parked handshake so the task is
+        // provably outside fb_get before the driver goes away.
+        visioncam::frameManagerStop();
+        visioncam::cameraManagerShutdown();      // camera dead, nobody inside fb_get
         visioncam::cameraManagerSetTestSabotage(true);   // every re-init fails too
         visioncam::cameraRecoveryReset();
+        // Resume: fb_get now returns NULL immediately (s_state == NULL) and
+        // the capture task drives the rungs — nothing simulated.
+        visioncam::frameManagerStart();
 
         const int64_t t0 = esp_timer_get_time() / 1000;
         for (;;) {
@@ -456,14 +516,33 @@ extern "C" void app_main(void) {
         const bool was_failed =
             visioncam::cameraRecoveryState() == visioncam::CameraRecoveryState::Failed;
 
-        // Reset state without re-initing the camera (re-init after a driver
-        // shutdown panicked the interrupt WDT here — reproduced above).
-        // Rule-3 reset is proven standalone; here we prove the ladder runs
-        // through the live capture task with a real consumer.
+        // Reset state and put the camera back: the test held it dead, and the
+        // product promise is a live device afterwards (Phase 2 snapshots and
+        // the live stream both need frames). The capture task is parked here
+        // (the ladder's terminal CameraFailed stops it), so the re-init is on
+        // the safe side of the same handshake used above.
         visioncam::cameraManagerSetTestSabotage(false);
         visioncam::cameraRecoveryReset();
         const bool ladder_reset =
             visioncam::cameraRecoveryState() == visioncam::CameraRecoveryState::Idle;
+
+        visioncam::frameManagerStop();
+        visioncam::CameraReport restore_report;
+        const esp_err_t restore_err =
+            visioncam::cameraManagerReinit(restore_report);
+        if (restore_err == ESP_OK) {
+            visioncam::frameManagerStart();
+            restore = "OK";
+            ESP_LOGI(TAG, "camera restored after the ladder: %u bytes "
+                          "(%ux%u), attempts=%u",
+                     static_cast<unsigned>(restore_report.jpeg_bytes),
+                     restore_report.jpeg_width, restore_report.jpeg_height,
+                     static_cast<unsigned>(restore_report.init_attempts));
+        } else {
+            restore = "FAIL";
+            ESP_LOGE(TAG, "camera restore after the ladder FAILED: %s",
+                     esp_err_to_name(restore_err));
+        }
 
         // Verdict: 10 attempts, all gated (>= 18 s: 9 x 2 s gates), 5+5
         // rungs, exactly one CameraFailed, reset OK.
@@ -475,7 +554,7 @@ extern "C" void app_main(void) {
         ladder = (was_failed && gates_ok && ladder_reset) ? "OK" : "FAIL";
         ESP_LOGI(TAG, "step 15 result: %s (attempts=%u nulls=%u rung1=%u "
                       "rung2=%u errors=%u elapsed=%lld ms; cam_failed=%d "
-                      "ladder reset=%d)",
+                      "ladder reset=%d restore=%s)",
                  ladder, static_cast<unsigned>(rs.recovery_attempts),
                  static_cast<unsigned>(rs.null_frames),
                  static_cast<unsigned>(rs.sensor_resets),
@@ -483,7 +562,8 @@ extern "C" void app_main(void) {
                  static_cast<unsigned>(rs.rung_errors),
                  static_cast<long long>(rs.last_attempt_ms - t0),
                  rs.failed_events ? 1 : 0,
-                 ladder_reset ? 1 : 0);
+                 ladder_reset ? 1 : 0,
+                 restore);
         if (ladder[0] != 'O' || ladder[1] != 'K') {
             ESP_LOGE(TAG, "step 15 FAILED — SPEC 9.1 ladder evidence: stats "
                           "nulls=%u attempts=%u recovered=%u failed_events=%u",
@@ -496,11 +576,10 @@ extern "C" void app_main(void) {
         ESP_LOGW(TAG, "step 15 skipped — camera not OK");
     }
 
-    // Capture is intentionally left stopped here — the camera was held dead
-    // for the ladder and re-initing after a driver shutdown panicked the
-    // interrupt WDT on this hardware (step 14 already proved a working
-    // camera + lease, step 15 proves the ladder through the capture task).
-    // Restarting capture with a dead camera would just re-run the ladder.
+    // Capture is RUNNING again after step 15 (restore=OK above): the device
+    // comes out of boot live, which is what the Phase 2 snapshot/gallery work
+    // and the live stream depend on. If restore failed the capture task stays
+    // parked and the boot log says restore=FAIL — never silently.
 
     // Keep the task alive so heap minima accumulate across the idle period.
     for (;;) {

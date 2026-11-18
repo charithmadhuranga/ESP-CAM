@@ -30,6 +30,7 @@
 #include "network_manager.h"
 #include "resource_monitor.h"
 #include "ring_log.h"
+#include "storage_manager.h"
 #include "web_assets_manifest.h"
 
 namespace visioncam {
@@ -122,23 +123,77 @@ esp_err_t readJsonBody(httpd_req_t* req, char* out, size_t out_cap,
     return ESP_OK;
 }
 
-// Extracts a quoted JSON string value for a key from body (bounded, small).
-bool jsonString(const char* body, const char* key, char* out, size_t out_cap) {
+// Extracts a JSON scalar value for a key from a small request body.
+// Accepts a quoted string ("VGA"), a bare number (12) or a bare literal
+// (true) — the webui sends framesize/quality/max_used_percent as JSON
+// numbers, and the old quoted-only parser silently failed on them, which
+// made a PUT report success while writing nothing (observed on hardware:
+// retention max_used_percent stayed at its default after a "successful"
+// update). Nested objects/arrays are not supported (returns false) — no
+// endpoint takes them.
+bool jsonScalar(const char* body, const char* key, char* out, size_t out_cap) {
     const char* k = std::strstr(body, key);
     if (k == nullptr) return false;
     k = std::strchr(k, ':');
     if (k == nullptr) return false;
     ++k;
     while (*k == ' ') ++k;
-    if (*k != '"') return false;
-    ++k;
-    const char* end = std::strchr(k, '"');
-    if (end == nullptr) return false;
-    size_t n = static_cast<size_t>(end - k);
-    if (n >= out_cap) return false;
-    std::memcpy(out, k, n);
+    if (*k == '{' || *k == '[') return false;   // nested value: unsupported
+    if (*k == '"') {
+        ++k;
+        const char* end = std::strchr(k, '"');
+        if (end == nullptr) return false;
+        size_t n = static_cast<size_t>(end - k);
+        if (n >= out_cap) return false;
+        std::memcpy(out, k, n);
+        out[n] = '\0';
+        return true;
+    }
+    // Bare scalar: copy until a JSON structural/whitespace delimiter.
+    size_t n = 0;
+    while (*k != '\0' && *k != ',' && *k != '}' && *k != ']' &&
+           *k != ' ' && *k != '\n' && *k != '\r' && *k != '\t') {
+        if (n + 1 >= out_cap) return false;
+        out[n++] = *k++;
+    }
+    if (n == 0) return false;
     out[n] = '\0';
     return true;
+}
+
+// Strict unsigned parse: the WHOLE string must be decimal digits (rejects
+// "", "12abc", "-3", overflows). Returns false on any garbage so a typo
+// can never be silently coerced to 0 (which is a valid policy value —
+// "0 disables size retention" — and would have looked like success).
+bool parseU32Strict(const char* s, uint32_t& out) {
+    if (s == nullptr || *s == '\0') return false;
+    uint64_t v = 0;
+    for (const char* p = s; *p != '\0'; ++p) {
+        if (*p < '0' || *p > '9') return false;
+        v = v * 10u + static_cast<uint64_t>(*p - '0');
+        if (v > 0xFFFFFFFFull) return false;
+    }
+    out = static_cast<uint32_t>(v);
+    return true;
+}
+
+// Shared retention payload builder — GET and PUT answers use the SAME
+// shape so consumers never branch on the method (schema_version included:
+// the policy is a persisted schema, SPEC 7).
+void retentionJson(const RetentionPolicy& rp, char* out, size_t cap) {
+    std::snprintf(out, cap,
+                  "{\"retention_days_manual\":%u,"
+                  "\"retention_days_motion\":%u,"
+                  "\"retention_days_detection\":%u,"
+                  "\"retention_days_timelapse\":%u,"
+                  "\"max_used_percent\":%u,"
+                  "\"enabled\":%s,\"schema_version\":1}",
+                  static_cast<unsigned int>(rp.retention_days_manual),
+                  static_cast<unsigned int>(rp.retention_days_motion),
+                  static_cast<unsigned int>(rp.retention_days_detection),
+                  static_cast<unsigned int>(rp.retention_days_timelapse),
+                  static_cast<unsigned int>(rp.max_used_percent),
+                  rp.enabled ? "true" : "false");
 }
 
 // Sends a 401 with the JSON error envelope (auth failure path).
@@ -237,6 +292,31 @@ esp_err_t httpReplyOk(httpd_req_t* req, uint32_t request_id,
 
 esp_err_t httpReplyError(httpd_req_t* req, uint32_t request_id, ErrCode code,
                          const char* message) {
+    // Appropriate HTTP status per the API contract (the envelope still
+    // carries the numeric ErrCode). String literals only: httpd stores the
+    // status POINTER (httpd_txrx.c:208-224), no copy.
+    // Contract change logged in CHANGELOG (rule 27/28): error envelopes
+    // used to arrive with HTTP 200; the webui client parses the envelope
+    // regardless of status (webui/src/lib/api.ts parseEnvelope), so its
+    // behaviour is unchanged. 401 paths were already explicit.
+    const char* status = nullptr;
+    switch (code) {
+    case ErrCode::Ok:                 break;
+    case ErrCode::Unauthenticated:
+    case ErrCode::SessionExpired:     status = "401 Unauthorized"; break;
+    case ErrCode::CsrfInvalid:        status = "403 Forbidden"; break;
+    case ErrCode::ValidationFailed:   status = "400 Bad Request"; break;
+    case ErrCode::NotFound:           status = "404 Not Found"; break;
+    case ErrCode::RateLimited:        status = "429 Too Many Requests"; break;
+    case ErrCode::SdNotMounted:
+    case ErrCode::StreamSlotLimit:
+    case ErrCode::PlaybackBusy:
+    case ErrCode::TimeUnsynchronised: status = "503 Service Unavailable"; break;
+    case ErrCode::SdFull:             status = "507 Insufficient Storage"; break;
+    case ErrCode::SdWriteFailed:
+    case ErrCode::Internal:           status = "500 Internal Server Error"; break;
+    }
+    if (status != nullptr) httpd_resp_set_status(req, status);
     return sendEnvelope(req, false, request_id, code, message, nullptr);
 }
 
@@ -290,8 +370,8 @@ static esp_err_t authLoginHandler(httpd_req_t* req) {
     }
     char user[64] = {};
     char pass[64] = {};
-    if (!jsonString(body, "\"username\"", user, sizeof(user)) ||
-        !jsonString(body, "\"password\"", pass, sizeof(pass)) ||
+    if (!jsonScalar(body, "\"username\"", user, sizeof(user)) ||
+        !jsonScalar(body, "\"password\"", pass, sizeof(pass)) ||
         user[0] == '\0' || pass[0] == '\0') {
         return httpReplyError(req, rid, ErrCode::ValidationFailed,
                               "username and password required");
@@ -361,8 +441,8 @@ static esp_err_t authCompleteFirstLoginHandler(httpd_req_t* req) {
     }
     char current[64] = {};
     char new_pass[64] = {};
-    if (!jsonString(body, "\"current_password\"", current, sizeof(current)) ||
-        !jsonString(body, "\"new_password\"", new_pass, sizeof(new_pass)) ||
+    if (!jsonScalar(body, "\"current_password\"", current, sizeof(current)) ||
+        !jsonScalar(body, "\"new_password\"", new_pass, sizeof(new_pass)) ||
         current[0] == '\0' || new_pass[0] == '\0') {
         return httpReplyError(req, rid, ErrCode::ValidationFailed,
                               "current_password and new_password required");
@@ -391,13 +471,13 @@ static esp_err_t authChangePasswordHandler(httpd_req_t* req) {
     char current[64] = {};
     char new_user[64] = {};
     char new_pass[64] = {};
-    if (!jsonString(body, "\"current_password\"", current, sizeof(current)) ||
-        !jsonString(body, "\"new_password\"", new_pass, sizeof(new_pass)) ||
+    if (!jsonScalar(body, "\"current_password\"", current, sizeof(current)) ||
+        !jsonScalar(body, "\"new_password\"", new_pass, sizeof(new_pass)) ||
         current[0] == '\0' || new_pass[0] == '\0') {
         return httpReplyError(req, rid, ErrCode::ValidationFailed,
                               "current_password and new_password required");
     }
-    jsonString(body, "\"new_username\"", new_user, sizeof(new_user));
+    jsonScalar(body, "\"new_username\"", new_user, sizeof(new_user));
     if (authChangePassword(0, current,
                            new_user[0] != '\0' ? new_user : nullptr,
                            new_pass) != ESP_OK) {
@@ -484,6 +564,7 @@ static esp_err_t metricsHandler(httpd_req_t* req) {
                   "\"abnormal_boots\":%u,\"boot_count\":%u,"
                   "\"frame_captured\":%u,\"frame_invalid_dropped\":%u,"
                   "\"frame_pool_dropped\":%u,\"frame_queue_dropped\":%u,"
+                  "\"frame_backpressure_waits\":%u,"
                   "\"frame_leases_taken\":%u,\"frame_leases_released\":%u,"
                   "\"cam_null_frames\":%u,\"cam_recovery_attempts\":%u,"
                   "\"cam_recovered\":%u,\"cam_failed_events\":%u,"
@@ -500,6 +581,7 @@ static esp_err_t metricsHandler(httpd_req_t* req) {
                   static_cast<unsigned>(fms.invalid_dropped),
                   static_cast<unsigned>(fms.pool_dropped),
                   static_cast<unsigned>(fms.queue_dropped),
+                  static_cast<unsigned>(fms.backpressure_waits),
                   static_cast<unsigned>(fms.leases_taken),
                   static_cast<unsigned>(fms.leases_released),
                   static_cast<unsigned>(crs.null_frames),
@@ -569,9 +651,9 @@ static esp_err_t cameraSettingsPutHandler(httpd_req_t* req) {
     }
     char framesize_str[16] = {};
     char quality_str[8] = {};
-    bool have_fs = jsonString(body, "\"framesize\"", framesize_str,
+    bool have_fs = jsonScalar(body, "\"framesize\"", framesize_str,
                               sizeof(framesize_str));
-    bool have_q = jsonString(body, "\"quality\"", quality_str,
+    bool have_q = jsonScalar(body, "\"quality\"", quality_str,
                              sizeof(quality_str));
     if (!have_fs && !have_q) {
         return httpReplyError(req, rid, ErrCode::ValidationFailed,
@@ -580,7 +662,21 @@ static esp_err_t cameraSettingsPutHandler(httpd_req_t* req) {
     esp_err_t err = ESP_OK;
     if (have_fs) {
         framesize_t fs = FRAMESIZE_VGA;
-        if (std::strcmp(framesize_str, "QVGA") == 0) fs = FRAMESIZE_QVGA;
+        // Two accepted shapes (both contract-valid): a symbolic name
+        // ("VGA", what curl tests send) or the framesize_t index 0..15
+        // (what the webui sends — GET returns the same number, and the
+        // Live View slider is 0..15). The old quoted-only parser rejected
+        // numbers outright, so the webui's PUT never applied anything.
+        const bool numeric = (framesize_str[0] >= '0' && framesize_str[0] <= '9');
+        if (numeric) {
+            char* endp = nullptr;
+            const long idx = std::strtol(framesize_str, &endp, 10);
+            if (endp == nullptr || *endp != '\0' || idx < 0 || idx > 15) {
+                return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                      "framesize index out of range 0..15");
+            }
+            fs = static_cast<framesize_t>(idx);
+        } else if (std::strcmp(framesize_str, "QVGA") == 0) fs = FRAMESIZE_QVGA;
         else if (std::strcmp(framesize_str, "VGA") == 0) fs = FRAMESIZE_VGA;
         else if (std::strcmp(framesize_str, "SVGA") == 0) fs = FRAMESIZE_SVGA;
         else if (std::strcmp(framesize_str, "XGA") == 0) fs = FRAMESIZE_XGA;
@@ -624,10 +720,12 @@ static esp_err_t cameraCaptureHandler(httpd_req_t* req) {
         return httpReplyError(req, rid, ErrCode::Internal,
                               "camera not initialised");
     }
-    // Ensure capture is running (step 15 stops it after the ladder test).
-    if (!frameManagerGetStats().running) {
-        frameManagerStart();
-    }
+    // NOTE: this handler does NOT auto-start the frame manager (it used to).
+    // Boot tests deliberately stop capture around camera teardowns, and an
+    // HTTP request resurrecting the capture task in that window raced
+    // esp_camera_deinit() — reproduced as panics (main.cpp:409-413). Capture
+    // is owned by main/recovery; when it is stopped, frameAcquire simply
+    // times out and we answer "no frame available".
     // Acquire a frame lease from the frame manager (sole fb owner, rule 9).
     FrameLease lease;
     if (!frameAcquire(0, lease, /*timeout_ms=*/2000)) {
@@ -640,6 +738,262 @@ static esp_err_t cameraCaptureHandler(httpd_req_t* req) {
                                    lease.len, "no-cache");
     frameRelease(lease);
     return err;
+}
+
+// --- GET /storage -----------------------------------------------------------
+// Single dispatcher for all storage actions. Route table has 16 handler
+// limit (14 Phase 1 + catch-all + 1 storage), so all storage actions share
+// one URI distinguished by ?action= query param.
+//   ?action=status          -> capacity/mount state
+//   ?action=files&offset=N&limit=M&category=C  -> paginated media list
+//   ?action=file&id=med-... -> file metadata (GET) / delete (DELETE+CSRF)
+//   ?action=rebuild         -> rebuild indexes (POST+CSRF)
+//   ?action=retention       -> GET/PUT retention policy (PUT+CSRF)
+static esp_err_t storageHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    if (!visioncam::storageManagerAvailable()) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "storage not available");
+    }
+    char qs[128] = {};
+    size_t qs_size = sizeof(qs);
+    if (httpd_req_get_url_query_str(req, qs, qs_size) != ESP_OK) qs[0] = '\0';
+    char action[16] = {};
+    httpd_query_key_value(qs, "action", action, sizeof(action));
+
+    if (std::strcmp(action, "status") == 0) {
+        visioncam::StorageStatus ss{};
+        if (visioncam::storageGetStatus(&ss) != ESP_OK) {
+            return httpReplyError(req, rid, ErrCode::Internal,
+                                  "storage status failed");
+        }
+        char payload[260] = {};
+        std::snprintf(payload, sizeof(payload),
+                      "{\"mounted\":%s,\"index_loaded\":%s,"
+                      "\"total_bytes\":%llu,\"used_bytes\":%llu,"
+                      "\"free_bytes\":%llu,\"media_count\":%u,"
+                      "\"schema_version\":1}",
+                      ss.mounted ? "true" : "false",
+                      ss.index_loaded ? "true" : "false",
+                      static_cast<unsigned long long>(ss.total_bytes),
+                      static_cast<unsigned long long>(ss.used_bytes),
+                      static_cast<unsigned long long>(ss.free_bytes),
+                      static_cast<unsigned int>(ss.media_count));
+        return httpReplyOk(req, rid, payload);
+    }
+    if (std::strcmp(action, "files") == 0) {
+        uint32_t offset = 0, limit = 20;
+        int category = -1;
+        char cat_val[16] = {};
+        if (httpd_query_key_value(qs, "offset", cat_val, sizeof(cat_val)) == ESP_OK)
+            offset = static_cast<uint32_t>(std::atoi(cat_val));
+        cat_val[0] = '\0';
+        if (httpd_query_key_value(qs, "limit", cat_val, sizeof(cat_val)) == ESP_OK)
+            limit = static_cast<uint32_t>(std::atoi(cat_val));
+        cat_val[0] = '\0';
+        if (httpd_query_key_value(qs, "category", cat_val, sizeof(cat_val)) == ESP_OK)
+            category = std::atoi(cat_val);
+        if (limit > 100) limit = 100;
+        // Small stack arrays to stay within HTTP server's 4 KB task stack.
+        visioncam::MediaRecord recs[4] = {};
+        size_t count = 0;
+        bool has_more = false;
+        visioncam::MediaCategory cat =
+            (category < 0 || category > 3)
+                ? static_cast<visioncam::MediaCategory>(-1)
+                : static_cast<visioncam::MediaCategory>(category);
+        if (visioncam::storageListMedia(cat, offset, limit, recs, 4,
+                                        &count, &has_more) != ESP_OK) {
+            return httpReplyError(req, rid, ErrCode::Internal,
+                                  "list media failed");
+        }
+        char payload[512] = {};
+        size_t n = 0;
+        n += std::snprintf(payload + n, sizeof(payload) - n,
+                           "{\"has_more\":%s,\"count\":%u,\"offset\":%u,"
+                           "\"limit\":%u,\"items\":[",
+                           has_more ? "true" : "false",
+                           static_cast<unsigned int>(count),
+                           static_cast<unsigned int>(offset),
+                           static_cast<unsigned int>(limit));
+        for (size_t i = 0; i < count; ++i) {
+            if (i > 0) n += std::snprintf(payload + n, sizeof(payload) - n, ",");
+            n += std::snprintf(payload + n, sizeof(payload) - n,
+                               "{\"media_id\":\"%s\",\"type\":%d,"
+                               "\"category\":%d,\"mime\":\"%s\","
+                               "\"size\":%u,\"created_at\":\"%s\","
+                               "\"event_id\":\"%s\",\"duration_ms\":%u,"
+                               "\"status\":\"%s\"}",
+                               recs[i].media_id,
+                               static_cast<int>(recs[i].type),
+                               static_cast<int>(recs[i].category),
+                               recs[i].mime,
+                               static_cast<unsigned int>(recs[i].size),
+                               recs[i].created_at,
+                               recs[i].event_id,
+                               static_cast<unsigned int>(recs[i].duration_ms),
+                               recs[i].status);
+        }
+        n += std::snprintf(payload + n, sizeof(payload) - n, "]}");
+        return httpReplyOk(req, rid, payload);
+    }
+    if (std::strcmp(action, "file") == 0) {
+        char media_id[32] = {};
+        httpd_query_key_value(qs, "id", media_id, sizeof(media_id));
+        if (media_id[0] == '\0') {
+            return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                  "media id required");
+        }
+        if (req->method == HTTP_DELETE) {
+            if (requireCsrf(req) != ESP_OK) {
+                return httpReplyError(req, rid, ErrCode::CsrfInvalid,
+                                      "CSRF token missing or invalid");
+            }
+            const esp_err_t derr = visioncam::storageDeleteMedia(media_id);
+            if (derr == ESP_ERR_NOT_FOUND) {
+                return httpReplyError(req, rid, ErrCode::NotFound,
+                                      "media not found");
+            }
+            if (derr != ESP_OK) {
+                return httpReplyError(req, rid, ErrCode::SdWriteFailed,
+                                      "delete failed");
+            }
+            return httpReplyOk(req, rid, "{\"deleted\":true}");
+        }
+        // GET file metadata
+        visioncam::MediaRecord rec{};
+        if (visioncam::storageLookupMedia(media_id, &rec) != ESP_OK) {
+            return httpReplyError(req, rid, ErrCode::NotFound,
+                                  "media not found");
+        }
+        char payload[300] = {};
+        std::snprintf(payload, sizeof(payload),
+                      "{\"media_id\":\"%s\",\"type\":%d,\"category\":%d,"
+                      "\"mime\":\"%s\",\"size\":%u,\"created_at\":\"%s\","
+                      "\"event_id\":\"%s\",\"duration_ms\":%u,"
+                      "\"status\":\"%s\",\"schema_version\":1}",
+                      rec.media_id,
+                      static_cast<int>(rec.type),
+                      static_cast<int>(rec.category),
+                      rec.mime,
+                      static_cast<unsigned int>(rec.size),
+                      rec.created_at,
+                      rec.event_id,
+                      static_cast<unsigned int>(rec.duration_ms),
+                      rec.status);
+        return httpReplyOk(req, rid, payload);
+    }
+    if (std::strcmp(action, "rebuild") == 0) {
+        if (req->method != HTTP_POST) {
+            return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                  "POST required");
+        }
+        if (requireCsrf(req) != ESP_OK) {
+            return httpReplyError(req, rid, ErrCode::CsrfInvalid,
+                                  "CSRF token missing or invalid");
+        }
+        if (visioncam::storageRebuildIndex() != ESP_OK) {
+            return httpReplyError(req, rid, ErrCode::Internal,
+                                  "rebuild failed");
+        }
+        return httpReplyOk(req, rid, "{\"rebuilt\":true}");
+    }
+    if (std::strcmp(action, "retention") == 0) {
+        if (req->method == HTTP_GET) {
+            visioncam::RetentionPolicy rp{};
+            if (visioncam::storageGetRetention(&rp) != ESP_OK) {
+                return httpReplyError(req, rid, ErrCode::Internal,
+                                      "retention read failed");
+            }
+            char payload[200] = {};
+            retentionJson(rp, payload, sizeof(payload));
+            return httpReplyOk(req, rid, payload);
+        }
+        // PUT — SPEC 7 update process: parse -> validate -> candidate
+        // (current policy, fields overlaid) -> persist (NVS, in the
+        // manager) -> apply -> return the sanitised effective policy.
+        if (requireCsrf(req) != ESP_OK) {
+            return httpReplyError(req, rid, ErrCode::CsrfInvalid,
+                                  "CSRF token missing or invalid");
+        }
+        char body[256] = {};
+        size_t blen = 0;
+        if (readJsonBody(req, body, sizeof(body), blen) != ESP_OK) {
+            return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                  "invalid JSON body");
+        }
+        visioncam::RetentionPolicy rp{};
+        if (visioncam::storageGetRetention(&rp) != ESP_OK) {
+            return httpReplyError(req, rid, ErrCode::Internal,
+                                  "retention read failed");
+        }
+        // Candidate starts at the CURRENT policy; only fields present in
+        // the body are overlaid (a partial PUT must not reset the rest —
+        // the old handler hard-coded the day defaults on every write).
+        bool any = false;
+        char val[16] = {};
+        if (jsonScalar(body, "\"max_used_percent\"", val, sizeof(val))) {
+            if (!parseU32Strict(val, rp.max_used_percent)) {
+                return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                      "max_used_percent must be 0..100");
+            }
+            any = true;
+        }
+        val[0] = '\0';
+        if (jsonScalar(body, "\"enabled\"", val, sizeof(val))) {
+            if (std::strcmp(val, "true") == 0 || std::strcmp(val, "1") == 0)
+                rp.enabled = true;
+            else if (std::strcmp(val, "false") == 0 || std::strcmp(val, "0") == 0)
+                rp.enabled = false;
+            else {
+                return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                      "enabled must be true or false");
+            }
+            any = true;
+        }
+        struct { const char* key; uint32_t* dst; } day_fields[] = {
+            {"\"retention_days_manual\"",  &rp.retention_days_manual},
+            {"\"retention_days_motion\"",  &rp.retention_days_motion},
+            {"\"retention_days_detection\"", &rp.retention_days_detection},
+            {"\"retention_days_timelapse\"", &rp.retention_days_timelapse},
+        };
+        for (auto& f : day_fields) {
+            val[0] = '\0';
+            if (!jsonScalar(body, f.key, val, sizeof(val))) continue;
+            if (!parseU32Strict(val, *f.dst)) {
+                return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                      "retention days must be 1..3650");
+            }
+            any = true;
+        }
+        if (!any) {
+            return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                  "no retention fields in body");
+        }
+        const esp_err_t serr = visioncam::storageSetRetention(&rp);
+        if (serr == ESP_ERR_INVALID_ARG) {
+            // Range validation inside the manager (single source of truth).
+            return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                  "retention value out of range");
+        }
+        if (serr != ESP_OK) {
+            return httpReplyError(req, rid, ErrCode::Internal,
+                                  "retention write failed");
+        }
+        // Return the sanitised EFFECTIVE policy (what actually persisted),
+        // not an "updated" flag — SPEC 7 step 7.
+        visioncam::RetentionPolicy effective{};
+        if (visioncam::storageGetRetention(&effective) != ESP_OK) {
+            return httpReplyError(req, rid, ErrCode::Internal,
+                                  "retention read-back failed");
+        }
+        char payload[200] = {};
+        retentionJson(effective, payload, sizeof(payload));
+        return httpReplyOk(req, rid, payload);
+    }
+    return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                          "unknown action");
 }
 
 }  // namespace visioncam
@@ -659,7 +1013,7 @@ esp_err_t webServerStart() {
     config.ctrl_port = 32768;
     config.stack_size = kHttpServerStack;
     config.max_open_sockets = kHttpMaxOpenSockets;
-    config.max_uri_handlers = 16;   // 14 Phase 1 routes + headroom for Phase 2
+    config.max_uri_handlers = 24;   // 14 Phase 1 routes + 6 Phase 2 storage routes + catch-all
     config.lru_purge_enable = kHttpLruPurge;
     config.recv_wait_timeout = 5;
     config.send_wait_timeout = 5;
@@ -707,6 +1061,11 @@ static const httpd_uri_t s_routes[] = {
     {"/camera/settings", HTTP_GET, cameraSettingsGetHandler, nullptr},
     {"/camera/settings", HTTP_PUT, cameraSettingsPutHandler, nullptr},
     {"/camera/capture", HTTP_POST, cameraCaptureHandler, nullptr},
+    // Storage
+    {"/storage", HTTP_GET, storageHandler, nullptr},
+    {"/storage", HTTP_DELETE, storageHandler, nullptr},
+    {"/storage", HTTP_POST, storageHandler, nullptr},
+    {"/storage", HTTP_PUT, storageHandler, nullptr},
     // Catch-all static asset server (SPA fallback for unknown routes).
     // Specific API routes are registered above and match first.
     {"/*", HTTP_GET, assetHandler, nullptr},

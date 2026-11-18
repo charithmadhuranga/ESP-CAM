@@ -83,6 +83,18 @@ esp_err_t cameraManagerInit(CameraReport& report,
 // (esp_camera_deinit() guards its state, esp_camera.c:383-389).
 void cameraManagerShutdown();
 
+// Flush hook: called by cameraManagerShutdown() immediately AFTER
+// esp_camera_deinit(), while the driver's s_state is still NULL. The frame
+// manager registers a drain here so NO queued frame record can outlive the
+// camera lifetime that produced it — deinit frees the driver buffers, and
+// the next init can re-allocate (and re-DMA into) the same PSRAM, which
+// would turn a surviving record into garbage served to HTTP (observed on
+// hardware as a 1024 B snapshot with SOI but no EOI).
+// Called with the camera already down: inside the hook esp_camera_fb_return()
+// is a safe no-op (esp_camera.c:410-416). Register once at startup; may be
+// nullptr.
+void cameraManagerSetFlushHook(void (*hook)(void));
+
 // True while the driver holds an initialised camera.
 bool cameraManagerInitialised();
 
@@ -103,6 +115,14 @@ int cameraManagerQuality();
 // default width*height/5 of the CURRENT frame size (cam_hal.c:619).
 // 0 when the camera is not initialised.
 size_t cameraManagerJpegCapacity();
+
+// The number of driver frame buffers configured at init (SPEC 4.1.1
+// rule 2, fb_count). The frame manager needs it: it must guarantee the
+// capture task always has one buffer available to acquire, because with
+// every driver buffer held by our own records, esp_camera_fb_get() can
+// only wait for a buffer we already own and returns NULL on timeout —
+// back-pressure, not camera death (see frame_manager.cpp).
+unsigned cameraManagerFrameBufferCount();
 
 // Human-readable sensor name from the driver's own table ("OV2640").
 // Never returns nullptr.

@@ -109,6 +109,23 @@ Exit gate: "Authenticated live MJPEG on phone and laptop, snapshot saved, no una
 | No unauthenticated stream access | RUN PASS | Unauthenticated POST /camera/capture returns 401 |
 | UI fully offline | RUN PASS | All assets embedded; no CDN, no remote fonts, no remote images |
 
+## Phase 2 — Storage and snapshots (in progress)
+
+| # | Test | Status | Evidence |
+|---|---|---|---|
+| 2.1.1 | Storage manager init: `storageManagerInit()` with `SdStorageBackend`, SD directory layout created (`/sdcard/system`, `/sdcard/system/index`, `/sdcard/snapshots`, …) | RUN PASS | `docs/evidence/phase2-storage-boot-01.log` — `storage OK: mounted=1 free=8050671616 B used=360448 B total=8051032064 B media=0` |
+| 2.1.2 | GET /storage?action=status: capacity + mount state, authenticated | RUN PASS | `docs/evidence/phase2-http-transcript.log` steps 2,3 — 200 with cookie, 401 without |
+| 2.1.3 | GET /storage?action=files: paginated listing, offset/limit/category filters | RUN PASS | `docs/evidence/phase2-http-transcript.log` step 4 — 200 with `{"has_more":false,"count":0,"items":[]}` (empty index) |
+| 2.1.4 | GET /storage?action=file&id=...: file metadata, HTTP 404 for unknown ID | RUN PASS | `docs/evidence/phase2-http-transcript.log` step 5 — HTTP 404, envelope `{"code":5,"message":"media not found"}` |
+| 2.1.5 | DELETE /storage?action=file&id=...: delete with CSRF, HTTP 404 for unknown ID | RUN PASS | `docs/evidence/phase2-http-transcript.log` step 6 — HTTP 404, envelope `{"code":5,"message":"media not found"}` |
+| 2.1.6 | POST /storage?action=rebuild: rebuild index with CSRF | RUN PASS | `docs/evidence/phase2-http-transcript.log` step 8 — 200 `{"rebuilt":true}` |
+| 2.1.7 | GET/PUT /storage?action=retention: read/write retention policy with CSRF | RUN PASS | `docs/evidence/phase2-http-transcript.log` steps 9-14 — GET defaults (manual=30, motion=7, detection=30, timelapse=90, max=85%, enabled=true); PUT 80 returns effective policy JSON (max_used_percent=80), PUT 150 → HTTP 400, PUT "abc" → HTTP 400, PUT without CSRF → HTTP 403 |
+| 2.1.8 | Retention survives reboot: PUT 80, reboot, GET still 80 (NVS persistence) | RUN PASS | `docs/evidence/phase2-storage-boot-02.log` line 302 — `retention loaded from NVS: max=85% enabled=1` after reboot; HTTP round-trip confirmed persistence |
+| 2.1.9 | Error-envelope HTTP status mapping: wrong login → 401, unauthenticated route → 401, unknown media → 404, DELETE without CSRF → 403, bad retention value → 400 | RUN PASS | `docs/evidence/phase2-http-transcript.log` steps 1b,3,5,7,12-14 — all return proper HTTP status codes |
+| 2.1.10 | Snapshot: POST /camera/capture returns valid JPEG with EOI, requires auth cookie | RUN PASS | `docs/evidence/phase2-http-transcript.log` steps 17,18 — 19978 bytes, `EOI=True`, 401 without cookie; `docs/evidence/phase2-snapshot.jpg` |
+| 2.1.11 | Frame manager flush hook: `flushed N stale frame record(s)` at camera shutdown; no capture-task WDT panic | RUN PASS | `docs/evidence/phase2-storage-boot-01.log` line 150 — `flushed 1 stale frame record(s)`; `phase2-storage-boot-02.log` same |
+| 2.1.12 | Metrics include `frame_backpressure_waits` | RUN PASS | `docs/evidence/phase2-http-transcript.log` step 19 — `frame_backpressure_waits:0` present |
+
 ## Later phases
 
 Not started. Every row stays `TODO` until its phase runs; see
