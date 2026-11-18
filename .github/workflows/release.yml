@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  PLATFORMIO_PLATFORM: platformio/espressif32@8.0.0
+  PLATFORMIO_FRAMEWORK: platformio/framework-espidf@4.60100.0
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache PlatformIO core + packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.platformio
+            ~/.cache/pip
+          key: ${{ runner.os }}-pio-release-${{ hashFiles('platformio.ini') }}
+          restore-keys: |
+            ${{ runner.os }}-pio-release-
+
+      - name: Install PlatformIO
+        run: pipx install platformio
+
+      - name: Build firmware (pio run)
+        run: pio run -e esp32cam
+
+      - name: Create GitHub Release and attach binaries
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "VisionCam Pro ${{ github.ref_name }}"
+          tag_name: ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          files: |
+            .pio/build/esp32cam/firmware.bin
+            .pio/build/esp32cam/bootloader.bin
+            .pio/build/esp32cam/partitions.bin
+            .pio/build/esp32cam/firmware.elf
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
