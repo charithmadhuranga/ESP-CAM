@@ -80,6 +80,7 @@ Never estimate — paste real numbers or write `UNVERIFIED`.
 | 3 | 3,342,704 (after recording writer + playback tasks) | 2,955,416 | 47,104 | `httpd` 7,264 B / `vc_writer` UNVERIFIED / `vc_capture` 3,712 B | UNVERIFIED — recording FPS needs capture loop integration | 2026-11-19 (phase3 build) |
 | 4 | 2,955,416 | 2,955,416 | 47,104 | `httpd` 7,264 B / `vc_motion` UNVERIFIED / `vc_capture` 3,712 B | UNVERIFIED — motion FPS needs capture loop | 2026-11-19 (phase4 build) |
 | 5 | 2,955,416 | 2,955,416 | 47,104 | `httpd` 7,264 B / `vc_timelapse` UNVERIFIED / `vc_capture` 3,712 B | UNVERIFIED — timelapse FPS needs capture loop | 2026-11-19 (phase5 build) |
+| 6 | 2,955,416 | 2,955,416 | 47,104 | `httpd` 7,264 B / `vc_ai` UNVERIFIED / `vc_capture` 3,712 B | UNVERIFIED — AI FPS needs capture loop | 2026-11-19 (phase6 build) |
 
 **Smoke-run measurements (2026-11-17, board attached, evidence in
 `docs/evidence/`):**

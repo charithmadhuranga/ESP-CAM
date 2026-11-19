@@ -37,6 +37,7 @@
 #include "recording_manager.h"
 #include "motion_manager.h"
 #include "timelapse_manager.h"
+#include "ai_manager.h"
 #include "web_server.h"
 #include "wifi_bringup.h"
 
@@ -363,6 +364,22 @@ extern "C" void app_main(void) {
         }
     } else {
         ESP_LOGW(TAG, "timelapse manager skipped — storage unavailable");
+    }
+
+    // --- AI inference manager (Phase 6 task 6.1-6.4) -----------------------
+    // Provider abstraction for pluggable AI inference. NoAiProvider default;
+    // ExternalAiProvider primary; TfliteMicro experimental (owner decision D4).
+    // Runs at LOW priority; never blocks streaming/storage.
+    if (visioncam::storageManagerAvailable()) {
+        const esp_err_t aiErr = visioncam::aiManagerInit();
+        if (aiErr != ESP_OK) {
+            ESP_LOGE(TAG, "AI manager init FAILED: %s",
+                     esp_err_to_name(aiErr));
+        } else {
+            ESP_LOGI(TAG, "AI manager OK");
+        }
+    } else {
+        ESP_LOGW(TAG, "AI manager skipped — storage unavailable");
     }
 
     // --- step 14: camera + SD together, Wi-Fi off then Wi-Fi on ------------

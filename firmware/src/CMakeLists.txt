@@ -49,6 +49,7 @@ idf_component_register(
         "recording/playback.cpp"
         "motion/motion_manager.cpp"
         "timelapse/timelapse_manager.cpp"
+        "ai/ai_manager.cpp"
         "web_assets/web_asset_0.c"
         "web_assets/web_asset_1.c"
         "web_assets/web_asset_2.c"
@@ -61,6 +62,7 @@ idf_component_register(
         "recording"
         "motion"
         "timelapse"
+        "ai"
     PRIV_REQUIRES
         esp_psram
         espressif__esp32-camera
@@ -76,4 +78,5 @@ idf_component_register(
         esp_timer
         # mbedtls: auth.cpp PBKDF2-HMAC-SHA256 + SHA-256 token hashing
         mbedtls
+        esp_http_client
 )

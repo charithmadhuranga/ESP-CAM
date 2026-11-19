@@ -103,3 +103,15 @@
 // frame per interval — no continuous streaming when idle.
 #define VC_PRIO_TIMELAPSE       3
 #define VC_STACK_TIMELAPSE      6144
+
+// --- AI inference task (Phase 6) -------------------------------------------
+// Runs inference on selected frames (after motion/event trigger per R1's
+// usage pattern). Runs at LOW priority (below timelapse at 3) so streaming,
+// recording, motion and timelapse always win. Uses a bounded tensor arena
+// allocated from PSRAM; never blocks streaming/storage on inference.
+#define VC_PRIO_AI              2
+#define VC_STACK_AI             8192
+
+// --- shared limits ---
+// Maximum concurrent inference requests in the bounded queue.
+#define VC_MAX_AI_QUEUE         4

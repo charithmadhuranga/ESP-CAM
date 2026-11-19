@@ -40,6 +40,7 @@
 #include "playback.h"
 #include "motion_manager.h"
 #include "timelapse_manager.h"
+#include "ai_manager.h"
 
 namespace visioncam {
 
@@ -1879,7 +1880,250 @@ static esp_err_t motionStatusHandler(httpd_req_t* req) {
     return httpReplyOk(req, rid, payload);
 }
 
-// --- GET /timelapse/projects --- (Phase 5 task 5.4)
+// --- GET /ai/status --- (Phase 6 task 6.4)
+static esp_err_t aiStatusHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    AIStatus st{};
+    if (visioncam::aiManagerStatus(&st) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "AI status failed");
+    }
+    char payload[256] = {};
+    std::snprintf(payload, sizeof(payload),
+                  "{\"enabled\":%s,\"provider\":\"%s\",\"provider_ready\":%s,"
+                  "\"inferences_total\":%u,\"inferences_ok\":%u,"
+                  "\"inferences_failed\":%u,\"detections_total\":%u,"
+                  "\"last_inference_duration_ms\":%u,\"last_error\":\"%s\","
+                  "\"schema_version\":1}",
+                  st.enabled ? "true" : "false",
+                  st.provider.c_str(),
+                  st.provider_ready ? "true" : "false",
+                  static_cast<unsigned int>(st.inferences_total),
+                  static_cast<unsigned int>(st.inferences_ok),
+                  static_cast<unsigned int>(st.inferences_failed),
+                  static_cast<unsigned int>(st.detections_total),
+                  static_cast<unsigned int>(st.last_inference_duration_ms),
+                  st.last_error.c_str());
+    return httpReplyOk(req, rid, payload);
+}
+
+// --- GET /ai/providers --- (Phase 6 task 6.4)
+static esp_err_t aiProvidersHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    char ids[256] = {};
+    size_t count = 0;
+    if (visioncam::aiManagerListProviders(ids, sizeof(ids), &count) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "provider list failed");
+    }
+    char payload[300] = {};
+    std::snprintf(payload, sizeof(payload),
+                  "{\"providers\":%s,\"schema_version\":1}", ids);
+    return httpReplyOk(req, rid, payload);
+}
+
+// --- GET /ai/config --- (Phase 6 task 6.4)
+static esp_err_t aiConfigGetHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    AIConfig cfg{};
+    if (visioncam::aiManagerGetConfig(&cfg) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "AI config read failed");
+    }
+    char payload[512] = {};
+    std::snprintf(payload, sizeof(payload),
+                  "{\"enabled\":%s,\"provider\":\"%s\","
+                  "\"timeout_ms\":%u,\"inference_interval_ms\":%u,"
+                  "\"upload_width\":%u,\"upload_height\":%u,"
+                  "\"upload_quality\":%u,\"max_upload_bytes\":%u,"
+                  "\"tls_verify\":%s,\"active_model_id\":\"%s\","
+                  "\"schema_version\":1}",
+                  cfg.enabled ? "true" : "false",
+                  cfg.provider.c_str(),
+                  static_cast<unsigned int>(cfg.timeout_ms),
+                  static_cast<unsigned int>(cfg.inference_interval_ms),
+                  static_cast<unsigned int>(cfg.upload_width),
+                  static_cast<unsigned int>(cfg.upload_height),
+                  static_cast<unsigned int>(cfg.upload_quality),
+                  static_cast<unsigned int>(cfg.max_upload_bytes),
+                  cfg.tls_verify ? "true" : "false",
+                  cfg.active_model_id.c_str());
+    return httpReplyOk(req, rid, payload);
+}
+
+// --- PUT /ai/config --- (Phase 6 task 6.4; SPEC 7 update process)
+static esp_err_t aiConfigPutHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    if (requireCsrf(req) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::CsrfInvalid,
+                              "CSRF token missing or invalid");
+    }
+    char body[256] = {};
+    size_t blen = 0;
+    if (readJsonBody(req, body, sizeof(body), blen) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "invalid JSON body");
+    }
+    AIConfig cur{};
+    if (visioncam::aiManagerGetConfig(&cur) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "AI config read failed");
+    }
+    AIConfig cand = cur;
+    char val[64] = {};
+    bool any = false;
+    if (jsonScalar(body, "\"enabled\"", val, sizeof(val))) {
+        cand.enabled = (std::strcmp(val, "true") == 0 ||
+                        std::strcmp(val, "1") == 0);
+        any = true;
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"provider\"", val, sizeof(val))) {
+        cand.provider = val;
+        any = true;
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"base_url\"", val, sizeof(val))) {
+        cand.base_url = val;
+        any = true;
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"auth_token\"", val, sizeof(val))) {
+        cand.auth_token = val;
+        any = true;
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"timeout_ms\"", val, sizeof(val))) {
+        uint32_t v = 0;
+        if (!parseU32Strict(val, v) || v > 60000) {
+            return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                  "timeout_ms must be 0..60000");
+        }
+        cand.timeout_ms = v;
+        any = true;
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"inference_interval_ms\"", val, sizeof(val))) {
+        uint32_t v = 0;
+        if (!parseU32Strict(val, v) || v > 3600000) {
+            return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                  "inference_interval_ms must be 0..3600000");
+        }
+        cand.inference_interval_ms = v;
+        any = true;
+    }
+    if (!any) {
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "no AI fields in body");
+    }
+    AIConfig effective{};
+    if (visioncam::aiManagerSetConfig(&cand, &effective) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "AI config write failed");
+    }
+    char payload[512] = {};
+    std::snprintf(payload, sizeof(payload),
+                  "{\"enabled\":%s,\"provider\":\"%s\","
+                  "\"timeout_ms\":%u,\"inference_interval_ms\":%u,"
+                  "\"upload_width\":%u,\"upload_height\":%u,"
+                  "\"upload_quality\":%u,\"max_upload_bytes\":%u,"
+                  "\"tls_verify\":%s,\"active_model_id\":\"%s\","
+                  "\"schema_version\":1}",
+                  effective.enabled ? "true" : "false",
+                  effective.provider.c_str(),
+                  static_cast<unsigned int>(effective.timeout_ms),
+                  static_cast<unsigned int>(effective.inference_interval_ms),
+                  static_cast<unsigned int>(effective.upload_width),
+                  static_cast<unsigned int>(effective.upload_height),
+                  static_cast<unsigned int>(effective.upload_quality),
+                  static_cast<unsigned int>(effective.max_upload_bytes),
+                  effective.tls_verify ? "true" : "false",
+                  effective.active_model_id.c_str());
+    return httpReplyOk(req, rid, payload);
+}
+
+// --- GET /ai/models --- (Phase 6 task 6.4)
+static esp_err_t aiModelsHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    // Model list — not yet implemented (model manifest loading pending)
+    return httpReplyOk(req, rid, "{\"models\":[],\"schema_version\":1}");
+}
+
+// --- GET /ai/events --- (Phase 6 task 6.4)
+static esp_err_t aiEventsHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    uint32_t offset = 0, limit = 12;
+    char qs[128] = {};
+    size_t qs_size = sizeof(qs);
+    if (httpd_req_get_url_query_str(req, qs, qs_size) == ESP_OK) {
+        char val[16] = {};
+        if (httpd_query_key_value(qs, "offset", val, sizeof(val)) == ESP_OK)
+            offset = static_cast<uint32_t>(std::atoi(val));
+        val[0] = '\0';
+        if (httpd_query_key_value(qs, "limit", val, sizeof(val)) == ESP_OK)
+            limit = static_cast<uint32_t>(std::atoi(val));
+    }
+    if (limit > 100) limit = 100;
+    AIDetectionEvent events[12] = {};
+    size_t count = 0;
+    bool has_more = false;
+    if (visioncam::aiManagerListEvents(offset, limit, events, 12,
+                                       &count, &has_more) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "AI events list failed");
+    }
+    // Build JSON response
+    void* payload_raw = std::malloc(2048);
+    HeapFree payload_guard{payload_raw};
+    if (payload_raw == nullptr)
+        return httpReplyError(req, rid, ErrCode::Internal, "no memory");
+    auto* payload = static_cast<char*>(payload_raw);
+    const size_t cap = 2048;
+    int n = std::snprintf(payload, cap,
+                          "{\"has_more\":%s,\"count\":%u,\"offset\":%u,"
+                          "\"limit\":%u,\"items\":[",
+                          has_more ? "true" : "false",
+                          static_cast<unsigned int>(count),
+                          static_cast<unsigned int>(offset),
+                          static_cast<unsigned int>(limit));
+    for (size_t i = 0; i < count; ++i) {
+        const int m = std::snprintf(
+            payload + n, cap - static_cast<size_t>(n),
+            "%s{\"event_id\":\"%s\",\"source\":\"%s\",\"class_id\":%d,"
+            "\"label\":\"%s\",\"confidence\":%.2f,"
+            "\"bbox\":[%f,%f,%f,%f],\"timestamp\":%u,"
+            "\"snapshot_id\":\"%s\",\"notification_status\":\"%s\"}",
+            (i == 0) ? "" : ",",
+            events[i].event_id,
+            events[i].source,
+            events[i].class_id,
+            events[i].label.c_str(),
+            events[i].confidence,
+            events[i].bbox[0], events[i].bbox[1],
+            events[i].bbox[2], events[i].bbox[3],
+            static_cast<unsigned int>(events[i].timestamp),
+            events[i].snapshot_id,
+            events[i].notification_status);
+        if (m < 0 || static_cast<size_t>(n + m) >= cap)
+            return httpReplyError(req, rid, ErrCode::Internal,
+                                  "AI events payload overflow");
+        n += m;
+    }
+    const int tail = std::snprintf(payload + n, cap - static_cast<size_t>(n),
+                                   "]}");
+    if (tail < 0 || static_cast<size_t>(n + tail) >= cap)
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "AI events payload overflow");
+    return httpReplyOk(req, rid, payload);
+}
+
+// --- POST /snapshot --- (plan 02 task 2.3)
 // Dispatches on ?action=create|start|stop|generate|preview|download|delete
 static esp_err_t timelapseProjectsHandler(httpd_req_t* req) {
     uint32_t rid = httpNextRequestId();
@@ -2166,7 +2410,7 @@ esp_err_t webServerStart() {
     config.ctrl_port = 32768;
     config.stack_size = kHttpServerStack;
     config.max_open_sockets = kHttpMaxOpenSockets;
-    config.max_uri_handlers = 32;   // Phase 1 (14) + Phase 2 (6) + Phase 3 (7) + catch-all
+    config.max_uri_handlers = 48;   // Phase 1-6 routes + catch-all
     config.lru_purge_enable = kHttpLruPurge;
     // The dispatcher's DEFAULT matcher is httpd_uri_match_simple(), an EXACT
     // length-and-prefix compare — a registered "/*" therefore never matches
@@ -2248,6 +2492,13 @@ static const httpd_uri_t s_routes[] = {
     {"/timelapse/projects", HTTP_GET, timelapseProjectsHandler, nullptr},
     {"/timelapse/projects", HTTP_POST, timelapseProjectsHandler, nullptr},
     {"/timelapse/projects", HTTP_DELETE, timelapseProjectsHandler, nullptr},
+    // AI (Phase 6)
+    {"/ai/status", HTTP_GET, aiStatusHandler, nullptr},
+    {"/ai/providers", HTTP_GET, aiProvidersHandler, nullptr},
+    {"/ai/config", HTTP_GET, aiConfigGetHandler, nullptr},
+    {"/ai/config", HTTP_PUT, aiConfigPutHandler, nullptr},
+    {"/ai/models", HTTP_GET, aiModelsHandler, nullptr},
+    {"/ai/events", HTTP_GET, aiEventsHandler, nullptr},
     // Catch-all static asset server (SPA fallback for unknown routes).
     // Specific API routes are registered above and match first.
     {"/*", HTTP_GET, assetHandler, nullptr},

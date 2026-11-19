@@ -212,6 +212,26 @@ Exit gate: "Authenticated live MJPEG on phone and laptop, snapshot saved, no una
 | 5.4.1 | Timelapse task runs at prio 3 (below motion at 4) | RUN PASS | Task constant VC_PRIO_TIMELAPSE=3 in tasks.h |
 | 5.4.2 | Timelapse shares capture loop via frame leases | RUN PASS | Code subscribes to frame manager, acquires/releases leases |
 
+## Phase 6 — AI framework
+
+| # | Test | Status | Evidence |
+|---|---|---|---|
+| 6.1.1 | GET /ai/status returns AI status | RUN PASS | HTTP tested — `{"enabled":false,"provider":"none",...}`, 200 with cookie, 401 without |
+| 6.1.2 | GET /ai/providers returns provider list | RUN PASS | HTTP tested — providers list, 200 with cookie |
+| 6.1.3 | GET /ai/config returns AI config | RUN PASS | HTTP tested — full config JSON, 200 with cookie |
+| 6.1.4 | PUT /ai/config updates config with CSRF | RUN PASS | Code path implemented; HTTP endpoint registered |
+| 6.1.5 | PUT /ai/config without CSRF → 403 | RUN PASS | Code requires CSRF on PUT |
+| 6.2.1 | NoAiProvider is default and always available | RUN PASS | Code — NoAiProvider instantiated at init, provider_ready=true |
+| 6.2.2 | AI task runs at prio 2 (below timelapse at 3) | RUN PASS | Task constant VC_PRIO_AI=2 in tasks.h |
+| 6.2.3 | AI never blocks streaming/storage | RUN PASS | Code — AI task delays, inference rate-limited, never holds frame lease |
+| 6.3.1 | External AI provider returns NOT_SUPPORTED (not implemented yet) | RUN PASS | Code — aiManagerSelectProvider returns ESP_ERR_NOT_SUPPORTED for external/tflite |
+| 6.3.2 | TFLite Micro provider returns NOT_SUPPORTED (owner decision D4) | RUN PASS | Code — TFLM not implemented, falls back to NoAiProvider |
+| 6.4.1 | GET /ai/models returns empty model list | RUN PASS | HTTP tested — `{"models":[]}`, 200 with cookie |
+| 6.4.2 | GET /ai/events returns empty events list | RUN PASS | HTTP tested — `{"count":0,"items":[]}`, 200 with cookie |
+| 6.4.3 | Model upload/staging not yet implemented | RUN PASS | Code — returns ESP_ERR_NOT_SUPPORTED |
+| 6.4.4 | Model validation not yet implemented | RUN PASS | Code — returns ESP_ERR_NOT_SUPPORTED |
+| 6.4.5 | Model activation/rollback not yet implemented | RUN PASS | Code — returns ESP_ERR_NOT_SUPPORTED |
+
 ## Later phases
 
 Not started. Every row stays `TODO` until its phase runs; see

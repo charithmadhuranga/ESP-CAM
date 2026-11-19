@@ -863,6 +863,51 @@ output exists (AGENTS rule 26). R1's published performance numbers are
 - **Evidence:** Source confirmed at `src/mjpeg2sd.cpp:133-207`. On-hardware
   timelapse test: UNVERIFIED (Phase 5).
 
+## AI inference framework — 2026-11-19
+
+- **Studied:** R1 `src/mjpeg2sd.cpp` (ML hook for event filtering) @ abe84d8,
+  SPEC §4.4 (IInferenceProvider interface), §4.4.1 (TFLite Micro),
+  §4.4.2 (External AI server), §4.4.3 (AI event normalization).
+- **What it does / limits / failure modes:**
+  - R1 uses Edge Impulse models (96x96 grayscale or RGB) to decide whether
+    a motion recording is worth keeping. R1 states this is only feasible on
+    ESP32-S3 — on the original ESP32, on-device TFLM is experimental.
+  - R1's usage pattern: classify *after* motion to verify/keep an event,
+    not per-frame classification. VisionCam Pro adopts this pattern.
+  - Provider abstraction: IInferenceProvider with begin()/isReady()/
+    infer()/stop()/providerId(). Three providers: NoAiProvider (default),
+    ExternalAiProvider (primary), TfliteMicroProvider (experimental).
+  - Model manifest schema: schema_version, model_id, format, file, sha256,
+    input/output tensors, required_tensor_arena_bytes, operators, classes,
+    preprocessing.
+  - Upload streamed to staging file with hard size cap — never buffer whole
+    model in RAM.
+  - Activation never overwrites active model; keep backup as last-known-good;
+    rollback and deactivate supported.
+  - External AI: configurable base URL, auth token, timeout, upload
+    resolution, JPEG quality, inference interval, retry policy, TLS
+    verification. Bounded queue for offline behaviour.
+  - AI task priority lower than streaming/storage safety; inference at
+    configurable low rate; never block streaming/storage on inference.
+  - Failure raises AiProviderFailed, disables remote inference temporarily,
+    leaves motion/local operation intact.
+- **Decision:** **adopt** the provider abstraction and R1's usage pattern;
+  **adapt** to ESP-IDF + VisionCam concurrency rules.
+- **Reason:** SPEC §4.4 specifies the provider abstraction and all three
+  providers. External AI is the primary path for the original ESP32; TFLM is
+  experimental.
+- **Divergence from R1:**
+  1. External AI as primary path (R1 uses Edge Impulse on-device).
+  2. Model manifest validation with operator/arena/shape checks.
+  3. Bounded event queue with drop-oldest overflow (AGENTS rule 12).
+  4. Normalised detection schema (bbox x/y/width/height, normalised 0..1).
+  5. Opaque model IDs (`mdl-…`) via API, never filesystem paths.
+  6. AI event index separate from motion event index (events are Phase 4,
+     AI detection is Phase 6).
+- **Evidence:** SPEC §4.4, §4.4.1, §4.4.2, §4.4.3 define the interface.
+  On-hardware AI test: UNVERIFIED (Phase 6) — TFLM on original ESP32 is
+  owner decision D4 (pending).
+
 ## Evidence discipline
 
 Every row above marked `UNVERIFIED` stays that way until a serial log or tool
