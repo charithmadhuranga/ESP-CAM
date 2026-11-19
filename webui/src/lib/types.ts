@@ -223,6 +223,36 @@ export interface RecordingStatus {
   schema_version: number;
 }
 
+// --- Motion (SPEC §4.3) -----------------------------------------------------
+
+export interface MotionConfig {
+  enabled: boolean;
+  sample_rate_idle_hz: number;
+  sample_rate_rec_hz: number;
+  threshold: number;
+  min_changed_ratio: number;
+  cooldown_ms: number;
+  min_frames: number;
+  settle_frames: number;
+  record_on_motion: boolean;
+  snapshot_on_motion: boolean;
+  mqtt_notify: boolean;
+}
+
+export interface MotionStatus {
+  enabled: boolean;
+  active: boolean;
+  events_total: number;
+  events_last_ts_ms: number;
+  checks_total: number;
+  checks_skipped: number;
+  changed_ratio_last: number;
+  light_level_last: number;
+  decode_time_ms_last: number;
+  analyze_time_ms_last: number;
+  schema_version: number;
+}
+
 // --- Error codes (API contract skill) ---------------------------------------
 export type ErrCode =
   | "UNAUTHENTICATED"

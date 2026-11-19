@@ -261,6 +261,25 @@ tagged once Phase 9 release criteria pass.
   page states. API client additions in `webui/src/lib/api.ts`.
   Vite + tsc clean: JS 348 KB / 107 KB gzip.
 
+- **Phase 4 task 4.1 — motion engine (2026-11-19).** New
+  `firmware/src/motion/motion_manager.{h,cpp}` +
+  `firmware/include/motion_manager.h`: lightweight motion detection using
+  esp_jpeg_decode to 96x96 grayscale, per-pixel SAD comparison with previous
+  sample, changed-pixel ratio thresholding, two sample rates (idle ~5 Hz /
+  recording 1 check/2 s), cooldown, settle/warm-up frames, light level
+  derivation, and MotionStarted/MotionEnded events on the typed event bus.
+  Motion runs as a FreeRTOS task (prio 4) subscribing to frame leases —
+  never holds a lease across blocking I/O. Detection aborted above SXGA.
+  Config persisted to NVS (namespace `"motion"`, schema 1).
+
+- **Phase 4 task 4.2 — motion API + UI (2026-11-19).** New web endpoints:
+  `GET /motion/config`, `PUT /motion/config`, `GET /motion/status`. All auth
+  + CSRF protected. New Motion section in Settings page: config form
+  (threshold, min changed ratio, cooldown, min frames, sample rates,
+  record/snapshot/MQTT toggles) + status display (active state, events,
+  light level, changed ratio). API client additions in `webui/src/lib/api.ts`.
+  Vite + tsc clean: JS 352 KB / 108 KB gzip.
+
 ### Fixed
 
 - **Every boot crash-looped with PANIC (phase1-web-boot-01.log, 259 boots).**

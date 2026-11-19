@@ -81,3 +81,14 @@
 // the limited stream slots (max VC_MAX_STREAM_CLIENTS).
 #define VC_PRIO_PLAYBACK        4
 #define VC_STACK_PLAYBACK       5120
+
+// --- motion engine task (Phase 4) ------------------------------------------
+// Decodes JPEG to a small grayscale bitmap, compares with the previous
+// sample, and publishes MotionStarted/MotionEnded events. Runs at MEDIUM
+// priority (below capture at 6, above HTTP at 5): motion analysis must
+// never delay frame acquisition but should not starve either. Uses a
+// fixed 96x96 grayscale buffer (~9 KB) plus a diff/change map.
+// Sample rate is higher while idle (~5 checks/s) and lower while
+// recording (1 check/2 s) — both configurable.
+#define VC_PRIO_MOTION          4
+#define VC_STACK_MOTION         8192

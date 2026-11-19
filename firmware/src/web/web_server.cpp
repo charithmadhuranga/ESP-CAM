@@ -38,6 +38,7 @@
 #include "web_assets_manifest.h"
 #include "recording_manager.h"
 #include "playback.h"
+#include "motion_manager.h"
 
 namespace visioncam {
 
@@ -1670,6 +1671,213 @@ static esp_err_t recordingDeleteHandler(httpd_req_t* req) {
     return httpReplyOk(req, rid, "{\"deleted\":true}");
 }
 
+// --- GET /motion/config --- (Phase 4 task 4.4)
+static esp_err_t motionConfigGetHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    MotionConfig cfg{};
+    if (visioncam::motionManagerGetConfig(&cfg) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "motion config read failed");
+    }
+    char payload[256] = {};
+    std::snprintf(payload, sizeof(payload),
+                  "{\"enabled\":%s,\"sample_rate_idle_hz\":%u,"
+                  "\"sample_rate_rec_hz\":%u,\"threshold\":%u,"
+                  "\"min_changed_ratio\":%u,\"cooldown_ms\":%u,"
+                  "\"min_frames\":%u,\"settle_frames\":%u,"
+                  "\"record_on_motion\":%s,\"snapshot_on_motion\":%s,"
+                  "\"mqtt_notify\":%s,\"schema_version\":1}",
+                  cfg.enabled ? "true" : "false",
+                  static_cast<unsigned int>(cfg.sample_rate_idle_hz),
+                  static_cast<unsigned int>(cfg.sample_rate_rec_hz),
+                  static_cast<unsigned int>(cfg.threshold),
+                  static_cast<unsigned int>(cfg.min_changed_ratio),
+                  static_cast<unsigned int>(cfg.cooldown_ms),
+                  static_cast<unsigned int>(cfg.min_frames),
+                  static_cast<unsigned int>(cfg.settle_frames),
+                  cfg.record_on_motion ? "true" : "false",
+                  cfg.snapshot_on_motion ? "true" : "false",
+                  cfg.mqtt_notify ? "true" : "false");
+    return httpReplyOk(req, rid, payload);
+}
+
+// --- PUT /motion/config --- (Phase 4 task 4.4; SPEC 7 update process)
+static esp_err_t motionConfigPutHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    if (requireCsrf(req) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::CsrfInvalid,
+                              "CSRF token missing or invalid");
+    }
+    char body[256] = {};
+    size_t blen = 0;
+    if (readJsonBody(req, body, sizeof(body), blen) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "invalid JSON body");
+    }
+    MotionConfig cur{};
+    if (visioncam::motionManagerGetConfig(&cur) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "motion config read failed");
+    }
+    MotionConfig cand = cur;
+    char val[16] = {};
+    bool any = false;
+    if (jsonScalar(body, "\"enabled\"", val, sizeof(val))) {
+        cand.enabled = (std::strcmp(val, "true") == 0 ||
+                        std::strcmp(val, "1") == 0);
+        any = true;
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"sample_rate_idle_hz\"", val, sizeof(val))) {
+        uint32_t v = 0;
+        if (!parseU32Strict(val, v) || v > 100) {
+            return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                  "sample_rate_idle_hz must be 1..100");
+        }
+        cand.sample_rate_idle_hz = v;
+        any = true;
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"sample_rate_rec_hz\"", val, sizeof(val))) {
+        uint32_t v = 0;
+        if (!parseU32Strict(val, v) || v > 100) {
+            return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                  "sample_rate_rec_hz must be 1..100");
+        }
+        cand.sample_rate_rec_hz = v;
+        any = true;
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"threshold\"", val, sizeof(val))) {
+        uint32_t v = 0;
+        if (!parseU32Strict(val, v) || v > 255) {
+            return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                  "threshold must be 0..255");
+        }
+        cand.threshold = v;
+        any = true;
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"min_changed_ratio\"", val, sizeof(val))) {
+        uint32_t v = 0;
+        if (!parseU32Strict(val, v) || v > 100) {
+            return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                  "min_changed_ratio must be 0..100");
+        }
+        cand.min_changed_ratio = v;
+        any = true;
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"cooldown_ms\"", val, sizeof(val))) {
+        uint32_t v = 0;
+        if (!parseU32Strict(val, v) || v > 60000) {
+            return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                  "cooldown_ms must be 0..60000");
+        }
+        cand.cooldown_ms = v;
+        any = true;
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"min_frames\"", val, sizeof(val))) {
+        uint32_t v = 0;
+        if (!parseU32Strict(val, v) || v > 100) {
+            return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                  "min_frames must be 1..100");
+        }
+        cand.min_frames = v;
+        any = true;
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"settle_frames\"", val, sizeof(val))) {
+        uint32_t v = 0;
+        if (!parseU32Strict(val, v) || v > 50) {
+            return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                  "settle_frames must be 1..50");
+        }
+        cand.settle_frames = v;
+        any = true;
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"record_on_motion\"", val, sizeof(val))) {
+        cand.record_on_motion = (std::strcmp(val, "true") == 0 ||
+                                 std::strcmp(val, "1") == 0);
+        any = true;
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"snapshot_on_motion\"", val, sizeof(val))) {
+        cand.snapshot_on_motion = (std::strcmp(val, "true") == 0 ||
+                                   std::strcmp(val, "1") == 0);
+        any = true;
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"mqtt_notify\"", val, sizeof(val))) {
+        cand.mqtt_notify = (std::strcmp(val, "true") == 0 ||
+                            std::strcmp(val, "1") == 0);
+        any = true;
+    }
+    if (!any) {
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "no motion fields in body");
+    }
+    MotionConfig effective{};
+    if (visioncam::motionManagerSetConfig(&cand, &effective) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "motion config write failed");
+    }
+    char payload[256] = {};
+    std::snprintf(payload, sizeof(payload),
+                  "{\"enabled\":%s,\"sample_rate_idle_hz\":%u,"
+                  "\"sample_rate_rec_hz\":%u,\"threshold\":%u,"
+                  "\"min_changed_ratio\":%u,\"cooldown_ms\":%u,"
+                  "\"min_frames\":%u,\"settle_frames\":%u,"
+                  "\"record_on_motion\":%s,\"snapshot_on_motion\":%s,"
+                  "\"mqtt_notify\":%s,\"schema_version\":1}",
+                  effective.enabled ? "true" : "false",
+                  static_cast<unsigned int>(effective.sample_rate_idle_hz),
+                  static_cast<unsigned int>(effective.sample_rate_rec_hz),
+                  static_cast<unsigned int>(effective.threshold),
+                  static_cast<unsigned int>(effective.min_changed_ratio),
+                  static_cast<unsigned int>(effective.cooldown_ms),
+                  static_cast<unsigned int>(effective.min_frames),
+                  static_cast<unsigned int>(effective.settle_frames),
+                  effective.record_on_motion ? "true" : "false",
+                  effective.snapshot_on_motion ? "true" : "false",
+                  effective.mqtt_notify ? "true" : "false");
+    return httpReplyOk(req, rid, payload);
+}
+
+// --- GET /motion/status --- (Phase 4 task 4.4)
+static esp_err_t motionStatusHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    MotionStatus st{};
+    if (visioncam::motionManagerStatus(&st) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "motion status failed");
+    }
+    char payload[256] = {};
+    std::snprintf(payload, sizeof(payload),
+                  "{\"enabled\":%s,\"active\":%s,"
+                  "\"events_total\":%u,\"events_last_ts_ms\":%u,"
+                  "\"checks_total\":%u,\"checks_skipped\":%u,"
+                  "\"changed_ratio_last\":%u,\"light_level_last\":%u,"
+                  "\"decode_time_ms_last\":%u,\"analyze_time_ms_last\":%u,"
+                  "\"schema_version\":1}",
+                  st.enabled ? "true" : "false",
+                  st.active ? "true" : "false",
+                  static_cast<unsigned int>(st.events_total),
+                  static_cast<unsigned int>(st.events_last_ts_ms),
+                  static_cast<unsigned int>(st.checks_total),
+                  static_cast<unsigned int>(st.checks_skipped),
+                  static_cast<unsigned int>(st.changed_ratio_last),
+                  static_cast<unsigned int>(st.light_level_last),
+                  static_cast<unsigned int>(st.decode_time_ms_last),
+                  static_cast<unsigned int>(st.analyze_time_ms_last));
+    return httpReplyOk(req, rid, payload);
+}
+
 
 // --- POST /snapshot --- (plan 02 task 2.3)
 // Capture a manual snapshot and save it to SD. Requires auth + CSRF.
@@ -1856,6 +2064,10 @@ static const httpd_uri_t s_routes[] = {
     {"/recording/stop", HTTP_POST, recordingStopHandler, nullptr},
     {"/recordings", HTTP_GET, recordingsListHandler, nullptr},
     {"/recordings", HTTP_DELETE, recordingDeleteHandler, nullptr},
+    // Motion (Phase 4)
+    {"/motion/config", HTTP_GET, motionConfigGetHandler, nullptr},
+    {"/motion/config", HTTP_PUT, motionConfigPutHandler, nullptr},
+    {"/motion/status", HTTP_GET, motionStatusHandler, nullptr},
     // Catch-all static asset server (SPA fallback for unknown routes).
     // Specific API routes are registered above and match first.
     {"/*", HTTP_GET, assetHandler, nullptr},

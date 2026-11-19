@@ -31,6 +31,8 @@ import type {
   RecordingInfo,
   RecordingListResponse,
   RecordingStatus,
+  MotionConfig,
+  MotionStatus,
   RestartResponse,
   RetentionPreviewResponse,
   RetentionPolicy,
@@ -411,4 +413,20 @@ export async function deleteRecording(
   recordingId: string
 ): Promise<{ deleted: boolean }> {
   return del<{ deleted: boolean }>(`/recordings?action=delete&id=${recordingId}`);
+}
+
+// --- Motion (SPEC §4.3) -----------------------------------------------------
+
+export async function getMotionConfig(): Promise<MotionConfig> {
+  return get<MotionConfig>("/motion/config");
+}
+
+export async function putMotionConfig(
+  body: Partial<MotionConfig>
+): Promise<MotionConfig> {
+  return put<MotionConfig>("/motion/config", body);
+}
+
+export async function getMotionStatus(): Promise<MotionStatus> {
+  return get<MotionStatus>("/motion/status");
 }

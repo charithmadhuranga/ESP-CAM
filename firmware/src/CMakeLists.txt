@@ -47,6 +47,7 @@ idf_component_register(
         "recording/avi_writer.cpp"
         "recording/recording_manager.cpp"
         "recording/playback.cpp"
+        "motion/motion_manager.cpp"
         "web_assets/web_asset_0.c"
         "web_assets/web_asset_1.c"
         "web_assets/web_asset_2.c"
@@ -57,9 +58,11 @@ idf_component_register(
         "../include"
         "web_assets"
         "recording"
+        "motion"
     PRIV_REQUIRES
         esp_psram
         espressif__esp32-camera
+        espressif__esp_jpeg
         fatfs
         sdmmc
         esp_driver_sdmmc

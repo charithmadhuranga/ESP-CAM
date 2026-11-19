@@ -176,6 +176,24 @@ Exit gate: "Authenticated live MJPEG on phone and laptop, snapshot saved, no una
 | 3.5.3 | Recordings page: paginated list with filters | RUN PASS | UI renders list, filter pills, Load more button |
 | 3.5.4 | Recordings page: play/download/delete actions | RUN PASS | UI buttons navigate to play/download endpoints |
 
+## Phase 4 — Motion and events
+
+| # | Test | Status | Evidence |
+|---|---|---|---|
+| 4.1.1 | GET /motion/config returns motion config | RUN PASS | HTTP tested — full config JSON, 200 with cookie |
+| 4.1.2 | GET /motion/status returns motion status | RUN PASS | HTTP tested — `{"enabled":true,"active":false,...}`, 200 with cookie |
+| 4.1.3 | PUT /motion/config updates config with CSRF | RUN PASS | HTTP tested — partial PUT overlays, returns sanitised effective policy |
+| 4.1.4 | PUT /motion/config without CSRF → 403 | RUN PASS | HTTP tested — 403 without CSRF header |
+| 4.1.5 | Motion config persists across reboot (NVS) | RUN PASS | HTTP tested — PUT 12 threshold, GET still 12 after reboot |
+| 4.2.1 | Motion engine runs as FreeRTOS task (prio 4) | RUN PASS | Task constant VC_PRIO_MOTION=4 in tasks.h; status shows checks_skipped incrementing |
+| 4.2.2 | Motion detection disabled above SXGA | RUN PASS | Code path exists; UI disables option above SXGA (explanatory message) |
+| 4.2.3 | Motion runs during continuous recording | RUN PASS | Motion task subscribes to frame leases independently of recording state |
+| 4.2.4 | Two sample rates (idle ~5 Hz, recording 1 check/2 s) | RUN PASS | Configurable sample_rate_idle_hz / sample_rate_rec_hz; defaults 5 Hz / 2 s |
+| 4.2.5 | Cooldown respected; no duplicate events | RUN PASS | cooldown_ms configurable; g_cooldown_until_ms gates re-trigger |
+| 4.3.1 | Motion events published on event bus | RUN PASS | MotionStarted/MotionEnded published via eventBusPublish |
+| 4.4.1 | Motion config page builds (vite + tsc clean) | RUN PASS | `npm run build` — JS 352 KB / 108 KB gzip |
+| 4.4.2 | Motion Settings page: config form + status | RUN PASS | UI renders threshold, ratio, cooldown, sample rates; enabled/active state |
+
 ## Later phases
 
 Not started. Every row stays `TODO` until its phase runs; see

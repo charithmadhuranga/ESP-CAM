@@ -779,6 +779,52 @@ output exists (AGENTS rule 26). R1's published performance numbers are
 - **Evidence:** Source confirmed at `src/mjpeg2sd.cpp:654-784`. On-hardware
   playback test: UNVERIFIED (Phase 3).
 
+## Motion detection engine — 2026-11-19
+
+- **Studied:** R1 `src/motionDetect.cpp` @ abe84d8 (`analyzeMotionFrame`,
+  `detectBlockSize`, `motionVal`, `detectMotionFrames`, `moveThreshold`,
+  light level accumulation, debug change map) and
+  `src/mjpeg2sd.cpp:123-131` (`doMonitor` frame-counter cadence),
+  `:27-28` (moveStartChecks=5, moveStopSecs=2) @ abe84d8.
+- **What it does / limits / failure modes:**
+  - Decodes JPEG to a small grayscale bitmap (R1: 96x96 RESIZE_DIM) and
+    compares it with the previous sample using per-block Sum of Absolute
+    Differences (SAD). The downscale acts as the noise filter.
+  - Per-pixel intensity threshold (configurable sensitivity `motionVal`);
+    changed-pixel ratio vs `minimum_changed_ratio`; temporal smoothing,
+    settle counter, cooldown.
+  - Two sample rates (frame-counter based): higher while idle (~5 checks/s
+    via `FPS / moveStartChecks`), lower while recording (1 check/2 s via
+    `FPS * moveStopSecs`, which doubles as post-motion hold time).
+  - Detection aborted above SXGA (decoder limit).
+  - Ambient light level derived from the same decode; hysteresis +
+    settle counter for night-mode decisions.
+  - Debug change map (changed pixels highlighted red) for threshold
+    calibration.
+  - Trigger-source bitmask (camera, manual, future PIR) recorded on events.
+  - R1 disables motion during continuous recording; VisionCam keeps
+    detecting so events can still be marked (deliberate divergence).
+- **Decision:** **adopt** the algorithm and cadence; **adapt** to ESP-IDF
+  (R2 JPEG decode, FreeRTOS task instead of Arduino loop, event bus
+  instead of global flags).
+- **Reason:** SPEC §4.3 and §4.3.1 specify exactly this behaviour. The
+  96x96 grayscale downscale is small and fixed — no unbounded allocation
+  (AGENTS rule 13). The event bus is already bounded with drop-oldest
+  overflow (AGENTS rule 12).
+- **Divergence from R1:**
+  1. Motion runs during continuous recording (R1 disables it).
+  2. Implemented as a FreeRTOS task subscribing to frame leases, not an
+     Arduino loop inline with capture.
+  3. Events published to the typed event bus instead of global boolean
+     flags.
+  4. JSONL event index records with `detections[]` and
+     `notification_status` (SPEC §4.8).
+  5. No ML/TinyML integration in Phase 4 (external AI is Phase 6).
+- **Evidence:** Source confirmed at `src/motionDetect.cpp:406-520`
+  (analyzeMotionFrame), `:27-34` (motion parameters),
+  `:478` (moveThreshold formula). On-hardware motion test: UNVERIFIED
+  (Phase 4).
+
 ## Evidence discipline
 
 Every row above marked `UNVERIFIED` stays that way until a serial log or tool

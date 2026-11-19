@@ -4,7 +4,14 @@ import { Row } from "../components/Row";
 import { Button } from "../components/Button";
 import { Field } from "../components/Field";
 import { useToast } from "../hooks/useToast";
-import { getCameraStatus, putCameraSettings } from "../lib/api";
+import {
+  getCameraStatus,
+  putCameraSettings,
+  getMotionConfig,
+  putMotionConfig,
+  getMotionStatus,
+} from "../lib/api";
+import type { MotionConfig, MotionStatus } from "../lib/types";
 
 type Section = "general" | "camera" | "recording" | "motion" | "ai" | "network" | "security" | "system";
 
@@ -25,6 +32,8 @@ export function Settings() {
   const [camera, setCamera] = React.useState<{
     initialised: boolean; framesize: number; quality: number;
   } | null>(null);
+  const [motionConfig, setMotionConfig] = React.useState<MotionConfig | null>(null);
+  const [motionStatus, setMotionStatus] = React.useState<MotionStatus | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
   const [newPassword, setNewPassword] = React.useState("");
@@ -46,12 +55,51 @@ export function Settings() {
     return () => { cancelled = true; };
   }, [show]);
 
+  React.useEffect(() => {
+    let cancelled = false;
+    getMotionConfig()
+      .then((c) => {
+        if (cancelled) return;
+        setMotionConfig(c);
+      })
+      .catch(() => { /* non-fatal */ });
+    getMotionStatus()
+      .then((s) => {
+        if (cancelled) return;
+        setMotionStatus(s);
+      })
+      .catch(() => { /* non-fatal */ });
+    return () => { cancelled = true; };
+  }, [show]);
+
   const handleCameraSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!camera) return;
     try {
       await putCameraSettings({ framesize: camera.framesize, quality: camera.quality });
       show("Camera settings saved", "success");
+    } catch (err: any) {
+      show(err?.message ?? "Save failed", "error");
+    }
+  };
+
+  const handleMotionSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!motionConfig) return;
+    try {
+      await putMotionConfig({
+        enabled: motionConfig.enabled,
+        threshold: motionConfig.threshold,
+        min_changed_ratio: motionConfig.min_changed_ratio,
+        cooldown_ms: motionConfig.cooldown_ms,
+        min_frames: motionConfig.min_frames,
+        sample_rate_idle_hz: motionConfig.sample_rate_idle_hz,
+        sample_rate_rec_hz: motionConfig.sample_rate_rec_hz,
+        record_on_motion: motionConfig.record_on_motion,
+        snapshot_on_motion: motionConfig.snapshot_on_motion,
+        mqtt_notify: motionConfig.mqtt_notify,
+      });
+      show("Motion settings saved", "success");
     } catch (err: any) {
       show(err?.message ?? "Save failed", "error");
     }
@@ -109,7 +157,15 @@ export function Settings() {
           {section === "system" && (
             <SystemSection loading={loading} error={error} />
           )}
-          {["general","recording","motion","ai","network"].includes(section) && (
+          {section === "motion" && (
+            <MotionSection
+              config={motionConfig}
+              status={motionStatus}
+              setConfig={setMotionConfig}
+              onSave={handleMotionSave}
+            />
+          )}
+          {["general","recording","ai","network"].includes(section) && (
             <ComingSoonSection section={section} />
           )}
         </main>
@@ -194,6 +250,167 @@ function SystemSection({ loading, error }: { loading: boolean; error: string | n
       <Row label="Uptime"><span className="status-value">—</span></Row>
       <Row label="Free heap"><span className="status-value">—</span></Row>
       <Row label="PSRAM free"><span className="status-value">—</span></Row>
+    </Card>
+  );
+}
+
+function MotionSection({
+  config,
+  status,
+  setConfig,
+  onSave,
+}: {
+  config: MotionConfig | null;
+  status: MotionStatus | null;
+  setConfig: React.Dispatch<React.SetStateAction<MotionConfig | null>>;
+  onSave: (e: React.FormEvent) => Promise<void>;
+}) {
+  if (!config) return <Skeleton />;
+  const activeColor = status?.active ? "text-[var(--danger)]" : "text-[var(--text-muted)]";
+  return (
+    <Card title="Motion Detection">
+      <div className="motion-section">
+        <div className="motion-status">
+          <span className="status-label">State</span>
+          <span className={`status-value ${activeColor}`}>
+            {status?.active ? "MOTION DETECTED" : config.enabled ? "Armed" : "Disabled"}
+          </span>
+          <span className="status-label">Events</span>
+          <span className="status-value">{status?.events_total ?? 0}</span>
+          <span className="status-label">Light</span>
+          <span className="status-value">{status?.light_level_last ?? 0}%</span>
+          <span className="status-label">Changed</span>
+          <span className="status-value">{status?.changed_ratio_last ?? 0}%</span>
+        </div>
+        <form onSubmit={onSave} className="motion-form">
+          <Field
+            label="Enabled"
+            id="motion-enabled"
+            type="checkbox"
+            checked={config.enabled}
+            onChange={(e) => {
+              if (config)
+                setConfig({ ...config, enabled: e.target.checked });
+            }}
+          />
+          <Field
+            label="Threshold (0–255)"
+            id="motion-threshold"
+            type="number"
+            min={0}
+            max={255}
+            value={config.threshold}
+            onChange={(e) => {
+              if (config)
+                setConfig({ ...config, threshold: Number(e.target.value) || 0 });
+            }}
+          />
+          <Field
+            label="Min changed ratio (%)"
+            id="motion-min-ratio"
+            type="number"
+            min={0}
+            max={100}
+            value={config.min_changed_ratio}
+            onChange={(e) => {
+              if (config)
+                setConfig({
+                  ...config,
+                  min_changed_ratio: Number(e.target.value) || 0,
+                });
+            }}
+          />
+          <Field
+            label="Cooldown (ms)"
+            id="motion-cooldown"
+            type="number"
+            min={0}
+            max={60000}
+            value={config.cooldown_ms}
+            onChange={(e) => {
+              if (config)
+                setConfig({ ...config, cooldown_ms: Number(e.target.value) || 0 });
+            }}
+          />
+          <Field
+            label="Min frames"
+            id="motion-min-frames"
+            type="number"
+            min={1}
+            max={100}
+            value={config.min_frames}
+            onChange={(e) => {
+              if (config)
+                setConfig({ ...config, min_frames: Number(e.target.value) || 1 });
+            }}
+          />
+          <Field
+            label="Idle sample rate (Hz)"
+            id="motion-rate-idle"
+            type="number"
+            min={1}
+            max={100}
+            value={config.sample_rate_idle_hz}
+            onChange={(e) => {
+              if (config)
+                setConfig({
+                  ...config,
+                  sample_rate_idle_hz: Number(e.target.value) || 5,
+                });
+            }}
+          />
+          <Field
+            label="Recording sample rate (Hz)"
+            id="motion-rate-rec"
+            type="number"
+            min={1}
+            max={100}
+            value={config.sample_rate_rec_hz}
+            onChange={(e) => {
+              if (config)
+                setConfig({
+                  ...config,
+                  sample_rate_rec_hz: Number(e.target.value) || 0,
+                });
+            }}
+          />
+          <Field
+            label="Record on motion"
+            id="motion-record"
+            type="checkbox"
+            checked={config.record_on_motion}
+            onChange={(e) => {
+              if (config)
+                setConfig({ ...config, record_on_motion: e.target.checked });
+            }}
+          />
+          <Field
+            label="Snapshot on motion"
+            id="motion-snapshot"
+            type="checkbox"
+            checked={config.snapshot_on_motion}
+            onChange={(e) => {
+              if (config)
+                setConfig({ ...config, snapshot_on_motion: e.target.checked });
+            }}
+          />
+          <Field
+            label="MQTT notify"
+            id="motion-mqtt"
+            type="checkbox"
+            checked={config.mqtt_notify}
+            onChange={(e) => {
+              if (config)
+                setConfig({ ...config, mqtt_notify: e.target.checked });
+            }}
+          />
+          <Button variant="primary" type="submit">Save motion settings</Button>
+        </form>
+      </div>
+      <p className="motion-note">
+        Motion detection is not object recognition. It compares downsampled
+        grayscale frames and triggers on pixel changes above threshold.
+      </p>
     </Card>
   );
 }

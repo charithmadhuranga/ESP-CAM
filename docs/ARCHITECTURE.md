@@ -59,7 +59,7 @@ R1 divergence in `docs/REFERENCE_ANALYSIS.md`.
 | retention | 2 | policy read/write + preview + run; deletes only "ready" records; logs every deletion |
 | recording manager | 3 | segment-based MJPEG AVI writer; provisional header at open; measured-FPS header at close; idx1 index; segment rotation at duration/frame cap |
 | playback | 3 | server-side MJPEG replay from SD; 00dc chunk walking; idx1-based seek; lower priority than writer; 503 PLAYBACK_BUSY |
-| motion / event engine | 4 | bounded event queue |
+| motion engine | 4 | JPEG decode to 96x96 grayscale; SAD compare with previous frame; MotionStarted/MotionEnded events; event recording triggers |
 | timelapse | 5 | must not disrupt live capture |
 | AI framework | 6 | external-first; camera never blocked |
 | MQTT / Home Assistant | 7 | fail-soft, stable `visioncam/{device_id}` IDs |
@@ -77,6 +77,7 @@ Never estimate — paste real numbers or write `UNVERIFIED`.
 | 1 | 4,429,511 (after boot banner) | 3,535,512 (after Wi-Fi step 14) | 3,014,656 | `main` 6,508 B / `vc_capture` unknown (not reported yet) | UNVERIFIED — capture loop FPS needs Phase 1 stream test | 2026-11-17 (phase1-web-boot-04.log) |
 | 2 | 3,539,887 (after Phase 2 UI snapshots + rebuild traffic) | 2,955,416 | 47,104 | `httpd` 7,264 B peak / `vc_capture` 3,712 B / `main` 5,604 B | UNVERIFIED — FPS needs Phase 3 capture loop | 2026-11-19 (phase2_full.log) |
 | 3 | 3,342,704 (after recording writer + playback tasks) | 2,955,416 | 47,104 | `httpd` 7,264 B / `vc_writer` UNVERIFIED / `vc_capture` 3,712 B | UNVERIFIED — recording FPS needs capture loop integration | 2026-11-19 (phase3 build) |
+| 4 | 2,955,416 | 2,955,416 | 47,104 | `httpd` 7,264 B / `vc_motion` UNVERIFIED / `vc_capture` 3,712 B | UNVERIFIED — motion FPS needs capture loop | 2026-11-19 (phase4 build) |
 
 **Smoke-run measurements (2026-11-17, board attached, evidence in
 `docs/evidence/`):**

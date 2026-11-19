@@ -34,6 +34,8 @@
 #include "sd_storage_backend.h"
 #include "storage_manager.h"
 #include "snapshot_manager.h"
+#include "recording_manager.h"
+#include "motion_manager.h"
 #include "web_server.h"
 #include "wifi_bringup.h"
 
@@ -315,6 +317,35 @@ extern "C" void app_main(void) {
         }
     } else {
         ESP_LOGW(TAG, "snapshot manager skipped — storage unavailable");
+    }
+
+    // --- recording manager (Phase 3 task 3.1) ------------------------------
+    // Segment-based MJPEG AVI writer. Needs storage and frame manager.
+    if (sdErr == ESP_OK && visioncam::storageManagerAvailable()) {
+        visioncam::RecordingConfig rc{};
+        const esp_err_t recErr = visioncam::recordingManagerInit(&rc);
+        if (recErr != ESP_OK) {
+            ESP_LOGE(TAG, "recording manager init FAILED: %s", esp_err_to_name(recErr));
+        } else {
+            ESP_LOGI(TAG, "recording manager OK");
+        }
+    } else {
+        ESP_LOGW(TAG, "recording manager skipped — storage unavailable");
+    }
+
+    // --- motion engine (Phase 4 task 4.1) ----------------------------------
+    // Decodes JPEG frames, compares with previous sample, publishes
+    // MotionStarted/MotionEnded events. Needs frame manager and storage.
+    if (sdErr == ESP_OK && visioncam::storageManagerAvailable()) {
+        visioncam::MotionConfig mc{};
+        const esp_err_t motErr = visioncam::motionManagerInit(&mc);
+        if (motErr != ESP_OK) {
+            ESP_LOGE(TAG, "motion manager init FAILED: %s", esp_err_to_name(motErr));
+        } else {
+            ESP_LOGI(TAG, "motion manager OK");
+        }
+    } else {
+        ESP_LOGW(TAG, "motion manager skipped — storage unavailable");
     }
 
     // --- step 14: camera + SD together, Wi-Fi off then Wi-Fi on ------------
