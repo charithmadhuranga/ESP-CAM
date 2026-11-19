@@ -112,6 +112,15 @@
 #define VC_PRIO_AI              2
 #define VC_STACK_AI             8192
 
+// --- MQTT worker task (Phase 7) ---------------------------------------------
+// Publishes availability, state and events on visioncam/{device_id}/...
+// Runs at LOW priority (below AI at 2) so camera/storage/motion/timelapse
+// always win. Uses a bounded publish queue; never blocks camera/storage
+// tasks on broker availability. Connects with exponential backoff + jitter.
+// Publishes retained online/offline availability with Last Will.
+#define VC_PRIO_MQTT              1
+#define VC_STACK_MQTT             8192
+
 // --- shared limits ---
 // Maximum concurrent inference requests in the bounded queue.
 #define VC_MAX_AI_QUEUE         4

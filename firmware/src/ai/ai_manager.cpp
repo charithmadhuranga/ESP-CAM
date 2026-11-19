@@ -27,6 +27,7 @@
 #include "nvs.h"
 
 #include "event_bus.h"
+#include "external_ai_provider.h"
 #include "tasks.h"
 #include "tflite_micro_provider.h"
 #include "wall_clock.h"
@@ -69,6 +70,7 @@ static bool g_initialized = false;
 // Active provider:
 static IInferenceProvider* g_provider = nullptr;
 static NoAiProvider* g_no_ai = nullptr;
+static ExternalAiProvider* g_external_ai = nullptr;
 static TfliteMicroProvider* g_tflite = nullptr;
 
 // Bounded detection event cache:
@@ -147,6 +149,8 @@ esp_err_t aiManagerInit() {
         uint32_t v = 0;
         char provider[32] = {};
         size_t provider_len = sizeof(provider);
+        char base_url[256] = {};
+        size_t base_url_len = sizeof(base_url);
         if (nvs_get_u32(h, kAIKeyVer, &v) == ESP_OK &&
             v == kAIConfigSchema) {
             nvs_get_u8(h, kAIKeyEnabled, &en);
@@ -155,6 +159,8 @@ esp_err_t aiManagerInit() {
             g_config.provider = provider;
             nvs_get_u32(h, kAIKeyTimeout, &g_config.timeout_ms);
             nvs_get_u32(h, kAIKeyInterval, &g_config.inference_interval_ms);
+            nvs_get_str(h, kAIKeyBaseURL, base_url, &base_url_len);
+            g_config.base_url = base_url;
             char model[64] = {};
             size_t model_len = sizeof(model);
             if (nvs_get_str(h, kAIKeyActiveModel, model, &model_len) == ESP_OK)
@@ -172,6 +178,15 @@ esp_err_t aiManagerInit() {
         return err;
     }
 
+    // Create ExternalAiProvider (always available for user selection):
+    g_external_ai = new ExternalAiProvider();
+    if (g_external_ai == nullptr) return ESP_ERR_NO_MEM;
+    err = g_external_ai->begin();
+    if (err != ESP_OK) {
+        // External AI may fail if no base URL configured yet — that's OK,
+        // it just won't be ready until configured.
+    }
+
     // Create TfliteMicroProvider (available but returns NOT_SUPPORTED
     // until the TFLM library is linked — owner decision D4):
     g_tflite = new TfliteMicroProvider();
@@ -182,6 +197,7 @@ esp_err_t aiManagerInit() {
     if (err != ESP_OK) {
         // Fall back to NoAiProvider:
         g_provider = g_no_ai;
+        g_config.provider = kProviderNone;
     }
 
     // Create AI task:
@@ -210,6 +226,10 @@ esp_err_t aiManagerShutdown() {
     if (g_no_ai != nullptr) {
         delete g_no_ai;
         g_no_ai = nullptr;
+    }
+    if (g_external_ai != nullptr) {
+        delete g_external_ai;
+        g_external_ai = nullptr;
     }
     if (g_tflite != nullptr) {
         delete g_tflite;
@@ -264,8 +284,9 @@ esp_err_t aiManagerSetConfig(const AIConfig* candidate,
         new_cfg.active_model_id = candidate->active_model_id;
 
     // Persist to NVS:
+    esp_err_t err = ESP_OK;
     nvs_handle_t h = 0;
-    esp_err_t err = nvs_open(kAINvsNs, NVS_READWRITE, &h);
+    err = nvs_open(kAINvsNs, NVS_READWRITE, &h);
     if (err != ESP_OK) return err;
     struct Guard {
         nvs_handle_t hh;
@@ -276,6 +297,7 @@ esp_err_t aiManagerSetConfig(const AIConfig* candidate,
     nvs_set_str(h, kAIKeyProvider, new_cfg.provider.c_str());
     nvs_set_u32(h, kAIKeyTimeout, new_cfg.timeout_ms);
     nvs_set_u32(h, kAIKeyInterval, new_cfg.inference_interval_ms);
+    nvs_set_str(h, kAIKeyBaseURL, new_cfg.base_url.c_str());
     nvs_set_str(h, kAIKeyActiveModel, new_cfg.active_model_id.c_str());
     err = nvs_commit(h);
     if (err != ESP_OK) return err;
@@ -284,7 +306,8 @@ esp_err_t aiManagerSetConfig(const AIConfig* candidate,
     g_config = new_cfg;
     if (g_config.provider != new_cfg.provider) {
         // Switch provider:
-        if (g_provider != nullptr && g_provider != g_no_ai) {
+        if (g_provider != nullptr && g_provider != g_no_ai &&
+            g_provider != g_external_ai && g_provider != g_tflite) {
             g_provider->stop();
         }
         g_provider = g_no_ai;
@@ -454,17 +477,25 @@ esp_err_t aiManagerSelectProvider(const char* provider_id) {
     }
 
     if (std::strcmp(provider_id, kProviderExternal) == 0) {
-        // External AI provider — not yet implemented (would use esp_http_client)
-        g_provider = g_no_ai; // fall back to NoAi
-        g_config.provider = kProviderNone;
-        return ESP_ERR_NOT_SUPPORTED;
+        if (g_external_ai == nullptr) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        g_provider = g_external_ai;
+        g_config.provider = kProviderExternal;
+        g_status.provider = kProviderExternal;
+        g_status.provider_ready = g_external_ai->isReady();
+        return ESP_OK;
     }
 
     if (std::strcmp(provider_id, kProviderTflite) == 0) {
-        // TFLite Micro provider — not yet implemented (owner decision D4)
-        g_provider = g_no_ai; // fall back to NoAi
-        g_config.provider = kProviderNone;
-        return ESP_ERR_NOT_SUPPORTED;
+        if (g_tflite == nullptr) {
+            return ESP_ERR_INVALID_STATE;
+        }
+        g_provider = g_tflite;
+        g_config.provider = kProviderTflite;
+        g_status.provider = kProviderTflite;
+        g_status.provider_ready = g_tflite->isReady();
+        return ESP_OK;
     }
 
     return ESP_ERR_INVALID_ARG;

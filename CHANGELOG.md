@@ -309,6 +309,23 @@ tagged once Phase 9 release criteria pass.
   all auth + CSRF protected. Model upload streams to staging file in
   bounded chunks (never buffers whole model in RAM, 2 MB hard cap).
 
+- **Phase 6 task 6.2-6.4 — External AI provider + API (2026-11-19).** New
+  `firmware/src/ai/external_ai_provider.{h,cpp}` +
+  `firmware/include/external_ai_provider.h`: External AI provider using
+  ESP-IDF's esp_http_client to POST JPEG frames to an external inference
+  server (`POST /api/v1/infer` multipart/form-data). Configurable base
+  URL, auth token, timeout, upload resolution/quality, interval, TLS
+  verification. Never holds frame leases across I/O (SPEC 4.1.1 rule 9).
+  Returns `ESP_ERR_NOT_SUPPORTED` until owner adds the esp-http-client
+  dependency (already available in ESP-IDF).
+  AI API endpoints: `GET /ai/status`, `GET /ai/providers`, `GET|PUT
+  /ai/config`, `GET /ai/models`, `GET /ai/events`,
+  `POST /ai/models/upload`, `POST /ai/models/validate`,
+  `POST /ai/models/activate`, `POST /ai/models/deactivate`,
+  `POST /ai/models/rollback` — all auth + CSRF protected.
+  AI Settings UI page with provider selection, external AI config form,
+  model management actions. Vite + tsc clean: JS 352 KB / 108 KB gzip.
+
 ### Fixed
 
 - **Every boot crash-looped with PANIC (phase1-web-boot-01.log, 259 boots).**

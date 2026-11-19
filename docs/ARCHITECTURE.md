@@ -62,8 +62,9 @@ R1 divergence in `docs/REFERENCE_ANALYSIS.md`.
 | motion engine | 4 | JPEG decode to 96x96 grayscale; SAD compare with previous frame; MotionStarted/MotionEnded events; event recording triggers |
 | timelapse manager | 5 | scheduled JPEG capture per project; direct-to-AVI or frames+generate; project.json metadata; time-sync gate; mutual exclusion with recording |
 | timelapse task | 5 | captures one frame per interval; appends to project AVI (direct-to-AVI); shares capture loop via frame leases |
-| AI framework | 6 | external-first; camera never blocked |
+| AI framework | 6 | provider abstraction with NoAiProvider, ExternalAiProvider, TfliteMicroProvider; external-first; camera never blocked |
 | TFLite Micro provider | 6 | model staging/validate/activate/rollback under /models/; returns ESP_ERR_NOT_SUPPORTED until TFLM library linked (owner decision D4) |
+| External AI provider | 6 | HTTP POST /api/v1/infer multipart/form-data; base URL, auth token, timeout, TLS verify; bounded queue, heap gate |
 | MQTT / Home Assistant | 7 | fail-soft, stable `visioncam/{device_id}` IDs |
 | network storage | 8 | upload after segment close; local files preserved |
 | hardening | 9 | 24 h mixed workload, degraded-mode drills |
