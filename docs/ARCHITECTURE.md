@@ -54,7 +54,9 @@ R1 divergence in `docs/REFERENCE_ANALYSIS.md`.
 | HTTP server + embedded UI | 1 | `esp_http_server` on port 80, lru_purge, 4 KB stack, 6 max_open_sockets, 16 max_uri_handlers; `{ok,data,error,request_id}` envelope; auth + CSRF on all routes; embedded gzipped web assets (React UI) served with Content-Encoding: gzip; SPA fallback to index.html |
 | auth | 1 | single user (admin/admin default); salted iterated SHA-256 password hash; RAM-only CSPRNG sessions; HTTP-only SameSite cookies; CSRF double-submit; login throttling; session revocation on password change |
 | storage manager | 2 | SD 1-bit mount, FATFS VFS, no auto-format |
-| media index | 2 | versioned, paginated, opaque media IDs |
+| media index | 2 | versioned, paginated, opaque media IDs; JSONL + rebuildable cache; per-line validation; boot-time self-test |
+| snapshot manager | 2 | manual capture on demand; fresh frame subscriber per capture; era guard (refuses 1970/01/01); cooldown; opaque media IDs |
+| retention | 2 | policy read/write + preview + run; deletes only "ready" records; logs every deletion |
 | AVI recorder | 3 | short segments + provisional header |
 | playback | 3 | never stalls recording; `503 PLAYBACK_BUSY` |
 | motion / event engine | 4 | bounded event queue |
@@ -73,6 +75,7 @@ Never estimate — paste real numbers or write `UNVERIFIED`.
 |---|---|---|---|---|---|---|
 | 0 | 3,588,215 (after Wi-Fi, no capture loop) | 3,549,752 | 3,407,872 | UNVERIFIED | UNVERIFIED — needs the Phase 1 capture loop; the R1 bar it must match is now recorded below | D2 reflash 2026-11-15 (smoke figures below) |
 | 1 | 4,429,511 (after boot banner) | 3,535,512 (after Wi-Fi step 14) | 3,014,656 | `main` 6,508 B / `vc_capture` unknown (not reported yet) | UNVERIFIED — capture loop FPS needs Phase 1 stream test | 2026-11-17 (phase1-web-boot-04.log) |
+| 2 | 3,539,887 (after Phase 2 UI snapshots + rebuild traffic) | 2,955,416 | 47,104 | `httpd` 7,264 B peak / `vc_capture` 3,712 B / `main` 5,604 B | UNVERIFIED — FPS needs Phase 3 capture loop | 2026-11-19 (phase2_full.log) |
 
 **Smoke-run measurements (2026-11-17, board attached, evidence in
 `docs/evidence/`):**

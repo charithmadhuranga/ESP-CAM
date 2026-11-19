@@ -111,8 +111,11 @@ esp_err_t storageAllocateMediaId(MediaType type, char* out_id,
 // Allocate a new opaque event ID.
 esp_err_t storageAllocateEventId(char* out_id, size_t out_cap);
 
-// Record a snapshot in the media index. Returns media_id on success.
-esp_err_t storageRecordSnapshot(MediaCategory category,
+// Record a snapshot in the media index. If media_id is non-empty it is used
+// as-is (caller must have allocated it); otherwise a new ID is allocated.
+// Returns the record (with media_id filled in) on success.
+esp_err_t storageRecordSnapshot(const char* media_id,
+                                MediaCategory category,
                                 const char* event_id,
                                 const char* path,
                                 uint32_t size,
@@ -176,6 +179,15 @@ bool storagePathIsUnderSd(const char* path);
 esp_err_t storageResolvePath(const char* media_id, char* out_path,
                              size_t out_cap);
 
+// Write bytes to a file via the storage backend (temp + rename).
+// Creates parent directories as needed. Path must be under /sdcard.
+esp_err_t storageWriteFile(const char* path, const uint8_t* data,
+                           size_t len);
+
+// Read bytes from a file via the storage backend. Path must be under /sdcard.
+esp_err_t storageReadFile(const char* path, uint8_t* data, size_t len,
+                          size_t* out_len);
+
 // Initialise the storage manager with a backend. Call once after
 // coreInit() and after the SD card is mounted.
 esp_err_t storageManagerInit(IStorageBackend* backend);
@@ -185,5 +197,11 @@ bool storageManagerAvailable();
 
 // Mount point (e.g. "/sdcard").
 const char* storageMountPoint();
+
+// Boot-time self-test of the JSONL index parsing (validation rejects torn,
+// garbled, and ID-less records). Runs once at init; result is logged, never
+// blocks boot. Used to prove acceptance item "corrupt trailing JSONL entry
+// is ignored on load" on hardware.
+bool storageSelfTestIndexParsing();
 
 }  // namespace visioncam

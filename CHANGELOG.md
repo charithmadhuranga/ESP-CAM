@@ -148,6 +148,81 @@ tagged once Phase 9 release criteria pass.
   `docs/evidence/phase2-snapshot.jpg`. Build: RAM 56,648 B (17.3%),
   Flash 1,267,720 B (80.6%).
 
+- **Phase 2 task 2.2 — media index correctness (2026-11-19).**
+  Fixed three defects found during hardware verification:
+  - *JSONL records had no trailing newline*: `appendMediaIndexLine` /
+    `appendEventIndexLine` now write `\n` after every record (fixes
+    "2154 B of index reporting media=1"). Line max raised 512 → 768 B to
+    cover the structural record max (~610 B incl. escaped path); call sites
+    refuse to append a truncated line.
+  - *Per-line isolation*: all three JSONL split loops
+    (`listEvents`, media, event in `loadIndexes`) now NUL-terminate each line
+    before parsing so `strstr()` field extractors can't inherit from the next
+    record.
+  - *Per-line validation*: `parseMediaRecord` / `parseEventRecord` now reject
+    lines shorter than 3 chars, without `{}`, or without an exact
+    `med-<digits>`/`evt-<digits>` ID (new `isMediaId`/`isEventId` helpers).
+    A malformed trailing record is ignored on recovery.
+  - *One-shot migration*: `indexFileIsLegacy()` detects pre-newline files
+    (`}{` is impossible in valid JSONL) and triggers `rebuildIndex()`.
+  - *Rebuild uses file mtime*: `created_at` stamped from the file's mtime,
+    falling back to wall clock only for epoch mtimes — retention age maths no
+    longer treats old files as new.
+  - *Rebuild preserves opaque media IDs*: path → media_id mapping carried
+    over from the previous index, so a rebuild never renumbers. Verified:
+    "ID mapping preserved across rebuild (12 records)".
+  - *0-byte epoch files skipped*: `scanDirForMedia` skips `fsize == 0` with a
+    warning (left on the card, never indexed).
+  - *Boot-time self-test*: `storageSelfTestIndexParsing()` runs 9 cases
+    (good record, torn write, ID-less JSON, garbage, bad ID shape, empty
+    line) on string literals — no file I/O; result logged, never blocks boot.
+  Evidence: `docs/evidence/phase2_full.log`; `docs/TEST_PLAN.md` 2.2.1–2.2.5.
+  Build: RAM 56,680 B (17.3%), Flash 1,288,548 B (81.9%).
+
+- **Phase 2 task 2.3 — snapshots (2026-11-19).**
+  - `SnapshotManager::doCapture()` refuses epoch-dated snapshots when
+    `wallClockSeconds() < kWallClockEraThreshold` (1600000000), logging and
+    returning `ESP_ERR_INVALID_STATE` instead of writing a 1970/01/01 path.
+    `POST /snapshot` pre-checks and returns `ErrCode::TimeUnsynchronised`.
+  - Fresh frame subscriber per capture in `doCapture()`; `init()` no longer
+    subscribes. JPEG buffer heap-allocated (512 KB), never on the 8 KB HTTP
+    task stack.
+  - Cooldown spacing 2.5 s > `cooldown_ms = 2000`; suppressed responses are
+    `{"suppressed":true,"reason":"cooldown"}`.
+  - All 4 snapshots fetched 200 with exact byte counts before and after
+    rebuild.
+  Evidence: `docs/evidence/phase2_full.log`; `docs/TEST_PLAN.md` 2.3.1–2.3.4.
+
+- **Phase 2 task 2.4 — retention endpoints (2026-11-19).**
+  - `GET /storage?action=retention-preview` — bounded preview (32 entries) of
+    deletion candidates; skips non-"ready" records (active/open segments,
+    active model copies never deleted). Heap-allocated candidate array to keep
+    the 8 KB HTTP task stack clear.
+  - `POST /storage?action=retention-run` — executes retention, returns
+    `{"deleted":N,"schema_version":1}`; CSRF-protected (403 without token);
+    logs every deletion (media_id, age, category).
+  - `PUT /storage?action=retention` — partial PUT overlays fields on the
+    current policy; range-validated in the manager; returns the sanitised
+    effective policy.
+  Evidence: `docs/evidence/phase2_full.log`; `docs/TEST_PLAN.md` 2.4.1–2.4.4.
+
+- **Phase 2 task 2.5 — UI Snapshots + Storage pages (2026-11-19).**
+  - New `webui/src/pages/Snapshots.tsx`: filter pills (All/Manual/Motion/
+    Detection/Timelapse), date range, 5-column responsive gallery, thumbnail
+    viewer, download, delete behind `ConfirmDialog` (typed "DELETE"),
+    pagination ("Load more"), all seven page states.
+  - New `webui/src/pages/Storage.tsx`: capacity bar (total/used/free GB/MB),
+    media count, retention policy form (days per category + max_used_percent +
+    enabled), retention preview list, Rebuild index + Run retention
+    confirmations.
+  - API client additions in `webui/src/lib/api.ts`: `getMediaList`,
+    `getMediaMetadata`, `downloadMedia`, `deleteMedia`, `rebuildIndex`,
+    `getRetention`, `putRetention`, `previewRetention`, `runRetention`,
+    `getStorageStatus`.
+  - Routes `/snapshots` and `/storage` registered in `webui/src/app/routes.tsx`.
+  - Vite + tsc clean: JS 344 KB / 106 KB gzip, CSS 11 KB / 2.6 KB gzip.
+  Evidence: `docs/TEST_PLAN.md` 2.5.1–2.5.5.
+
 ### Fixed
 
 - **Every boot crash-looped with PANIC (phase1-web-boot-01.log, 259 boots).**

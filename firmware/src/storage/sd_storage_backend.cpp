@@ -56,13 +56,26 @@ constexpr char kEventIndex[]  = "/sdcard/system/index/event-index.jsonl";
 constexpr size_t kSectorBytes = 8 * 1024;
 
 // Ensure a directory exists (recursive mkdir). FATFS mkdir fails if any
-// parent is missing, so we create each level in turn.
+// parent is missing, so we create each level in turn. The path may be a
+// directory or a file — the final component is treated as a directory
+// only when it has no extension; otherwise parent dirs are created.
 esp_err_t ensureDir(const char* path) {
     char tmp[128] = {};
     size_t len = std::strlen(path);
     if (len >= sizeof(tmp)) return ESP_ERR_NO_MEM;
     std::memcpy(tmp, path, len);
     if (tmp[len - 1] == '/') tmp[len - 1] = '\0';
+
+    // If the path looks like a file (has an extension after the last /),
+    // truncate to the parent directory.
+    char* last_slash = std::strrchr(tmp, '/');
+    if (last_slash != nullptr) {
+        const char* after_slash = last_slash + 1;
+        if (std::strchr(after_slash, '.') != nullptr) {
+            *last_slash = '\0';
+            if (tmp[0] == '\0') return ESP_OK;
+        }
+    }
 
     // Skip the leading "/sdcard" prefix — it already exists.
     char* p = tmp;
@@ -121,6 +134,10 @@ bool SdStorageBackend::isAvailable() const {
 
 esp_err_t SdStorageBackend::writeFile(const char* path, const uint8_t* data,
                                       size_t len) {
+    // Create parent directories if needed.
+    const esp_err_t derr = ensureDir(path);
+    if (derr != ESP_OK) return derr;
+
     // Stage to a temp name, fsync, rename to final (SPEC §4.8).
     char tmp_path[140] = {};
     std::snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
@@ -156,6 +173,16 @@ esp_err_t SdStorageBackend::writeFile(const char* path, const uint8_t* data,
         ESP_LOGE(TAG, "writeFile: fclose failed for %s", tmp_path);
         std::remove(tmp_path);
         return ESP_FAIL;
+    }
+    // FATFS (unlike POSIX) fails the rename with EEXIST when the target is
+    // already there, so a retry after a partial capture could never
+    // overwrite the stale file. Drop the old target first: the bytes are
+    // already safely staged and fsynced in tmp_path, so the window between
+    // remove and rename is a missing file, never a torn one.
+    if (std::remove(path) != 0 && errno != ENOENT) {
+        ESP_LOGW(TAG, "writeFile: remove(existing %s) failed: %s", path,
+                 std::strerror(errno));
+        // Fall through — rename may still succeed if it was a race.
     }
     if (std::rename(tmp_path, path) != 0) {
         ESP_LOGE(TAG, "writeFile: rename(%s → %s) failed: %s",

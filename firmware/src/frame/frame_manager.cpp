@@ -174,13 +174,17 @@ void evictForCapture() {
             Subscriber& sub = s_subs[i];
             if (!sub.used || sub.queue == nullptr) continue;
             const UBaseType_t waiting = uxQueueMessagesWaiting(sub.queue);
+            // Never evict the last frame from a subscriber — leave at
+            // least one so frameAcquire() can always get something
+            // (AGENTS rule 9: consumers must be able to acquire frames).
+            if (waiting <= 1) continue;
             if (waiting > most) {
                 most = waiting;
                 fullest = &sub;
             }
         }
         if (fullest == nullptr) {
-            return;   // everything left is an in-flight lease: wait instead
+            return;   // every subscriber has <=1 frame; nothing safe to evict
         }
         Record* old = nullptr;
         if (xQueueReceive(fullest->queue, &old, 0) != pdPASS ||
@@ -390,6 +394,11 @@ esp_err_t frameManagerSubscribe(FrameSubscriberId* out_id, const char* name) {
 esp_err_t frameManagerUnsubscribe(FrameSubscriberId id) {
     if (id >= VC_FRAME_SUBSCRIBERS || !s_subs[id].used) return ESP_ERR_INVALID_ARG;
     Subscriber& sub = s_subs[id];
+    // Mark unused BEFORE tearing the queue down: distribute() reads `used`
+    // first, so clearing it first guarantees no concurrent push can observe
+    // used=true with queue=nullptr (a null-deref in the capture task).
+    sub.used = false;
+    sub.name[0] = '\0';
     // Drain what was queued: each entry releases the queue's reference.
     Record* rec = nullptr;
     while (xQueueReceive(sub.queue, &rec, 0) == pdPASS) {
@@ -397,8 +406,6 @@ esp_err_t frameManagerUnsubscribe(FrameSubscriberId id) {
     }
     vQueueDelete(sub.queue);
     sub.queue = nullptr;
-    sub.used = false;
-    sub.name[0] = '\0';
     ESP_LOGI(TAG, "subscriber %u unregistered", id);
     return ESP_OK;
 }

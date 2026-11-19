@@ -113,6 +113,72 @@ export interface RestartResponse {
   restarting: boolean;
 }
 
+// --- Storage / snapshots (SPEC §6.5, §6.7) -----------------------------------
+
+export type MediaType = 0 | 1 | 2 | 3; // snapshot | motion | detection | timelapse
+export type MediaCategory = "manual" | "motion" | "detection" | "timelapse";
+
+export interface MediaRecord {
+  media_id: string;
+  type: MediaType;
+  category: MediaCategory;
+  mime: string;
+  size: number;
+  created_at: string;
+  event_id: string;
+  duration_ms: number;
+  status: string;
+}
+
+export interface MediaListResponse {
+  has_more: boolean;
+  count: number;
+  offset: number;
+  limit: number;
+  items: MediaRecord[];
+}
+
+export interface MediaMetadata {
+  media_id: string;
+  type: MediaType;
+  category: MediaCategory;
+  mime: string;
+  size: number;
+  created_at: string;
+  event_id: string;
+  duration_ms: number;
+  status: string;
+  schema_version: number;
+}
+
+export interface RetentionPolicy {
+  retention_days_manual: number;
+  retention_days_motion: number;
+  retention_days_detection: number;
+  retention_days_timelapse: number;
+  max_used_percent: number;
+  enabled: boolean;
+  schema_version?: number;
+}
+
+export interface DeletionCandidate {
+  media_id: string;
+  category: MediaCategory;
+  path: string;
+  size: number;
+  age_days: number;
+}
+
+export interface RetentionPreviewResponse {
+  count: number;
+  candidates: DeletionCandidate[];
+}
+
+export interface RetentionRunResponse {
+  deleted: number;
+  schema_version: number;
+}
+
 // --- Error codes (API contract skill) ---------------------------------------
 export type ErrCode =
   | "UNAUTHENTICATED"

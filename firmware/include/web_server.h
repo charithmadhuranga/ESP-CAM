@@ -31,6 +31,7 @@
 
 #include "auth.h"   // session/CSRF contract (task 1.2 auth)
 #include "frame_manager.h"
+#include "tasks.h"  // VC_STACK_HTTPD — single source of truth for stacks
 
 namespace visioncam {
 
@@ -42,9 +43,11 @@ namespace visioncam {
 // client consumes one slot for the whole connection).
 constexpr int kHttpMaxOpenSockets = 6;
 
-// The server task stack (R1: 4 KB on ESP32). Measured HWM recorded in
-// docs/ARCHITECTURE.md §4 at Phase 1 end.
-constexpr int kHttpServerStack = 4096;
+// The server task stack. Not a number of its own: tasks.h is the single
+// source of truth for every task's stack (firmware/AGENTS.md), so this can
+// never drift from VC_STACK_HTTPD. Measured HWM recorded in
+// docs/ARCHITECTURE.md §4.
+constexpr int kHttpServerStack = VC_STACK_HTTPD;
 
 // LRU purge is always on (R1): evicts the least-recently-used cached
 // static asset when flash is under pressure.

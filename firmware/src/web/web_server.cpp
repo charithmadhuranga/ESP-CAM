@@ -2,8 +2,9 @@
 //
 // esp_http_server core (SPEC 6.0): one instance, lru_purge on,
 // max_open_sockets = 6 (4 API clients + 2 stream slots — smaller than R1's
-// 7), 4 KB task stack. Every JSON response uses the {ok,data,error,
-// request_id} envelope with a monotonic per-boot request_id.
+// 7), task stack from VC_STACK_HTTPD in tasks.h. Every JSON response uses
+// the {ok,data,error,request_id} envelope with a monotonic per-boot
+// request_id.
 //
 // Auth middleware (SPEC 4.2): every management/media/snapshot/stream route
 // requires a valid session cookie; state-changing cookie-authenticated
@@ -19,6 +20,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #include "esp_http_server.h"
@@ -31,6 +33,8 @@
 #include "resource_monitor.h"
 #include "ring_log.h"
 #include "storage_manager.h"
+#include "snapshot_manager.h"
+#include "wall_clock.h"   // kWallClockEraThreshold — snapshot time gate
 #include "web_assets_manifest.h"
 
 namespace visioncam {
@@ -226,8 +230,11 @@ static esp_err_t assetHandler(httpd_req_t* req) {
         }
     }
     // Not found — serve index.html as SPA fallback (client-side routing).
+    // The manifest contains "/index.html", not "/", so look it up by its
+    // real URL. If even that is absent, 404.
+    const char* index_url = "/index.html";
     for (size_t i = 0; i < web_assets_count; ++i) {
-        if (std::strcmp("/", web_assets[i].url) == 0) {
+        if (std::strcmp(index_url, web_assets[i].url) == 0) {
             httpd_resp_set_type(req, "text/html");
             httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
             httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
@@ -249,35 +256,94 @@ static esp_err_t assetHandler(httpd_req_t* req) {
 // Monotonic per-boot request_id (SPEC 6.0).
 std::atomic<uint32_t> s_request_id{0};
 
+// Frees a heap block when it goes out of scope. Handlers here have many
+// exit paths (every error return), and firmware/AGENTS.md requires resources
+// be released on EVERY one — a manual free before each return is exactly the
+// pattern that leaks. std::free(nullptr) is a no-op, so an uninitialised
+// guard is still safe.
+struct HeapFree {
+    void* p;
+    ~HeapFree() { std::free(p); }
+};
+
+// Envelope cap for one response's "data" field. Every handler builds its
+// payload in a buffer of its own and every payload is bounded by a
+// compile-time constant (AGENTS rule 13), so this is a structural bound,
+// never one taken from a request. Refusing with a valid error envelope beats
+// emitting truncated — invalid — JSON.
+constexpr size_t kEnvelopeMaxPayload = 4096;
+
+// Last resort when the real envelope cannot be assembled (payload over the
+// cap, or out of memory). Always valid JSON and deliberately carries no
+// payload. HTTP status may already have been set by httpReplyError().
+esp_err_t sendEnvelopeFallback(httpd_req_t* req, uint32_t request_id) {
+    char small[192] = {};
+    const int n = std::snprintf(
+        small, sizeof(small),
+        "{\"ok\":false,\"request_id\":%u,"
+        "\"error\":{\"code\":%u,\"message\":\"response could not be built\"},"
+        "\"data\":null}",
+        static_cast<unsigned int>(request_id),
+        static_cast<unsigned>(ErrCode::Internal));
+    if (n < 0 || static_cast<size_t>(n) >= sizeof(small)) return ESP_FAIL;
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, small, n);
+}
+
 // Sends the full JSON envelope. payload is inserted verbatim as the "data"
 // field (must be valid JSON or "null").
+//
+// The framing is assembled into a HEAP buffer of the exact needed size, not
+// a fixed stack buffer. The previous fixed char[512] silently truncated
+// every response longer than 511 bytes — observed cutting /metrics
+// mid-string and breaking /storage?action=files as soon as it carried four
+// items — and the truncation was invisible because snprintf reports it only
+// if you ask. This runs on the HTTP task, so sizing the stack for the
+// largest legal payload would just trade one hazard for another.
 esp_err_t sendEnvelope(httpd_req_t* req, bool ok, uint32_t request_id,
                        ErrCode code, const char* message,
                        const char* payload) {
-    char buf[512] = {};
-    int n = 0;
-    n += std::snprintf(buf + n, sizeof(buf) - n,
-                       "{\"ok\":%s,\"request_id\":%u",
-                       ok ? "true" : "false",
-                       static_cast<unsigned int>(request_id));
+    if (payload == nullptr) payload = "null";
+    const size_t plen = std::strlen(payload);
+    if (plen > kEnvelopeMaxPayload) {
+        ESP_LOGE(TAG, "envelope payload of %u B exceeds the %u B cap",
+                 static_cast<unsigned>(plen),
+                 static_cast<unsigned>(kEnvelopeMaxPayload));
+        return sendEnvelopeFallback(req, request_id);
+    }
+
+    char head[256] = {};
+    int h;
     if (code != ErrCode::Ok && message != nullptr) {
-        n += std::snprintf(buf + n, sizeof(buf) - n,
-                           ",\"error\":{\"code\":%u,\"message\":\"%s\"}",
-                           static_cast<unsigned>(code), message);
+        h = std::snprintf(head, sizeof(head),
+                          "{\"ok\":%s,\"request_id\":%u,"
+                          "\"error\":{\"code\":%u,\"message\":\"%s\"},\"data\":",
+                          ok ? "true" : "false",
+                          static_cast<unsigned int>(request_id),
+                          static_cast<unsigned>(code), message);
     } else {
-        n += std::snprintf(buf + n, sizeof(buf) - n, ",\"error\":null");
+        h = std::snprintf(head, sizeof(head),
+                          "{\"ok\":%s,\"request_id\":%u,\"error\":null,\"data\":",
+                          ok ? "true" : "false",
+                          static_cast<unsigned int>(request_id));
     }
-    if (payload != nullptr) {
-        n += std::snprintf(buf + n, sizeof(buf) - n, ",\"data\":%s", payload);
-    } else {
-        n += std::snprintf(buf + n, sizeof(buf) - n, ",\"data\":null");
+    if (h < 0 || static_cast<size_t>(h) >= sizeof(head)) {
+        return sendEnvelopeFallback(req, request_id);
     }
-    n += std::snprintf(buf + n, sizeof(buf) - n, "}");
-    if (n < 0 || static_cast<size_t>(n) >= sizeof(buf)) n = sizeof(buf) - 1;
+
+    const size_t total = static_cast<size_t>(h) + plen + 1;  // + '}'
+    char* buf = static_cast<char*>(std::malloc(total));
+    if (buf == nullptr) return sendEnvelopeFallback(req, request_id);
+    std::memcpy(buf, head, static_cast<size_t>(h));
+    std::memcpy(buf + h, payload, plen);
+    buf[h + plen] = '}';
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    return httpd_resp_send(req, buf, n);
+    const esp_err_t err = httpd_resp_send(req, buf, static_cast<ssize_t>(total));
+    std::free(buf);
+    return err;
 }
 
 }  // namespace
@@ -508,12 +574,17 @@ static esp_err_t statusHandler(httpd_req_t* req) {
     ResourceSnapshot rs{};
     resourceMonitorSnapshot(rs);
     char payload[420] = {};
-    size_t n = 0;
-    n += std::snprintf(payload + n, sizeof(payload) - n,
+    // One snprintf, one buffer, one fit check: the previous two-step
+    // `n += snprintf(payload + n, ...)` with a size_t accumulator could
+    // underflow sizeof(payload) - n and write past the buffer if it ever
+    // ran long.
+    const int n = std::snprintf(payload, sizeof(payload),
                        "{\"wifi\":{\"state\":\"%s\",\"configured\":%s,"
                        "\"radio_up\":%s,\"rssi\":%d,\"connects\":%u,"
                        "\"disconnects\":%u},\"camera\":{\"initialised\":%s,"
-                       "\"framesize\":%d},\"time_synced\":%s}",
+                       "\"framesize\":%d},\"time_synced\":%s,"
+                       "\"heap_free_bytes\":%u,\"largest_block_bytes\":%u,"
+                       "\"schema_version\":1}",
                        wifiStateName(ws.state),
                        ws.configured ? "true" : "false",
                        ws.radio_up ? "true" : "false", ws.rssi,
@@ -521,12 +592,13 @@ static esp_err_t statusHandler(httpd_req_t* req) {
                        static_cast<unsigned int>(ws.disconnects),
                        cameraManagerInitialised() ? "true" : "false",
                        static_cast<int>(cameraManagerFramesize()),
-                       ws.time_synced ? "true" : "false");
-    n += std::snprintf(payload + n, sizeof(payload) - n,
-                       ",\"heap_free_bytes\":%u,\"largest_block_bytes\":%u,"
-                       "\"schema_version\":1}",
+                       ws.time_synced ? "true" : "false",
                        static_cast<unsigned int>(rs.free_heap),
                        static_cast<unsigned int>(rs.largest_block));
+    if (n < 0 || static_cast<size_t>(n) >= sizeof(payload)) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "status payload overflow");
+    }
     return httpReplyOk(req, rid, payload);
 }
 
@@ -549,6 +621,26 @@ static esp_err_t healthHandler(httpd_req_t* req) {
 }
 
 // --- GET /metrics ------------------------------------------------------------
+// Two bounds, both compile-time (AGENTS rule 13): the payload buffer is a
+// single bounded frame (never a growing one), and the task array is capped
+// at VC_MAX_TASKS. Every snprintf is followed by a fit check, because a
+// silently truncated envelope would be invalid JSON for every client.
+constexpr int kMetricsPayloadMax = 1792;
+constexpr int kMetricsMaxTasks = VC_MAX_TASKS;
+
+// GET /storage?action=files page shape. ONE constant sizes both the record
+// array and the payload buffer, so the JSON can never be truncated by the
+// page size: twelve records at up to ~200 B each plus the wrapper fits in
+// kFilesPayloadMax with room to spare. SPEC 6.5 / API contract: "limit" is
+// a STRICT MAXIMUM, so serving fewer records than requested is legal as
+// long as has_more says there are more (listMedia() scans past out_cap to
+// compute it) — the client pages on offset.
+//
+// Both buffers are heap-allocated in the handler: 12 x ~256 B of records
+// plus a 3 KB payload must not be sized onto the HTTP task's stack.
+constexpr size_t kFilesPageMax = 12;
+constexpr int kFilesPayloadMax = 3072;
+
 static esp_err_t metricsHandler(httpd_req_t* req) {
     uint32_t rid = httpNextRequestId();
     if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
@@ -556,8 +648,8 @@ static esp_err_t metricsHandler(httpd_req_t* req) {
     resourceMonitorSnapshot(rs);
     const CameraRecoveryStats crs = cameraRecoveryGetStats();
     const FrameManagerStats fms = frameManagerGetStats();
-    char payload[720] = {};
-    std::snprintf(payload, sizeof(payload),
+    char payload[kMetricsPayloadMax] = {};
+    int n = std::snprintf(payload, sizeof(payload),
                   "{\"uptime_s\":%u,\"heap_free_bytes\":%u,"
                   "\"heap_min_bytes\":%u,\"heap_largest_bytes\":%u,"
                   "\"psram_free_bytes\":%u,\"psram_largest_bytes\":%u,"
@@ -568,7 +660,7 @@ static esp_err_t metricsHandler(httpd_req_t* req) {
                   "\"frame_leases_taken\":%u,\"frame_leases_released\":%u,"
                   "\"cam_null_frames\":%u,\"cam_recovery_attempts\":%u,"
                   "\"cam_recovered\":%u,\"cam_failed_events\":%u,"
-                  "\"schema_version\":1}",
+                  "\"task_count\":%u,\"tasks_reported\":%u,\"tasks\":[",
                   static_cast<unsigned>(rs.uptime_s),
                   static_cast<unsigned>(rs.free_heap),
                   static_cast<unsigned>(rs.min_free_heap),
@@ -587,7 +679,40 @@ static esp_err_t metricsHandler(httpd_req_t* req) {
                   static_cast<unsigned>(crs.null_frames),
                   static_cast<unsigned>(crs.recovery_attempts),
                   static_cast<unsigned>(crs.recovered),
-                  static_cast<unsigned>(crs.failed_events));
+                  static_cast<unsigned>(crs.failed_events),
+                  static_cast<unsigned>(rs.task_count),
+                  static_cast<unsigned>(rs.tasks_reported));
+    if (n < 0 || static_cast<size_t>(n) >= sizeof(payload))
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "metrics payload overflow");
+
+    // Task table, worst stack high-water mark first (resource_monitor
+    // orders it that way). "hwm" is minimum free stack in BYTES — this is
+    // the number docs/ARCHITECTURE.md §4 needs per task, and the only way
+    // to see whether the HTTP task's own stack is adequate.
+    const uint16_t shown = static_cast<uint16_t>(
+        rs.tasks_reported < kMetricsMaxTasks ? rs.tasks_reported
+                                             : kMetricsMaxTasks);
+    for (uint16_t i = 0; i < shown; ++i) {
+        const TaskInfo& t = rs.tasks[i];
+        const int m = std::snprintf(
+            payload + n, sizeof(payload) - n,
+            "%s{\"n\":\"%.15s\",\"hwm\":%u,\"prio\":%u,\"core\":%d,"
+            "\"state\":%u}",
+            (i == 0) ? "" : ",", t.name,
+            static_cast<unsigned>(t.stack_hwm),
+            static_cast<unsigned>(t.prio), static_cast<int>(t.core),
+            static_cast<unsigned>(t.state));
+        if (m < 0 || static_cast<size_t>(n + m) >= sizeof(payload))
+            return httpReplyError(req, rid, ErrCode::Internal,
+                                  "metrics payload overflow");
+        n += m;
+    }
+    const int tail = std::snprintf(payload + n, sizeof(payload) - n,
+                                   "],\"schema_version\":1}");
+    if (tail < 0 || static_cast<size_t>(n + tail) >= sizeof(payload))
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "metrics payload overflow");
     return httpReplyOk(req, rid, payload);
 }
 
@@ -759,7 +884,7 @@ static esp_err_t storageHandler(httpd_req_t* req) {
     char qs[128] = {};
     size_t qs_size = sizeof(qs);
     if (httpd_req_get_url_query_str(req, qs, qs_size) != ESP_OK) qs[0] = '\0';
-    char action[16] = {};
+    char action[32] = {};
     httpd_query_key_value(qs, "action", action, sizeof(action));
 
     if (std::strcmp(action, "status") == 0) {
@@ -795,47 +920,82 @@ static esp_err_t storageHandler(httpd_req_t* req) {
         if (httpd_query_key_value(qs, "category", cat_val, sizeof(cat_val)) == ESP_OK)
             category = std::atoi(cat_val);
         if (limit > 100) limit = 100;
-        // Small stack arrays to stay within HTTP server's 4 KB task stack.
-        visioncam::MediaRecord recs[4] = {};
+        if (limit > 100) limit = 100;
+        // Page size and payload buffer are a matched pair of compile-time
+        // constants (kFilesPageMax / kFilesPayloadMax, above), and BOTH live
+        // on the heap rather than the HTTP task's stack: MediaRecord is
+        // ~256 B, so a 12-record page is ~3 KB of records plus a ~3 KB
+        // payload. Sizing the stack for the largest legal page is the same
+        // mistake that overflowed this handler before -- the old
+        // `n += snprintf(payload + n, ...)` had no fit check, and once four
+        // records were listed `sizeof(payload) - n` underflowed and the next
+        // call wrote past the end of a 512-byte stack buffer.
+        void* recs_raw = std::calloc(kFilesPageMax,
+                                     sizeof(visioncam::MediaRecord));
+        HeapFree recs_guard{recs_raw};
+        void* payload_raw = std::malloc(kFilesPayloadMax);
+        HeapFree payload_guard{payload_raw};
+        if (recs_raw == nullptr || payload_raw == nullptr) {
+            return httpReplyError(req, rid, ErrCode::Internal, "no memory");
+        }
+        auto* recs = static_cast<visioncam::MediaRecord*>(recs_raw);
+        auto* payload = static_cast<char*>(payload_raw);
+        const size_t payload_cap = static_cast<size_t>(kFilesPayloadMax);
+
         size_t count = 0;
         bool has_more = false;
         visioncam::MediaCategory cat =
             (category < 0 || category > 3)
                 ? static_cast<visioncam::MediaCategory>(-1)
                 : static_cast<visioncam::MediaCategory>(category);
-        if (visioncam::storageListMedia(cat, offset, limit, recs, 4,
-                                        &count, &has_more) != ESP_OK) {
+        if (visioncam::storageListMedia(cat, offset, limit, recs,
+                                        kFilesPageMax, &count, &has_more) !=
+            ESP_OK) {
             return httpReplyError(req, rid, ErrCode::Internal,
                                   "list media failed");
         }
-        char payload[512] = {};
-        size_t n = 0;
-        n += std::snprintf(payload + n, sizeof(payload) - n,
-                           "{\"has_more\":%s,\"count\":%u,\"offset\":%u,"
-                           "\"limit\":%u,\"items\":[",
-                           has_more ? "true" : "false",
-                           static_cast<unsigned int>(count),
-                           static_cast<unsigned int>(offset),
-                           static_cast<unsigned int>(limit));
-        for (size_t i = 0; i < count; ++i) {
-            if (i > 0) n += std::snprintf(payload + n, sizeof(payload) - n, ",");
-            n += std::snprintf(payload + n, sizeof(payload) - n,
-                               "{\"media_id\":\"%s\",\"type\":%d,"
-                               "\"category\":%d,\"mime\":\"%s\","
-                               "\"size\":%u,\"created_at\":\"%s\","
-                               "\"event_id\":\"%s\",\"duration_ms\":%u,"
-                               "\"status\":\"%s\"}",
-                               recs[i].media_id,
-                               static_cast<int>(recs[i].type),
-                               static_cast<int>(recs[i].category),
-                               recs[i].mime,
-                               static_cast<unsigned int>(recs[i].size),
-                               recs[i].created_at,
-                               recs[i].event_id,
-                               static_cast<unsigned int>(recs[i].duration_ms),
-                               recs[i].status);
+        int n = std::snprintf(payload, payload_cap,
+                       "{\"has_more\":%s,\"count\":%u,\"offset\":%u,"
+                       "\"limit\":%u,\"items\":[",
+                       has_more ? "true" : "false",
+                       static_cast<unsigned int>(count),
+                       static_cast<unsigned int>(offset),
+                       static_cast<unsigned int>(limit));
+        if (n < 0 || static_cast<size_t>(n) >= payload_cap) {
+            return httpReplyError(req, rid, ErrCode::Internal,
+                                  "files payload overflow");
         }
-        n += std::snprintf(payload + n, sizeof(payload) - n, "]}");
+        for (size_t i = 0; i < count; ++i) {
+            const int m = std::snprintf(
+                payload + n, payload_cap - static_cast<size_t>(n),
+                "%s{\"media_id\":\"%s\",\"type\":%d,"
+                "\"category\":%d,\"mime\":\"%s\","
+                "\"size\":%u,\"created_at\":\"%s\","
+                "\"event_id\":\"%s\",\"duration_ms\":%u,"
+                "\"status\":\"%s\"}",
+                (i == 0) ? "" : ",",
+                recs[i].media_id,
+                static_cast<int>(recs[i].type),
+                static_cast<int>(recs[i].category),
+                recs[i].mime,
+                static_cast<unsigned int>(recs[i].size),
+                recs[i].created_at,
+                recs[i].event_id,
+                static_cast<unsigned int>(recs[i].duration_ms),
+                recs[i].status);
+            if (m < 0 || static_cast<size_t>(n + m) >= payload_cap) {
+                return httpReplyError(req, rid, ErrCode::Internal,
+                                      "files payload overflow");
+            }
+            n += m;
+        }
+        const int tail = std::snprintf(payload + n,
+                                       payload_cap - static_cast<size_t>(n),
+                                       "]}");
+        if (tail < 0 || static_cast<size_t>(n + tail) >= payload_cap) {
+            return httpReplyError(req, rid, ErrCode::Internal,
+                                  "files payload overflow");
+        }
         return httpReplyOk(req, rid, payload);
     }
     if (std::strcmp(action, "file") == 0) {
@@ -992,8 +1152,190 @@ static esp_err_t storageHandler(httpd_req_t* req) {
         retentionJson(effective, payload, sizeof(payload));
         return httpReplyOk(req, rid, payload);
     }
+    if (std::strcmp(action, "retention-preview") == 0) {
+        if (req->method != HTTP_GET) {
+            return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                  "GET required");
+        }
+        // Preview of automatic deletion candidates. Bounded to 32 entries;
+        // previewDeletions() scans the in-memory index (never the whole card)
+        // and skips anything not "ready" (open segments, active models, etc.).
+        // Heap-allocated: 32 x ~164 B = ~5.2 KB would overflow the HTTP
+        // task's 8 KB stack if placed there.
+        void* cands_raw = std::calloc(32, sizeof(DeletionCandidate));
+        HeapFree cands_guard{cands_raw};
+        if (cands_raw == nullptr) {
+            return httpReplyError(req, rid, ErrCode::Internal, "no memory");
+        }
+        auto* cands = static_cast<DeletionCandidate*>(cands_raw);
+        size_t cand_count = 0;
+        if (visioncam::storagePreviewDeletions(cands, 32, &cand_count) !=
+            ESP_OK) {
+            return httpReplyError(req, rid, ErrCode::Internal,
+                                  "retention preview failed");
+        }
+        void* payload_raw = std::malloc(4096);
+        HeapFree payload_guard{payload_raw};
+        if (payload_raw == nullptr) {
+            return httpReplyError(req, rid, ErrCode::Internal, "no memory");
+        }
+        auto* payload = static_cast<char*>(payload_raw);
+        const size_t cap = 4096;
+        int n = std::snprintf(payload, cap,
+                              "{\"count\":%u,\"candidates\":[",
+                              static_cast<unsigned int>(cand_count));
+        if (n < 0 || static_cast<size_t>(n) >= cap) {
+            return httpReplyError(req, rid, ErrCode::Internal,
+                                  "preview payload overflow");
+        }
+        for (size_t i = 0; i < cand_count; ++i) {
+            const int m = std::snprintf(
+                payload + n, cap - static_cast<size_t>(n),
+                "%s{\"media_id\":\"%s\",\"category\":%d,\"path\":\"%s\","
+                "\"size\":%u,\"age_days\":%u}",
+                (i == 0) ? "" : ",",
+                cands[i].media_id,
+                static_cast<int>(cands[i].category),
+                cands[i].path,
+                static_cast<unsigned int>(cands[i].size),
+                static_cast<unsigned int>(cands[i].age_days));
+            if (m < 0 || static_cast<size_t>(n + m) >= cap) {
+                return httpReplyError(req, rid, ErrCode::Internal,
+                                      "preview payload overflow");
+            }
+            n += m;
+        }
+        const int tail = std::snprintf(payload + n,
+                                       cap - static_cast<size_t>(n), "]}");
+        if (tail < 0 || static_cast<size_t>(n + tail) >= cap) {
+            return httpReplyError(req, rid, ErrCode::Internal,
+                                  "preview payload overflow");
+        }
+        return httpReplyOk(req, rid, payload);
+    }
+    if (std::strcmp(action, "retention-run") == 0) {
+        if (req->method != HTTP_POST) {
+            return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                  "POST required");
+        }
+        if (requireCsrf(req) != ESP_OK) {
+            return httpReplyError(req, rid, ErrCode::CsrfInvalid,
+                                  "CSRF token missing or invalid");
+        }
+        // Execute retention: delete oldest eligible files until under
+        // max_used_percent or retention_days exceeded. Logs every deletion
+        // (runRetention logs each media_id with age and category). Refuses
+        // anything not "ready" — active/open segments and the only copy of
+        // an active model are never deleted (SPEC 9 / plan 02 task 2.4).
+        uint32_t deleted = 0;
+        const esp_err_t rerr =
+            visioncam::storageRunRetention(&deleted);
+        if (rerr != ESP_OK) {
+            return httpReplyError(req, rid, ErrCode::Internal,
+                                  "retention run failed");
+        }
+        char payload[64] = {};
+        std::snprintf(payload, sizeof(payload),
+                      "{\"deleted\":%u,\"schema_version\":1}",
+                      static_cast<unsigned int>(deleted));
+        return httpReplyOk(req, rid, payload);
+    }
     return httpReplyError(req, rid, ErrCode::ValidationFailed,
                           "unknown action");
+}
+
+// --- POST /snapshot --- (plan 02 task 2.3)
+// Capture a manual snapshot and save it to SD. Requires auth + CSRF.
+static esp_err_t snapshotCaptureHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    if (requireCsrf(req) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::CsrfInvalid,
+                              "CSRF token missing or invalid");
+    }
+    if (!visioncam::snapshotManagerAvailable()) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "snapshot manager not available");
+    }
+    // Same gate the snapshot manager enforces (it refuses to write a
+    // 1970/01/01 path when SNTP has not set the clock). Checked here too
+    // so the client gets TimeUnsynchronised instead of a bare
+    // "capture failed: ESP_ERR_INVALID_STATE".
+    if (visioncam::wallClockSeconds() < visioncam::kWallClockEraThreshold) {
+        return httpReplyError(req, rid, ErrCode::TimeUnsynchronised,
+                              "device clock not set - waiting for time sync");
+    }
+    char media_id[32] = {};
+    const esp_err_t err =
+        visioncam::snapshotCaptureManual(media_id, sizeof(media_id));
+    if (err != ESP_OK) {
+        char msg[96] = {};
+        std::snprintf(msg, sizeof(msg), "snapshot capture failed: %s",
+                      esp_err_to_name(err));
+        return httpReplyError(req, rid, ErrCode::Internal, msg);
+    }
+    if (media_id[0] == '\0') {
+        // Suppressed by cooldown — not an error.
+        return httpReplyOk(req, rid, "{\"suppressed\":true,\"reason\":\"cooldown\"}");
+    }
+    char payload[80] = {};
+    std::snprintf(payload, sizeof(payload),
+                  "{\"media_id\":\"%s\",\"captured\":true}", media_id);
+    return httpReplyOk(req, rid, payload);
+}
+
+// --- GET /snapshot?action=image&id=med-... ---
+// Serve image bytes for a media ID. Requires auth.
+static esp_err_t snapshotImageHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    char qs[128] = {};
+    size_t qs_size = sizeof(qs);
+    if (httpd_req_get_url_query_str(req, qs, qs_size) != ESP_OK) qs[0] = '\0';
+    char media_id[32] = {};
+    httpd_query_key_value(qs, "id", media_id, sizeof(media_id));
+    if (media_id[0] == '\0') {
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "media id required");
+    }
+    visioncam::MediaRecord rec{};
+    if (visioncam::storageLookupMedia(media_id, &rec) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::NotFound,
+                              "media not found");
+    }
+    // Read the whole file via the storage manager (AGENTS rule 10) into a
+    // bounded heap buffer, then stream it in chunks.
+    uint32_t fsize = rec.size;
+    if (fsize == 0 || fsize > 2 * 1024 * 1024) fsize = 2 * 1024 * 1024; // cap
+    uint8_t* fbuf = static_cast<uint8_t*>(malloc(fsize));
+    if (fbuf == nullptr) {
+        return httpReplyError(req, rid, ErrCode::Internal, "no memory");
+    }
+    size_t got = 0;
+    const esp_err_t rerr =
+        visioncam::storageReadFile(rec.path, fbuf, fsize, &got);
+    if (rerr != ESP_OK || got == 0) {
+        free(fbuf);
+        return httpReplyError(req, rid, ErrCode::NotFound,
+                              "media file not found");
+    }
+    httpd_resp_set_type(req, "image/jpeg");
+    httpd_resp_set_hdr(req, "Cache-Control", "public, max-age=86400");
+    size_t sent = 0;
+    while (sent < got) {
+        const size_t chunk = std::min(got - sent, static_cast<size_t>(2048));
+        if (httpd_resp_send_chunk(req, reinterpret_cast<const char*>(fbuf + sent),
+                                  chunk) != ESP_OK) {
+            free(fbuf);
+            return ESP_FAIL;
+        }
+        sent += chunk;
+    }
+    httpd_resp_send_chunk(req, nullptr, 0);
+    free(fbuf);
+    ESP_LOGI(TAG, "snapshot image sent: %s %u bytes", media_id,
+             static_cast<unsigned>(sent));
+    return ESP_OK;
 }
 
 }  // namespace visioncam
@@ -1015,6 +1357,16 @@ esp_err_t webServerStart() {
     config.max_open_sockets = kHttpMaxOpenSockets;
     config.max_uri_handlers = 24;   // 14 Phase 1 routes + 6 Phase 2 storage routes + catch-all
     config.lru_purge_enable = kHttpLruPurge;
+    // The dispatcher's DEFAULT matcher is httpd_uri_match_simple(), an EXACT
+    // length-and-prefix compare — a registered "/*" therefore never matches
+    // anything (proven on hardware: GET / answered 404 "Nothing matches the
+    // given URI", so the embedded React UI was never served and the SPA
+    // fallback never fired). Assigning the wildcard matcher is the documented
+    // way to make "*" work; exact URIs still match identically.
+    // NOTE: with wildcards on, "/*" matches EVERY GET URI, so it must stay
+    // the LAST entry in the route table — any handler registered after it
+    // fails registration with HTTPD_ERR_HANDLER_EXISTS.
+    config.uri_match_fn = httpd_uri_match_wildcard;
     config.recv_wait_timeout = 5;
     config.send_wait_timeout = 5;
     config.global_user_ctx = nullptr;
@@ -1061,6 +1413,9 @@ static const httpd_uri_t s_routes[] = {
     {"/camera/settings", HTTP_GET, cameraSettingsGetHandler, nullptr},
     {"/camera/settings", HTTP_PUT, cameraSettingsPutHandler, nullptr},
     {"/camera/capture", HTTP_POST, cameraCaptureHandler, nullptr},
+    // Snapshot (plan 02 task 2.3)
+    {"/snapshot", HTTP_POST, snapshotCaptureHandler, nullptr},
+    {"/snapshot", HTTP_GET, snapshotImageHandler, nullptr},
     // Storage
     {"/storage", HTTP_GET, storageHandler, nullptr},
     {"/storage", HTTP_DELETE, storageHandler, nullptr},

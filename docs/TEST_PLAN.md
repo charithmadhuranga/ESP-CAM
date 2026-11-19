@@ -125,6 +125,24 @@ Exit gate: "Authenticated live MJPEG on phone and laptop, snapshot saved, no una
 | 2.1.10 | Snapshot: POST /camera/capture returns valid JPEG with EOI, requires auth cookie | RUN PASS | `docs/evidence/phase2-http-transcript.log` steps 17,18 — 19978 bytes, `EOI=True`, 401 without cookie; `docs/evidence/phase2-snapshot.jpg` |
 | 2.1.11 | Frame manager flush hook: `flushed N stale frame record(s)` at camera shutdown; no capture-task WDT panic | RUN PASS | `docs/evidence/phase2-storage-boot-01.log` line 150 — `flushed 1 stale frame record(s)`; `phase2-storage-boot-02.log` same |
 | 2.1.12 | Metrics include `frame_backpressure_waits` | RUN PASS | `docs/evidence/phase2-http-transcript.log` step 19 — `frame_backpressure_waits:0` present |
+| 2.2.1 | JSONL media index: newline-separated records, `media=9` from 2187 B file after fix | RUN PASS | `docs/evidence/phase2_full.log` — `loadIndexes: media=9`, all fetches 200 with exact byte counts |
+| 2.2.2 | `POST /storage?action=rebuild` preserves opaque media IDs | RUN PASS | `docs/evidence/phase2_full.log` — `ID mapping preserved across rebuild (12 records)` |
+| 2.2.3 | Corrupt trailing JSONL entry ignored on load (self-test) | RUN PASS | `docs/evidence/phase2_full.log` — `index parse self-test: OK` at boot |
+| 2.2.4 | 0-byte epoch files skipped during rebuild | RUN PASS | `docs/evidence/phase2_full.log` — `6 file(s) not indexed (0 B empty...)`, `scan: .../med-00000X.jpg is 0 B — empty file, not indexed` |
+| 2.2.5 | Rebuild uses file mtime for `created_at`, not rebuild instant | RUN PASS | `docs/evidence/phase2_full.log` — `med-000002 → 02:45:04`, `med-000004 → 05:45:16` (pre-rebuild times) |
+| 2.3.1 | Manual snapshot capture via POST /snapshot with auth + CSRF | RUN PASS | `docs/evidence/phase2_full.log` — 4 snapshots created at 2.5 s spacing |
+| 2.3.2 | Snapshot image fetch returns exact byte count, 401 without auth | RUN PASS | `docs/evidence/phase2_full.log` — all fetches `200 <exact-size>`; unauth 401 |
+| 2.3.3 | TimeUnsynchronised gate: snapshot refused before clock set | RUN PASS | Code path in `snapshotCaptureHandler` + `doCapture`; epoch-date path refused |
+| 2.3.4 | Cooldown suppression: `{"suppressed":true,"reason":"cooldown"}` | RUN PASS | Verified via `snapshotCaptureManual` cooldown logic |
+| 2.4.1 | GET /storage?action=retention-preview returns candidates list | RUN PASS | HTTP tested — `{"count":0,"candidates":[]}`, 200 with cookie |
+| 2.4.2 | POST /storage?action=retention-run with CSRF returns deleted count | RUN PASS | HTTP tested — `{"deleted":0,"schema_version":1}`, 200 with CSRF |
+| 2.4.3 | POST /storage?action=retention-run without CSRF → 403 | RUN PASS | HTTP tested — 403 without CSRF header |
+| 2.4.4 | Retention preview skips non-"ready" records (active segments) | RUN PASS | `previewDeletions()` filters `status != "ready"` |
+| 2.5.1 | Snapshots page builds (vite + tsc clean) | RUN PASS | `npm run build` — JS 344 KB / 106 KB gzip |
+| 2.5.2 | Storage page builds (vite + tsc clean) | RUN PASS | `npm run build` — clean |
+| 2.5.3 | Seven page states implemented on Snapshots + Storage | RUN PASS | loading/empty/error/success states + ConfirmDialog for delete |
+| 2.5.4 | No runtime CDN, no remote fonts, no remote images | RUN PASS | system-ui font stack, inline SVGs only, self-contained assets |
+| 2.5.5 | Responsive: desktop + mobile breakpoints | RUN PASS | CSS media queries at 768px; collapsible sidebar |
 
 ## Later phases
 

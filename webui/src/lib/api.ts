@@ -23,8 +23,14 @@ import type {
   Envelope,
   HealthPayload,
   LoginRequest,
+  MediaListResponse,
+  MediaMetadata,
+  MediaCategory,
   MetricsPayload,
   RestartResponse,
+  RetentionPreviewResponse,
+  RetentionPolicy,
+  RetentionRunResponse,
   SessionView,
   StatusPayload,
   CameraStatus,
@@ -195,4 +201,105 @@ export async function putCameraSettings(
   body: CameraSettings
 ): Promise<CameraSettings> {
   return put<CameraSettings>("/camera/settings", body);
+}
+
+// --- Snapshots / Storage (SPEC §6.5, §6.7) -----------------------------------
+
+export async function getMediaList({
+  offset = 0,
+  limit = 12,
+  category,
+  signal,
+}: {
+  offset?: number;
+  limit?: number;
+  category?: MediaCategory;
+  signal?: AbortSignal;
+}): Promise<MediaListResponse> {
+  const qs = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+  if (category) qs.set("category", category);
+  return get<MediaListResponse>(
+    `/storage?action=files&${qs.toString()}`,
+    signal
+  );
+}
+
+export async function getMediaMetadata(
+  mediaId: string,
+  signal?: AbortSignal
+): Promise<MediaMetadata> {
+  return get<MediaMetadata>(`/storage?action=file&id=${mediaId}`, signal);
+}
+
+export async function downloadMedia(mediaId: string, signal?: AbortSignal): Promise<Response> {
+  const res = await fetch(`${BASE}/snapshot?id=${mediaId}`, {
+    method: "GET",
+    credentials: "include",
+    signal,
+  });
+  if (res.status === 401) {
+    if (onUnauthenticated) onUnauthenticated();
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new ApiError("Internal", text || res.statusText, res.status);
+  }
+  return res;
+}
+
+export async function deleteMedia(mediaId: string): Promise<{ deleted: boolean }> {
+  return del<{ deleted: boolean }>(`/storage?action=file&id=${mediaId}`);
+}
+
+export async function getStorageStatus(): Promise<{
+  mounted: boolean;
+  index_loaded: boolean;
+  total_bytes: number;
+  used_bytes: number;
+  free_bytes: number;
+  media_count: number;
+}> {
+  return get<{
+    mounted: boolean;
+    index_loaded: boolean;
+    total_bytes: number;
+    used_bytes: number;
+    free_bytes: number;
+    media_count: number;
+  }>("/storage?action=status");
+}
+
+export async function rebuildIndex(): Promise<{ rebuilt: boolean }> {
+  return post<{ rebuilt: boolean }>("/storage?action=rebuild");
+}
+
+export async function getRetention(): Promise<RetentionPolicy> {
+  return get<RetentionPolicy>("/storage?action=retention");
+}
+
+export async function putRetention(
+  body: Partial<RetentionPolicy>
+): Promise<RetentionPolicy> {
+  return put<RetentionPolicy>("/storage?action=retention", body);
+}
+
+export async function previewRetention(): Promise<RetentionPreviewResponse> {
+  return get<RetentionPreviewResponse>(
+    "/storage?action=retention-preview"
+  );
+}
+
+export async function runRetention(): Promise<RetentionRunResponse> {
+  return post<RetentionRunResponse>("/storage?action=retention-run");
+}
+
+// --- Snapshot capture --------------------------------------------------------
+
+export async function captureSnapshot(): Promise<{
+  media_id: string;
+  captured: boolean;
+  suppressed?: boolean;
+  reason?: string;
+}> {
+  return post<{ media_id: string; captured: boolean }>("/snapshot");
 }

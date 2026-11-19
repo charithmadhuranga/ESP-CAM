@@ -33,6 +33,7 @@
 #include "sd_bringup.h"
 #include "sd_storage_backend.h"
 #include "storage_manager.h"
+#include "snapshot_manager.h"
 #include "web_server.h"
 #include "wifi_bringup.h"
 
@@ -280,7 +281,7 @@ extern "C" void app_main(void) {
     // keeps working without it (SPEC 2.3).
     static visioncam::SdStorageBackend sd_backend;
     if (sdErr == ESP_OK) {
-        const esp_err_t stErr = storageManagerInit(&sd_backend);
+        const esp_err_t stErr = visioncam::storageManagerInit(&sd_backend);
         if (stErr != ESP_OK) {
             ESP_LOGE(TAG, "storage manager init FAILED: %s", esp_err_to_name(stErr));
         } else {
@@ -298,6 +299,22 @@ extern "C" void app_main(void) {
         }
     } else {
         ESP_LOGW(TAG, "storage manager skipped — SD not mounted");
+    }
+
+    // --- snapshot manager (plan 02 task 2.3) ----------------------------------
+    // Captures frames via the frame manager and writes snapshots to SD
+    // through the storage manager. Needs storage to be available.
+    // doCapture() registers a fresh frame subscriber per capture to avoid
+    // stale-queue issues after a camera shutdown/restart cycle.
+    if (sdErr == ESP_OK && visioncam::storageManagerAvailable()) {
+        const esp_err_t snapErr = visioncam::snapshotManagerInit();
+        if (snapErr != ESP_OK) {
+            ESP_LOGE(TAG, "snapshot manager init FAILED: %s", esp_err_to_name(snapErr));
+        } else {
+            ESP_LOGI(TAG, "snapshot manager OK");
+        }
+    } else {
+        ESP_LOGW(TAG, "snapshot manager skipped — storage unavailable");
     }
 
     // --- step 14: camera + SD together, Wi-Fi off then Wi-Fi on ------------

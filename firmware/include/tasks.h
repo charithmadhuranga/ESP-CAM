@@ -21,7 +21,25 @@
 // The stack is set in the web/ server config from this constant so the two
 // can never drift apart (SPEC 6.0: R1 uses 4 KB on ESP32, 7 KB on S3).
 // Long-running responses (stream) run inside this task.
-#define VC_STACK_HTTPD          4096
+//
+// 4096 was R1's figure, but R1's handlers do not nest the way ours do: a
+// single request here can be on the stack simultaneously with the auth
+// middleware (readSessionCookie char[512]), the handler's own buffers
+// (body[256] + user[64] + pass[64] + csrf_b64[64] + token_b64[64] +
+// set_cookie[512]), sendEnvelope's char[512] and ringLogWrite's
+// line[192]+msg[144] — ~1.9 KB before esp_http_server's own frames and
+// any callee (mbedtls SHA-256 inside authCreateSession, snprintf).
+//
+// Two runs crashed at the same point with StoreProhibited at 0xffffffa0:
+// vPortYieldFromInt computed (TCB.pxEndOfStack - offset_cpsa) & ~0xF from
+// a ZEROED pxEndOfStack, i.e. a task TCB in the heap had been overwritten
+// by a stack that ran off its bottom (a stack grows down into the block
+// below it, and FreeRTOS allocates the stack BEFORE the TCB, so an earlier
+// task's TCB sits there). Evidence: docs/evidence/phase2-stack-boot-*.log.
+// 8192 also leaves headroom for the MJPEG stream handler that will run in
+// this same task. MEASURE the HWM in /metrics after Phase 2 and record it
+// in docs/ARCHITECTURE.md §4 — do not shrink this on estimate.
+#define VC_STACK_HTTPD          8192
 
 // --- event bus dispatcher ---------------------------------------------------
 // Runs subscriber callbacks one at a time. Callbacks must be quick and must
