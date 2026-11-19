@@ -280,6 +280,19 @@ tagged once Phase 9 release criteria pass.
   light level, changed ratio). API client additions in `webui/src/lib/api.ts`.
   Vite + tsc clean: JS 352 KB / 108 KB gzip.
 
+- **Phase 5 task 5.1-5.4 — timelapse scheduler + project manager (2026-11-19).** New
+  `firmware/src/timelapse/timelapse_manager.{h,cpp}` +
+  `firmware/include/timelapse_manager.h`: scheduled JPEG capture into
+  per-project AVI (direct-to-AVI default) using the Phase 3 AVI writer code.
+  Projects with `project.json` metadata (name, state, interval, schedule,
+  resolution, quality, playback FPS, retention, counters, timestamps).
+  Opaque project IDs (`tl-…`) via API. Time-synchronisation gate (refuses
+  to start before clock set). Mutual exclusion with continuous recording.
+  Timelapse task (prio 3) subscribes to frame leases; releases immediately.
+  NVS persistence (namespace "timelapse", schema 1).
+  API: `GET/POST/DELETE /timelapse/projects` (+`?action=create|start|stop`
+  params). All auth + CSRF protected.
+
 ### Fixed
 
 - **Every boot crash-looped with PANIC (phase1-web-boot-01.log, 259 boots).**

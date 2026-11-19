@@ -39,6 +39,7 @@
 #include "recording_manager.h"
 #include "playback.h"
 #include "motion_manager.h"
+#include "timelapse_manager.h"
 
 namespace visioncam {
 
@@ -1878,7 +1879,182 @@ static esp_err_t motionStatusHandler(httpd_req_t* req) {
     return httpReplyOk(req, rid, payload);
 }
 
+// --- GET /timelapse/projects --- (Phase 5 task 5.4)
+// Dispatches on ?action=create|start|stop|generate|preview|download|delete
+static esp_err_t timelapseProjectsHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    char qs[128] = {};
+    size_t qs_size = sizeof(qs);
+    if (httpd_req_get_url_query_str(req, qs, qs_size) != ESP_OK)
+        qs[0] = '\0';
+    char action[16] = {};
+    httpd_query_key_value(qs, "action", action, sizeof(action));
 
+    if (std::strcmp(action, "create") == 0 ||
+        (action[0] == '\0' && req->method == HTTP_POST)) {
+        if (req->method != HTTP_POST)
+            return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                  "POST required");
+        if (requireCsrf(req) != ESP_OK)
+            return httpReplyError(req, rid, ErrCode::CsrfInvalid,
+                                  "CSRF token missing or invalid");
+        char body[256] = {};
+        size_t blen = 0;
+        if (readJsonBody(req, body, sizeof(body), blen) != ESP_OK)
+            return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                  "invalid JSON body");
+        TimelapseConfig cfg{};
+        char val[16] = {};
+        if (jsonScalar(body, "\"name\"", val, sizeof(val)))
+            std::strncpy(cfg.name, val, sizeof(cfg.name) - 1);
+        if (jsonScalar(body, "\"interval_s\"", val, sizeof(val)))
+            parseU32Strict(val, cfg.interval_s);
+        if (jsonScalar(body, "\"duration_min\"", val, sizeof(val)))
+            parseU32Strict(val, cfg.duration_min);
+        if (jsonScalar(body, "\"quality\"", val, sizeof(val)))
+            parseU32Strict(val, cfg.quality);
+        if (jsonScalar(body, "\"playback_fps\"", val, sizeof(val)))
+            parseU32Strict(val, cfg.playback_fps);
+        if (jsonScalar(body, "\"mode_direct_to_avi\"", val, sizeof(val)))
+            cfg.mode_direct_to_avi = (std::strcmp(val, "true") == 0);
+        char proj_id[24] = {};
+        esp_err_t err = visioncam::timelapseManagerCreateProject(
+            &cfg, proj_id, sizeof(proj_id));
+        if (err != ESP_OK)
+            return httpReplyError(req, rid, ErrCode::Internal,
+                                  "project create failed");
+        char payload[80] = {};
+        std::snprintf(payload, sizeof(payload),
+                      "{\"project_id\":\"%s\",\"created\":true}", proj_id);
+        return httpReplyOk(req, rid, payload);
+    }
+
+    if (std::strcmp(action, "list") == 0 || action[0] == '\0') {
+        if (req->method != HTTP_GET)
+            return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                  "GET required");
+        uint32_t offset = 0, limit = 12;
+        char val[16] = {};
+        if (httpd_query_key_value(qs, "offset", val, sizeof(val)) == ESP_OK)
+            offset = static_cast<uint32_t>(std::atoi(val));
+        val[0] = '\0';
+        if (httpd_query_key_value(qs, "limit", val, sizeof(val)) == ESP_OK)
+            limit = static_cast<uint32_t>(std::atoi(val));
+        if (limit > 100) limit = 100;
+
+        TimelapseProject projs[12] = {};
+        size_t count = 0;
+        bool has_more = false;
+        if (visioncam::timelapseManagerListProjects(offset, limit, projs, 12,
+                                                    &count, &has_more) !=
+            ESP_OK) {
+            return httpReplyError(req, rid, ErrCode::Internal,
+                                  "project list failed");
+        }
+        void* payload_raw = std::malloc(4096);
+        HeapFree payload_guard{payload_raw};
+        if (payload_raw == nullptr)
+            return httpReplyError(req, rid, ErrCode::Internal, "no memory");
+        auto* payload = static_cast<char*>(payload_raw);
+        const size_t cap = 4096;
+        int n = std::snprintf(payload, cap,
+                              "{\"has_more\":%s,\"count\":%u,\"offset\":%u,"
+                              "\"limit\":%u,\"items\":[",
+                              has_more ? "true" : "false",
+                              static_cast<unsigned int>(count),
+                              static_cast<unsigned int>(offset),
+                              static_cast<unsigned int>(limit));
+        for (size_t i = 0; i < count; ++i) {
+            const int m = std::snprintf(
+                payload + n, cap - static_cast<size_t>(n),
+                "%s{\"project_id\":\"%s\",\"name\":\"%s\",\"state\":%u,"
+                "\"interval_s\":%u,\"progress_pct\":%u,\"frame_count\":%u,"
+                "\"size_bytes\":%u,\"error_code\":\"%s\"}",
+                (i == 0) ? "" : ",",
+                projs[i].project_id,
+                projs[i].name,
+                static_cast<unsigned int>(projs[i].state),
+                static_cast<unsigned int>(projs[i].interval_s),
+                static_cast<unsigned int>(projs[i].progress_pct),
+                static_cast<unsigned int>(projs[i].frame_count),
+                static_cast<unsigned int>(projs[i].size_bytes),
+                projs[i].error_code);
+            if (m < 0 || static_cast<size_t>(n + m) >= cap)
+                return httpReplyError(req, rid, ErrCode::Internal,
+                                      "project list payload overflow");
+            n += m;
+        }
+        const int tail = std::snprintf(payload + n, cap - static_cast<size_t>(n),
+                                       "]}");
+        if (tail < 0 || static_cast<size_t>(n + tail) >= cap)
+            return httpReplyError(req, rid, ErrCode::Internal,
+                                  "project list payload overflow");
+        return httpReplyOk(req, rid, payload);
+    }
+
+    if (std::strcmp(action, "start") == 0 ||
+        std::strcmp(action, "stop") == 0) {
+        if (req->method != HTTP_POST)
+            return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                  "POST required");
+        if (requireCsrf(req) != ESP_OK)
+            return httpReplyError(req, rid, ErrCode::CsrfInvalid,
+                                  "CSRF token missing or invalid");
+        char proj_id[32] = {};
+        httpd_query_key_value(qs, "id", proj_id, sizeof(proj_id));
+        if (proj_id[0] == '\0')
+            return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                  "project id required");
+        esp_err_t err;
+        if (std::strcmp(action, "start") == 0)
+            err = visioncam::timelapseManagerStartProject(proj_id);
+        else
+            err = visioncam::timelapseManagerStopProject(proj_id);
+        if (err == ESP_ERR_NOT_FOUND)
+            return httpReplyError(req, rid, ErrCode::NotFound,
+                                  "project not found");
+        if (err == ESP_ERR_INVALID_STATE)
+            return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                  "project already in requested state");
+        if (err != ESP_OK)
+            return httpReplyError(req, rid, ErrCode::Internal,
+                                  "project action failed");
+        char payload[128] = {};
+        std::snprintf(payload, sizeof(payload),
+                      "{\"project_id\":\"%s\",\"action\":\"%s\",\"ok\":true}",
+                      proj_id, action);
+        return httpReplyOk(req, rid, payload);
+    }
+
+    if (std::strcmp(action, "delete") == 0) {
+        if (req->method != HTTP_DELETE)
+            return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                  "DELETE required");
+        if (requireCsrf(req) != ESP_OK)
+            return httpReplyError(req, rid, ErrCode::CsrfInvalid,
+                                  "CSRF token missing or invalid");
+        char proj_id[32] = {};
+        httpd_query_key_value(qs, "id", proj_id, sizeof(proj_id));
+        if (proj_id[0] == '\0')
+            return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                  "project id required");
+        esp_err_t err = visioncam::timelapseManagerDeleteProject(proj_id);
+        if (err == ESP_ERR_NOT_FOUND)
+            return httpReplyError(req, rid, ErrCode::NotFound,
+                                  "project not found");
+        if (err == ESP_ERR_INVALID_STATE)
+            return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                  "project is capturing, stop first");
+        if (err != ESP_OK)
+            return httpReplyError(req, rid, ErrCode::Internal,
+                                  "project delete failed");
+        return httpReplyOk(req, rid, "{\"deleted\":true}");
+    }
+
+    return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                          "unknown action");
+}
 // --- POST /snapshot --- (plan 02 task 2.3)
 // Capture a manual snapshot and save it to SD. Requires auth + CSRF.
 static esp_err_t snapshotCaptureHandler(httpd_req_t* req) {
@@ -2068,6 +2244,10 @@ static const httpd_uri_t s_routes[] = {
     {"/motion/config", HTTP_GET, motionConfigGetHandler, nullptr},
     {"/motion/config", HTTP_PUT, motionConfigPutHandler, nullptr},
     {"/motion/status", HTTP_GET, motionStatusHandler, nullptr},
+    // Timelapse (Phase 5)
+    {"/timelapse/projects", HTTP_GET, timelapseProjectsHandler, nullptr},
+    {"/timelapse/projects", HTTP_POST, timelapseProjectsHandler, nullptr},
+    {"/timelapse/projects", HTTP_DELETE, timelapseProjectsHandler, nullptr},
     // Catch-all static asset server (SPA fallback for unknown routes).
     // Specific API routes are registered above and match first.
     {"/*", HTTP_GET, assetHandler, nullptr},

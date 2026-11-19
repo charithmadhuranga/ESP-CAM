@@ -48,6 +48,7 @@ idf_component_register(
         "recording/recording_manager.cpp"
         "recording/playback.cpp"
         "motion/motion_manager.cpp"
+        "timelapse/timelapse_manager.cpp"
         "web_assets/web_asset_0.c"
         "web_assets/web_asset_1.c"
         "web_assets/web_asset_2.c"
@@ -59,6 +60,7 @@ idf_component_register(
         "web_assets"
         "recording"
         "motion"
+        "timelapse"
     PRIV_REQUIRES
         esp_psram
         espressif__esp32-camera

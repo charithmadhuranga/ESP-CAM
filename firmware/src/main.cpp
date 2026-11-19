@@ -36,6 +36,7 @@
 #include "snapshot_manager.h"
 #include "recording_manager.h"
 #include "motion_manager.h"
+#include "timelapse_manager.h"
 #include "web_server.h"
 #include "wifi_bringup.h"
 
@@ -346,6 +347,22 @@ extern "C" void app_main(void) {
         }
     } else {
         ESP_LOGW(TAG, "motion manager skipped — storage unavailable");
+    }
+
+    // --- timelapse manager (Phase 5 task 5.1-5.4) --------------------------
+    // Scheduled JPEG capture into per-project AVI. Needs frame manager,
+    // storage and motion manager (for coexistence checks).
+    if (sdErr == ESP_OK && visioncam::storageManagerAvailable()) {
+        visioncam::TimelapseConfig tc{};
+        const esp_err_t tlErr = visioncam::timelapseManagerInit();
+        if (tlErr != ESP_OK) {
+            ESP_LOGE(TAG, "timelapse manager init FAILED: %s",
+                     esp_err_to_name(tlErr));
+        } else {
+            ESP_LOGI(TAG, "timelapse manager OK");
+        }
+    } else {
+        ESP_LOGW(TAG, "timelapse manager skipped — storage unavailable");
     }
 
     // --- step 14: camera + SD together, Wi-Fi off then Wi-Fi on ------------

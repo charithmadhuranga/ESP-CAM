@@ -92,3 +92,14 @@
 // recording (1 check/2 s) — both configurable.
 #define VC_PRIO_MOTION          4
 #define VC_STACK_MOTION         8192
+
+// --- timelapse scheduler task (Phase 5) ------------------------------------
+// Captures JPEG frames on a configurable interval for timelapse projects.
+// Appends frames directly to a per-project AVI (direct-to-AVI mode, default)
+// using the Phase 3 AVI writer code. Runs at LOW priority (below motion at
+// 4) so streaming, recording and motion always win. Uses the frame manager
+// lease mechanism like all other consumers.
+// Sample interval is in seconds (configurable, default 5 s); captures one
+// frame per interval — no continuous streaming when idle.
+#define VC_PRIO_TIMELAPSE       3
+#define VC_STACK_TIMELAPSE      6144

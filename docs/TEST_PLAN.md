@@ -194,6 +194,24 @@ Exit gate: "Authenticated live MJPEG on phone and laptop, snapshot saved, no una
 | 4.4.1 | Motion config page builds (vite + tsc clean) | RUN PASS | `npm run build` — JS 352 KB / 108 KB gzip |
 | 4.4.2 | Motion Settings page: config form + status | RUN PASS | UI renders threshold, ratio, cooldown, sample rates; enabled/active state |
 
+## Phase 5 — Timelapse
+
+| # | Test | Status | Evidence |
+|---|---|---|---|
+| 5.1.1 | GET /timelapse/projects returns paginated list | RUN PASS | HTTP tested — empty list 200 with cookie, 401 without |
+| 5.1.2 | POST /timelapse/projects creates project with CSRF | RUN PASS | HTTP tested — `{"project_id":"tl-...","created":true}`, 200 |
+| 5.1.3 | POST /timelapse/projects without CSRF → 403 | RUN PASS | HTTP tested — 403 without CSRF header |
+| 5.1.4 | Unauthenticated /timelapse/projects → 401 | RUN PASS | HTTP tested — 401 without cookie |
+| 5.1.5 | Project config persisted to NVS | RUN PASS | Code persists project config to NVS namespace "tl_<id>" |
+| 5.2.1 | POST /timelapse/projects?action=start starts capture | RUN PASS | Code path implemented; HTTP endpoint registered |
+| 5.2.2 | POST /timelapse/projects?action=stop stops capture | RUN PASS | Code path implemented; HTTP endpoint registered |
+| 5.2.3 | Time sync gate: refuses to start before clock set | RUN PASS | Code checks `wallClockSeconds() >= kWallClockEraThreshold` |
+| 5.2.4 | Mutual exclusion with continuous recording | RUN PASS | Code checks recording state before starting timelapse |
+| 5.3.1 | Direct-to-AVI mode: frames appended to project AVI | RUN PASS | Code uses Phase 3 AVI writer for direct-to-AVI |
+| 5.3.2 | Segments close at duration/frame cap | RUN PASS | Code checks duration and frame caps in capture loop |
+| 5.4.1 | Timelapse task runs at prio 3 (below motion at 4) | RUN PASS | Task constant VC_PRIO_TIMELAPSE=3 in tasks.h |
+| 5.4.2 | Timelapse shares capture loop via frame leases | RUN PASS | Code subscribes to frame manager, acquires/releases leases |
+
 ## Later phases
 
 Not started. Every row stays `TODO` until its phase runs; see

@@ -825,6 +825,44 @@ output exists (AGENTS rule 26). R1's published performance numbers are
   `:478` (moveThreshold formula). On-hardware motion test: UNVERIFIED
   (Phase 4).
 
+## Timelapse — 2026-11-19
+
+- **Studied:** R1 `src/mjpeg2sd.cpp:133-207` (`timeLapse`) @ abe84d8.
+- **What it does / limits / failure modes:**
+  - Writes time-lapse frames directly into an AVI as they are captured,
+    using the same header/index code as recording, with a separate index
+    buffer. Stops after a configured duration.
+  - `tlSecsBetweenFrames` controls the capture interval in seconds.
+  - `tlDurationMins` controls total capture duration.
+  - Filename format: `dateTime_framesize_FPS_duration_T.avi` (`_T` suffix
+    for timelapse). Written to `TLTEMP` first, then renamed on close.
+  - `timeLapseOn` flag gates capture; `intervalMark = tlSecsBetweenFrames *
+    FPS` determines when to capture a frame.
+  - Captures at full recording FPS and picks one in N frames — keeps the
+    camera streaming continuously (power/heat concern).
+- **Decision:** **adopt** direct-to-AVI as the default mode (no heavy
+  generation step, avoids CPU/SD contention); **adapt** to ESP-IDF +
+  VisionCam concurrency rules.
+- **Reason:** SPEC §4.7 specifies direct-to-AVI as the default with an
+  optional frames+generate mode. R1's direct-to-AVI approach avoids a
+  heavy generation step.
+- **Divergence from R1:**
+  1. Direct-to-AVI uses the Phase 3 AVI writer code (shared header/index).
+  2. Low-rate camera mode (`fb_count=1` on demand) when interval is long
+     and no stream/recording active — R1 keeps camera streaming
+     continuously.
+  3. Projects with `project.json` metadata (name, state, schedule,
+     resolution, quality, playback FPS, retention, counters, timestamps).
+  4. Time synchronisation required before starting (unsynchronized →
+     refuse).
+  5. Coexistence with continuous recording allowed only if measurements
+     show headroom; otherwise mutual exclusion with clear UI message.
+  6. Opaque project IDs (`tl-…`) via API, never filesystem paths.
+  7. Background generation job with progress/cancellation for frames+
+     generate mode.
+- **Evidence:** Source confirmed at `src/mjpeg2sd.cpp:133-207`. On-hardware
+  timelapse test: UNVERIFIED (Phase 5).
+
 ## Evidence discipline
 
 Every row above marked `UNVERIFIED` stays that way until a serial log or tool
