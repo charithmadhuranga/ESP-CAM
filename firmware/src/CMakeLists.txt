@@ -44,6 +44,9 @@ idf_component_register(
         "storage/storage_manager.cpp"
         "storage/sd_storage_backend.cpp"
         "snapshot/snapshot_manager.cpp"
+        "recording/avi_writer.cpp"
+        "recording/recording_manager.cpp"
+        "recording/playback.cpp"
         "web_assets/web_asset_0.c"
         "web_assets/web_asset_1.c"
         "web_assets/web_asset_2.c"
@@ -53,6 +56,7 @@ idf_component_register(
     INCLUDE_DIRS
         "../include"
         "web_assets"
+        "recording"
     PRIV_REQUIRES
         esp_psram
         espressif__esp32-camera

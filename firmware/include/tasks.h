@@ -63,3 +63,21 @@
 // --- shared limits ----------------------------------------------------------
 // Maximum stream clients on the original ESP32 (SPEC 4.1: default 1).
 #define VC_MAX_STREAM_CLIENTS   1
+
+// --- storage writer task (Phase 3) -----------------------------------------
+// Sole file writer for recording segments: pulls frame leases from its
+// bounded queue and writes 00dc JPEG chunks to SD in sector-aligned
+// whole-buffer writes. Runs BELOW the capture task (6) so camera
+// acquisition can never be delayed by SD card latency; runs ABOVE
+// playback (4) so recording always wins SD access (SPEC 4.6 concurrency
+// rule). Uses an 8 KB staging buffer + FATFS frames on its stack.
+#define VC_PRIO_WRITER          5
+#define VC_STACK_WRITER         6144
+
+// --- playback task (Phase 3) -----------------------------------------------
+// Server-side MJPEG replay from SD. Runs BELOW the writer (5) so
+// recording always wins SD card access. Its stack holds read buffers +
+// multipart framing; JPEG payloads come from the heap. Consumes one of
+// the limited stream slots (max VC_MAX_STREAM_CLIENTS).
+#define VC_PRIO_PLAYBACK        4
+#define VC_STACK_PLAYBACK       5120

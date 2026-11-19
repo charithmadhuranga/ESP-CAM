@@ -6,6 +6,7 @@ import { LiveView } from "../pages/LiveView";
 import { Settings } from "../pages/Settings";
 import { Snapshots } from "../pages/Snapshots";
 import { Storage } from "../pages/Storage";
+import { Recordings } from "../pages/Recordings";
 import { ComingSoonPage } from "../pages/ComingSoon";
 
 export const router = createBrowserRouter([
@@ -19,7 +20,7 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <Overview /> },
       { path: "live", element: <LiveView /> },
-      { path: "recordings", element: <ComingSoonPage section="Recordings" /> },
+      { path: "recordings", element: <Recordings /> },
       { path: "snapshots", element: <Snapshots /> },
       { path: "timelapse", element: <ComingSoonPage section="Timelapse" /> },
       { path: "ai", element: <ComingSoonPage section="AI Detection" /> },

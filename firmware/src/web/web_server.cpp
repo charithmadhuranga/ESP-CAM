@@ -36,6 +36,8 @@
 #include "snapshot_manager.h"
 #include "wall_clock.h"   // kWallClockEraThreshold — snapshot time gate
 #include "web_assets_manifest.h"
+#include "recording_manager.h"
+#include "playback.h"
 
 namespace visioncam {
 
@@ -1244,6 +1246,431 @@ static esp_err_t storageHandler(httpd_req_t* req) {
                           "unknown action");
 }
 
+// --- GET /recording/status --- (Phase 3 task 3.3)
+static esp_err_t recordingStatusHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    RecordingState st{};
+    if (visioncam::recordingManagerState(&st) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "recording status failed");
+    }
+    const char* st_str = (st == RecordingState::Recording) ? "recording"
+                                                           : "idle";
+    char payload[128] = {};
+    std::snprintf(payload, sizeof(payload),
+                  "{\"state\":\"%s\",\"schema_version\":1}", st_str);
+    return httpReplyOk(req, rid, payload);
+}
+
+// --- GET /recording/config --- (Phase 3 task 3.3)
+static esp_err_t recordingConfigGetHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    RecordingConfig cfg{};
+    if (visioncam::recordingManagerGetConfig(&cfg) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "recording config read failed");
+    }
+    char payload[256] = {};
+    std::snprintf(payload, sizeof(payload),
+                  "{\"enabled\":%s,\"capture_fps\":%u,\"segment_duration_s\":%u,"
+                  "\"min_duration_s\":%u,\"max_storage_percent\":%u,"
+                  "\"post_event_s\":%u,\"pre_event_s\":%u,"
+                  "\"schema_version\":1}",
+                  cfg.enabled ? "true" : "false",
+                  static_cast<unsigned int>(cfg.capture_fps),
+                  static_cast<unsigned int>(cfg.segment_duration_s),
+                  static_cast<unsigned int>(cfg.min_duration_s),
+                  static_cast<unsigned int>(cfg.max_storage_percent),
+                  static_cast<unsigned int>(cfg.post_event_s),
+                  static_cast<unsigned int>(cfg.pre_event_s));
+    return httpReplyOk(req, rid, payload);
+}
+
+// --- PUT /recording/config --- (Phase 3 task 3.3; SPEC 7 update process)
+static esp_err_t recordingConfigPutHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    if (requireCsrf(req) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::CsrfInvalid,
+                              "CSRF token missing or invalid");
+    }
+    char body[256] = {};
+    size_t blen = 0;
+    if (readJsonBody(req, body, sizeof(body), blen) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "invalid JSON body");
+    }
+    RecordingConfig cur{};
+    if (visioncam::recordingManagerGetConfig(&cur) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "recording config read failed");
+    }
+    RecordingConfig cand = cur;
+    char val[16] = {};
+    bool any = false;
+    if (jsonScalar(body, "\"enabled\"", val, sizeof(val))) {
+        cand.enabled = (std::strcmp(val, "true") == 0 ||
+                        std::strcmp(val, "1") == 0);
+        any = true;
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"capture_fps\"", val, sizeof(val))) {
+        uint32_t fps = 0;
+        if (!parseU32Strict(val, fps) || fps > 60) {
+            return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                  "capture_fps must be 1..60");
+        }
+        cand.capture_fps = fps;
+        any = true;
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"segment_duration_s\"", val, sizeof(val))) {
+        uint32_t sd = 0;
+        if (!parseU32Strict(val, sd) || sd > 3600) {
+            return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                  "segment_duration_s must be 1..3600");
+        }
+        cand.segment_duration_s = sd;
+        any = true;
+    }
+    if (!any) {
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "no recording fields in body");
+    }
+    RecordingConfig effective{};
+    if (visioncam::recordingManagerSetConfig(&cand, &effective) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "recording config write failed");
+    }
+    char payload[256] = {};
+    std::snprintf(payload, sizeof(payload),
+                  "{\"enabled\":%s,\"capture_fps\":%u,\"segment_duration_s\":%u,"
+                  "\"min_duration_s\":%u,\"max_storage_percent\":%u,"
+                  "\"post_event_s\":%u,\"pre_event_s\":%u,"
+                  "\"schema_version\":1}",
+                  effective.enabled ? "true" : "false",
+                  static_cast<unsigned int>(effective.capture_fps),
+                  static_cast<unsigned int>(effective.segment_duration_s),
+                  static_cast<unsigned int>(effective.min_duration_s),
+                  static_cast<unsigned int>(effective.max_storage_percent),
+                  static_cast<unsigned int>(effective.post_event_s),
+                  static_cast<unsigned int>(effective.pre_event_s));
+    return httpReplyOk(req, rid, payload);
+}
+
+// --- POST /recording/start --- (Phase 3 task 3.3)
+static esp_err_t recordingStartHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    if (requireCsrf(req) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::CsrfInvalid,
+                              "CSRF token missing or invalid");
+    }
+    char media_id[32] = {};
+    esp_err_t err = visioncam::recordingManagerStartManual(
+        media_id, sizeof(media_id));
+    if (err != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "recording start failed");
+    }
+    char payload[80] = {};
+    std::snprintf(payload, sizeof(payload),
+                  "{\"recording_id\":\"%s\",\"started\":true}", media_id);
+    return httpReplyOk(req, rid, payload);
+}
+
+// --- POST /recording/stop --- (Phase 3 task 3.3)
+static esp_err_t recordingStopHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    if (requireCsrf(req) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::CsrfInvalid,
+                              "CSRF token missing or invalid");
+    }
+    esp_err_t err = visioncam::recordingManagerStop();
+    if (err != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "recording stop failed");
+    }
+    return httpReplyOk(req, rid, "{\"stopped\":true}");
+}
+
+// --- GET /recordings --- (Phase 3 task 3.5; paginated list)
+// Dispatches on ?action=metadata|download|play for sub-resources.
+static esp_err_t recordingMetadataHandler(httpd_req_t* req);
+static esp_err_t recordingDownloadHandler(httpd_req_t* req);
+static esp_err_t recordingPlayHandler(httpd_req_t* req);
+
+static esp_err_t recordingsListHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    char qs[128] = {};
+    size_t qs_size = sizeof(qs);
+    if (httpd_req_get_url_query_str(req, qs, qs_size) != ESP_OK)
+        qs[0] = '\0';
+    char action[16] = {};
+    httpd_query_key_value(qs, "action", action, sizeof(action));
+
+    if (std::strcmp(action, "metadata") == 0)
+        return recordingMetadataHandler(req);
+    if (std::strcmp(action, "download") == 0)
+        return recordingDownloadHandler(req);
+    if (std::strcmp(action, "play") == 0)
+        return recordingPlayHandler(req);
+
+    // Default: paginated list
+    uint32_t offset = 0, limit = 12;
+    char val[16] = {};
+    if (httpd_query_key_value(qs, "offset", val, sizeof(val)) == ESP_OK)
+        offset = static_cast<uint32_t>(std::atoi(val));
+    val[0] = '\0';
+    if (httpd_query_key_value(qs, "limit", val, sizeof(val)) == ESP_OK)
+        limit = static_cast<uint32_t>(std::atoi(val));
+    if (limit > 100) limit = 100;
+
+    RecordingInfo recs[12] = {};
+    size_t count = 0;
+    bool has_more = false;
+    if (visioncam::recordingManagerList(offset, limit, recs, 12, &count,
+                                        &has_more) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "recordings list failed");
+    }
+    void* payload_raw = std::malloc(4096);
+    HeapFree payload_guard{payload_raw};
+    if (payload_raw == nullptr) {
+        return httpReplyError(req, rid, ErrCode::Internal, "no memory");
+    }
+    auto* payload = static_cast<char*>(payload_raw);
+    const size_t cap = 4096;
+    int n = std::snprintf(payload, cap,
+                          "{\"has_more\":%s,\"count\":%u,\"offset\":%u,"
+                          "\"limit\":%u,\"items\":[",
+                          has_more ? "true" : "false",
+                          static_cast<unsigned int>(count),
+                          static_cast<unsigned int>(offset),
+                          static_cast<unsigned int>(limit));
+    if (n < 0 || static_cast<size_t>(n) >= cap) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "recordings payload overflow");
+    }
+    for (size_t i = 0; i < count; ++i) {
+        const int m = std::snprintf(
+            payload + n, cap - static_cast<size_t>(n),
+            "%s{\"recording_id\":\"%s\",\"category\":\"%s\","
+            "\"start_time\":%u,\"duration_s\":%u,\"frame_count\":%u,"
+            "\"size_bytes\":%u,\"width\":%u,\"height\":%u,"
+            "\"fps\":%u,\"status\":\"%s\",\"recovered\":%s}",
+            (i == 0) ? "" : ",",
+            recs[i].recording_id,
+            recs[i].category,
+            static_cast<unsigned int>(recs[i].start_time),
+            static_cast<unsigned int>(recs[i].duration_s),
+            static_cast<unsigned int>(recs[i].frame_count),
+            static_cast<unsigned int>(recs[i].size_bytes),
+            static_cast<unsigned int>(recs[i].width),
+            static_cast<unsigned int>(recs[i].height),
+            static_cast<unsigned int>(recs[i].fps),
+            recs[i].status,
+            recs[i].recovered ? "true" : "false");
+        if (m < 0 || static_cast<size_t>(n + m) >= cap) {
+            return httpReplyError(req, rid, ErrCode::Internal,
+                                  "recordings payload overflow");
+        }
+        n += m;
+    }
+    const int tail = std::snprintf(payload + n, cap - static_cast<size_t>(n),
+                                   "]}");
+    if (tail < 0 || static_cast<size_t>(n + tail) >= cap) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "recordings payload overflow");
+    }
+    return httpReplyOk(req, rid, payload);
+}
+
+// --- GET /recordings/{id} --- metadata
+static esp_err_t recordingMetadataHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    char qs[128] = {};
+    size_t qs_size = sizeof(qs);
+    if (httpd_req_get_url_query_str(req, qs, qs_size) != ESP_OK)
+        qs[0] = '\0';
+    char rec_id[32] = {};
+    httpd_query_key_value(qs, "id", rec_id, sizeof(rec_id));
+    if (rec_id[0] == '\0') {
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "recording id required");
+    }
+    RecordingInfo info{};
+    if (visioncam::recordingManagerLookup(rec_id, &info) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::NotFound,
+                              "recording not found");
+    }
+    char payload[256] = {};
+    std::snprintf(payload, sizeof(payload),
+                  "{\"recording_id\":\"%s\",\"category\":\"%s\","
+                  "\"start_time\":%u,\"duration_s\":%u,\"frame_count\":%u,"
+                  "\"size_bytes\":%u,\"width\":%u,\"height\":%u,"
+                  "\"fps\":%u,\"status\":\"%s\",\"recovered\":%s,"
+                  "\"schema_version\":1}",
+                  info.recording_id,
+                  info.category,
+                  static_cast<unsigned int>(info.start_time),
+                  static_cast<unsigned int>(info.duration_s),
+                  static_cast<unsigned int>(info.frame_count),
+                  static_cast<unsigned int>(info.size_bytes),
+                  static_cast<unsigned int>(info.width),
+                  static_cast<unsigned int>(info.height),
+                  static_cast<unsigned int>(info.fps),
+                  info.status,
+                  info.recovered ? "true" : "false");
+    return httpReplyOk(req, rid, payload);
+}
+
+// --- GET /recordings/{id}/download --- download AVI bytes
+static esp_err_t recordingDownloadHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    char qs[128] = {};
+    size_t qs_size = sizeof(qs);
+    if (httpd_req_get_url_query_str(req, qs, qs_size) != ESP_OK)
+        qs[0] = '\0';
+    char rec_id[32] = {};
+    httpd_query_key_value(qs, "id", rec_id, sizeof(rec_id));
+    if (rec_id[0] == '\0') {
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "recording id required");
+    }
+    RecordingInfo info{};
+    if (visioncam::recordingManagerLookup(rec_id, &info) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::NotFound,
+                              "recording not found");
+    }
+    uint32_t fsize = info.size_bytes;
+    if (fsize == 0 || fsize > 8 * 1024 * 1024) fsize = 8 * 1024 * 1024;
+    uint8_t* fbuf = static_cast<uint8_t*>(malloc(fsize));
+    if (fbuf == nullptr) {
+        return httpReplyError(req, rid, ErrCode::Internal, "no memory");
+    }
+    size_t got = 0;
+    esp_err_t rerr = visioncam::storageReadFile(info.path, fbuf, fsize, &got);
+    if (rerr != ESP_OK || got == 0) {
+        free(fbuf);
+        return httpReplyError(req, rid, ErrCode::NotFound,
+                              "recording file not found");
+    }
+    httpd_resp_set_type(req, "video/x-msvideo");
+    httpd_resp_set_hdr(req, "Content-Disposition",
+                       std::string("attachment; filename=\"")
+                           .append(info.recording_id)
+                           .append(".avi\"")
+                           .c_str());
+    size_t sent = 0;
+    while (sent < got) {
+        const size_t chunk = std::min(got - sent, static_cast<size_t>(2048));
+        if (httpd_resp_send_chunk(req,
+                                  reinterpret_cast<const char*>(fbuf + sent),
+                                  chunk) != ESP_OK) {
+            free(fbuf);
+            return ESP_FAIL;
+        }
+        sent += chunk;
+    }
+    httpd_resp_send_chunk(req, nullptr, 0);
+    free(fbuf);
+    return ESP_OK;
+}
+
+// --- GET /recordings/{id}/play --- server-side MJPEG replay
+static esp_err_t recordingPlayHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    char qs[128] = {};
+    size_t qs_size = sizeof(qs);
+    if (httpd_req_get_url_query_str(req, qs, qs_size) != ESP_OK)
+        qs[0] = '\0';
+    char rec_id[32] = {};
+    httpd_query_key_value(qs, "id", rec_id, sizeof(rec_id));
+    if (rec_id[0] == '\0') {
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "recording id required");
+    }
+    // Check if playback can start (throughput share, etc.):
+    PlaybackResult pr = visioncam::playbackCanStart(rec_id);
+    if (pr == PlaybackResult::Busy) {
+        return httpReplyError(req, rid, ErrCode::PlaybackBusy,
+                              "playback busy - recording has priority");
+    }
+    if (pr != PlaybackResult::Ok) {
+        return httpReplyError(req, rid, ErrCode::NotFound,
+                              "recording not available for playback");
+    }
+    uint32_t start_frame = 0, start_ms = 0;
+    char val[16] = {};
+    if (httpd_query_key_value(qs, "start_frame", val, sizeof(val)) == ESP_OK)
+        start_frame = static_cast<uint32_t>(std::atoi(val));
+    val[0] = '\0';
+    if (httpd_query_key_value(qs, "start_ms", val, sizeof(val)) == ESP_OK)
+        start_ms = static_cast<uint32_t>(std::atoi(val));
+
+    esp_err_t err = visioncam::playbackStreamStart(req, rec_id,
+                                                   start_frame, start_ms);
+    if (err != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "playback start failed");
+    }
+    // Stream frames until done:
+    while (true) {
+        PlaybackResult result = visioncam::playbackStreamFrame(req);
+        if (result == PlaybackResult::Stopped) break;
+        if (result != PlaybackResult::Ok) {
+            visioncam::playbackStreamEnd(req);
+            return httpReplyError(req, rid, ErrCode::Internal,
+                                  "playback stream failed");
+        }
+    }
+    visioncam::playbackStreamEnd(req);
+    return ESP_OK;
+}
+
+// --- DELETE /recordings/{id} ---
+static esp_err_t recordingDeleteHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    if (requireCsrf(req) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::CsrfInvalid,
+                              "CSRF token missing or invalid");
+    }
+    char qs[128] = {};
+    size_t qs_size = sizeof(qs);
+    if (httpd_req_get_url_query_str(req, qs, qs_size) != ESP_OK)
+        qs[0] = '\0';
+    char rec_id[32] = {};
+    httpd_query_key_value(qs, "id", rec_id, sizeof(rec_id));
+    if (rec_id[0] == '\0') {
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "recording id required");
+    }
+    esp_err_t err = visioncam::recordingManagerDelete(rec_id);
+    if (err == ESP_ERR_NOT_FOUND) {
+        return httpReplyError(req, rid, ErrCode::NotFound,
+                              "recording not found");
+    }
+    if (err == ESP_ERR_INVALID_STATE) {
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "recording is active, stop first");
+    }
+    if (err != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "recording delete failed");
+    }
+    return httpReplyOk(req, rid, "{\"deleted\":true}");
+}
+
+
 // --- POST /snapshot --- (plan 02 task 2.3)
 // Capture a manual snapshot and save it to SD. Requires auth + CSRF.
 static esp_err_t snapshotCaptureHandler(httpd_req_t* req) {
@@ -1355,7 +1782,7 @@ esp_err_t webServerStart() {
     config.ctrl_port = 32768;
     config.stack_size = kHttpServerStack;
     config.max_open_sockets = kHttpMaxOpenSockets;
-    config.max_uri_handlers = 24;   // 14 Phase 1 routes + 6 Phase 2 storage routes + catch-all
+    config.max_uri_handlers = 32;   // Phase 1 (14) + Phase 2 (6) + Phase 3 (7) + catch-all
     config.lru_purge_enable = kHttpLruPurge;
     // The dispatcher's DEFAULT matcher is httpd_uri_match_simple(), an EXACT
     // length-and-prefix compare — a registered "/*" therefore never matches
@@ -1421,6 +1848,14 @@ static const httpd_uri_t s_routes[] = {
     {"/storage", HTTP_DELETE, storageHandler, nullptr},
     {"/storage", HTTP_POST, storageHandler, nullptr},
     {"/storage", HTTP_PUT, storageHandler, nullptr},
+    // Recording (Phase 3)
+    {"/recording/status", HTTP_GET, recordingStatusHandler, nullptr},
+    {"/recording/config", HTTP_GET, recordingConfigGetHandler, nullptr},
+    {"/recording/config", HTTP_PUT, recordingConfigPutHandler, nullptr},
+    {"/recording/start", HTTP_POST, recordingStartHandler, nullptr},
+    {"/recording/stop", HTTP_POST, recordingStopHandler, nullptr},
+    {"/recordings", HTTP_GET, recordingsListHandler, nullptr},
+    {"/recordings", HTTP_DELETE, recordingDeleteHandler, nullptr},
     // Catch-all static asset server (SPA fallback for unknown routes).
     // Specific API routes are registered above and match first.
     {"/*", HTTP_GET, assetHandler, nullptr},

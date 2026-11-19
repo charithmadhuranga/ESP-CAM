@@ -234,6 +234,16 @@ public:
         return backend_ ? backend_->mountPoint() : "";
     }
 
+    esp_err_t renameFile(const char* src, const char* dst) {
+        if (backend_ == nullptr) return ESP_ERR_INVALID_STATE;
+        return backend_->renameFile(src, dst);
+    }
+
+    esp_err_t removeFile(const char* path) {
+        if (backend_ == nullptr) return ESP_ERR_INVALID_STATE;
+        return backend_->removeFile(path);
+    }
+
     // ---- ID allocation ----------------------------------------------------
     esp_err_t allocateMediaId(MediaType type, char* out_id,
                               size_t out_cap) {
@@ -1600,6 +1610,19 @@ esp_err_t storageReadFile(const char* path, uint8_t* data, size_t len,
     if (g_mgr == nullptr) return ESP_ERR_INVALID_STATE;
     if (!g_mgr->pathIsUnderSd(path)) return ESP_ERR_INVALID_ARG;
     return g_mgr->readFile(path, data, len, out_len);
+}
+
+esp_err_t storageRenameFile(const char* src, const char* dst) {
+    if (g_mgr == nullptr) return ESP_ERR_INVALID_STATE;
+    if (!g_mgr->pathIsUnderSd(src) || !g_mgr->pathIsUnderSd(dst))
+        return ESP_ERR_INVALID_ARG;
+    return g_mgr->renameFile(src, dst);
+}
+
+esp_err_t storageRemoveFile(const char* path) {
+    if (g_mgr == nullptr) return ESP_ERR_INVALID_STATE;
+    if (!g_mgr->pathIsUnderSd(path)) return ESP_ERR_INVALID_ARG;
+    return g_mgr->removeFile(path);
 }
 
 }  // namespace visioncam

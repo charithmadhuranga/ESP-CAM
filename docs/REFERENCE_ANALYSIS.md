@@ -683,3 +683,105 @@ Every row above marked `UNVERIFIED` stays that way until a serial log or tool
 output exists (AGENTS rule 26). R1's published performance numbers are
 **targets**, not measurements, until reproduced on the owner's board —
 `.opencode/plans/owner-decisions.md` D2.
+
+## AVI recording engine — 2026-11-19
+
+- **Studied:** R1 `src/avi.cpp` @ abe84d8 (header template, index buffer,
+  header patching), `src/mjpeg2sd.cpp:226-267` (`saveFrame`),
+  `:269-383` (`closeAvi`), `:98-121` (`openAvi`), `:385-588` (`processFrame`)
+  @ abe84d8.
+- **What it does / limits / failure modes:**
+  - Container: fixed 310-byte RIFF/AVI header template at offset 0, `movi`
+    list of `00dc` JPEG chunks (4-byte marker + 4-byte size + JPEG content),
+    each padded to a 4-byte boundary, trailing `idx1` index (16 bytes per
+    frame: 4-byte marker + 4-byte flags + 4-byte offset + 4-byte size).
+  - Index built in a PSRAM buffer sized `(maxFrames+2)*16` (maxFrames=20000
+    → ~320 KB PSRAM). `buildAviIdx()` aborts with `doRestart("Need to reboot
+    if max frames changed")` if the buffer would overflow — no segment
+    rotation, no recovery.
+  - Sector-aligned staging: double-buffer `iSDbuffer[(RAMSIZE+CHUNK_HDR)*2]`
+    (R1's `RAMSIZE` = 8192), writes whole buffers only.
+  - Temporary name (`AVITEMP` = `current.avi`) → renamed to final
+    `dateTime_framesize_FPS_duration_count.avi` only after header+index
+    written. Per-day folders.
+  - Header stores **measured** FPS (`frameCnt / elapsed`), not requested FPS.
+  - Minimum duration: segments shorter than `minSeconds` (default 5 s) are
+    deleted unless event-marked.
+  - **Crash hazard:** header + index are written **only at close** (`closeAvi`
+    seeks to offset 0 and patches the header). A power loss during recording
+    leaves an unplayable `current.avi` with no recovery path.
+  - **Playback refusal:** `openSDfile()` checks `stopPlayback` / `isCapturing`
+    and refuses to play while capturing (`mjpeg2sd.cpp:656`).
+  - No audio support (VisionCam never records audio — SPEC §78).
+- **Decision:** **adopt** the RIFF/AVI on-disk layout and sector-aligned
+  write strategy; **adapt** everything else.
+- **Reason:** SPEC §4.6 mandates short segments (default 60 s), provisional
+  header at segment start, boot-time crash recovery scanner, measured-FPS
+  header, min-duration deletion, per-day folders with opaque-ID API, and
+  playback that never stalls recording. R1's "header only at close" and
+  "refuse playback during capture" are deliberate VisionCam divergences
+  (recorded in the divergence table above). The 310-byte header byte table
+  must be written fresh from the public RIFF/AVI spec, not copied (licence
+  rule).
+- **Divergence from R1:**
+  1. Short segments (default 60 s) vs R1's single long segment up to
+     `maxFrames` (20000 frames).
+  2. Provisional header at segment start + boot-time recovery scanner for
+     `*.tmp` segments (R1 has neither).
+  3. Segment rotation at duration/size/frame-count cap instead of `doRestart`
+     on index overflow.
+  4. Playback allowed concurrently with recording (lower priority, throughput
+     share check, `503 PLAYBACK_BUSY`) vs R1's refusal.
+  5. No `doRestart` / reboot on error — segment rotation instead.
+  6. Opaque recording IDs (`rec-…`) via API, never filesystem paths.
+  7. No audio support.
+- **Evidence:** Source confirmed at `src/avi.cpp:45-67` (header template),
+  `:102-103` (`IDX_ENTRY=16`), `:115` (`(maxFrames+2)*IDX_ENTRY` PSRAM
+  index), `:269-383` (`closeAvi` writes header only at close),
+  `:656` (playback refusal). R1 baseline FPS numbers in `docs/HARDWARE.md`
+  §4 (QVGA 30.8, VGA 20.6, SVGA 20.4, XGA 5.3, SXGA 6.2 @ quality 12) are
+  the acceptance bar — VisionCam must match within 10 %.
+
+## Playback path — 2026-11-19
+
+- **Studied:** R1 `src/mjpeg2sd.cpp:654-784` (`openSDfile`, `getNextFrame`),
+  `:786-795` (`stopPlaying`) @ abe84d8.
+- **What it does / limits / failure modes:**
+  - Server-side replay: device reads AVI from SD in `RAMSIZE` (8 KB) blocks,
+    walks `00dc` chunks, streams frames as `multipart/x-mixed-replace` MJPEG
+    at the recorded FPS. Browser renders in an `img`/canvas — no client-side
+    AVI parser.
+  - Double-buffer overlap technique: `memcpy(iSDbuffer, iSDbuffer+RAMSIZE,
+    CHUNK_HDR)` prevents a JPEG marker being split across buffer boundaries.
+  - Pacing via `vTaskDelayUntil(&lastWake, period)` where
+    `period = pdMS_TO_TICKS(recFPSinterval)` — playback at recorded FPS.
+  - Seeking by `start_frame` / `start_ms` from `idx1` (conceptually; R1's
+    `getNextFrame` walks sequentially from header offset).
+  - Playback stats logged (frames, SD read speed, busy %).
+  - Playback refused while capturing (`stopPlayback` / `isCapturing` check).
+  - Single stream slot per playback.
+- **Decision:** **adopt** server-side replay + double-buffer overlap +
+  `vTaskDelayUntil` pacing + `idx1`-based seek; **adapt** to ESP-IDF +
+  VisionCam concurrency rules.
+- **Reason:** SPEC §4.6 specifies server-side replay as primary, sector-multiple
+  block reads, `00dc` chunk walking, timed `multipart/x-mixed-replace` MJPEG
+  at recorded FPS, seek via `start_frame`/`start_ms` from `idx1`, and
+  playback that never stalls recording (`503 PLAYBACK_BUSY` if throughput
+  share exceeded).
+- **Divergence from R1:**
+  1. Playback runs at lower priority than the storage writer; allowed only
+     within a configured share of measured card throughput; `503 PLAYBACK_BUSY`
+     otherwise (R1 refuses outright).
+  2. Playback consumes one of the limited stream slots (max 2).
+  3. Frame delivery uses VisionCam's frame-lease mechanism (AGENTS rule 9)
+     instead of R1's direct `esp_camera_fb_get`/memcpy flow.
+  4. No playback during capture stalling — concurrent allowed.
+- **Evidence:** Source confirmed at `src/mjpeg2sd.cpp:654-784`. On-hardware
+  playback test: UNVERIFIED (Phase 3).
+
+## Evidence discipline
+
+Every row above marked `UNVERIFIED` stays that way until a serial log or tool
+output exists (AGENTS rule 26). R1's published performance numbers are
+**targets**, not measurements, until reproduced on the owner's board —
+`.opencode/plans/owner-decisions.md` D2.

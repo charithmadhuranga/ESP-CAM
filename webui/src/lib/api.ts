@@ -27,6 +27,10 @@ import type {
   MediaMetadata,
   MediaCategory,
   MetricsPayload,
+  RecordingConfig,
+  RecordingInfo,
+  RecordingListResponse,
+  RecordingStatus,
   RestartResponse,
   RetentionPreviewResponse,
   RetentionPolicy,
@@ -302,4 +306,109 @@ export async function captureSnapshot(): Promise<{
   reason?: string;
 }> {
   return post<{ media_id: string; captured: boolean }>("/snapshot");
+}
+
+// --- Recording (SPEC §6.4) ------------------------------------------------
+
+export async function getRecordingStatus(): Promise<RecordingStatus> {
+  return get<RecordingStatus>("/recording/status");
+}
+
+export async function getRecordingConfig(): Promise<RecordingConfig> {
+  return get<RecordingConfig>("/recording/config");
+}
+
+export async function putRecordingConfig(
+  body: Partial<RecordingConfig>
+): Promise<RecordingConfig> {
+  return put<RecordingConfig>("/recording/config", body);
+}
+
+export async function startRecording(): Promise<{
+  recording_id: string;
+  started: boolean;
+}> {
+  return post<{ recording_id: string; started: boolean }>("/recording/start");
+}
+
+export async function stopRecording(): Promise<{ stopped: boolean }> {
+  return post<{ stopped: boolean }>("/recording/stop");
+}
+
+export async function getRecordings({
+  offset = 0,
+  limit = 12,
+  signal,
+}: {
+  offset?: number;
+  limit?: number;
+  signal?: AbortSignal;
+}): Promise<RecordingListResponse> {
+  const qs = new URLSearchParams({ offset: String(offset), limit: String(limit) });
+  return get<RecordingListResponse>(`/recordings?${qs.toString()}`, signal);
+}
+
+export async function getRecordingMetadata(
+  recordingId: string,
+  signal?: AbortSignal
+): Promise<RecordingInfo> {
+  return get<RecordingInfo>(
+    `/recordings?action=metadata&id=${recordingId}`,
+    signal
+  );
+}
+
+export async function downloadRecording(
+  recordingId: string,
+  signal?: AbortSignal
+): Promise<Response> {
+  const res = await fetch(
+    `${BASE}/recordings?action=download&id=${recordingId}`,
+    {
+      method: "GET",
+      credentials: "include",
+      signal,
+    }
+  );
+  if (res.status === 401) {
+    if (onUnauthenticated) onUnauthenticated();
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(text || res.statusText);
+  }
+  return res;
+}
+
+export async function playRecording(
+  recordingId: string,
+  startFrame?: number,
+  startMs?: number,
+  signal?: AbortSignal
+): Promise<Response> {
+  const qs = new URLSearchParams();
+  if (startFrame !== undefined) qs.set("start_frame", String(startFrame));
+  if (startMs !== undefined) qs.set("start_ms", String(startMs));
+  const res = await fetch(
+    `${BASE}/recordings?action=play&id=${recordingId}&${qs.toString()}`,
+    {
+      method: "GET",
+      credentials: "include",
+      signal,
+    }
+  );
+  if (res.status === 401) {
+    if (onUnauthenticated) onUnauthenticated();
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(text || res.statusText);
+  }
+  return res;
+}
+
+export async function deleteRecording(
+  recordingId: string
+): Promise<{ deleted: boolean }> {
+  return del<{ deleted: boolean }>(`/recordings?action=delete&id=${recordingId}`);
 }

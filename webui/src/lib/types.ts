@@ -179,6 +179,50 @@ export interface RetentionRunResponse {
   schema_version: number;
 }
 
+// --- Recording (SPEC §6.4) ------------------------------------------------
+
+export type RecordingState = "idle" | "recording";
+
+export interface RecordingConfig {
+  enabled: boolean;
+  capture_fps: number;
+  frame_size: number;
+  width: number;
+  height: number;
+  segment_duration_s: number;
+  min_duration_s: number;
+  max_storage_percent: number;
+  post_event_s: number;
+  pre_event_s: number;
+}
+
+export interface RecordingInfo {
+  recording_id: string;
+  category: string;
+  start_time: number;
+  duration_s: number;
+  frame_count: number;
+  size_bytes: number;
+  width: number;
+  height: number;
+  fps: number;
+  status: string;
+  recovered: boolean;
+}
+
+export interface RecordingListResponse {
+  has_more: boolean;
+  count: number;
+  offset: number;
+  limit: number;
+  items: RecordingInfo[];
+}
+
+export interface RecordingStatus {
+  state: RecordingState;
+  schema_version: number;
+}
+
 // --- Error codes (API contract skill) ---------------------------------------
 export type ErrCode =
   | "UNAUTHENTICATED"

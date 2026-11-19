@@ -188,6 +188,12 @@ esp_err_t storageWriteFile(const char* path, const uint8_t* data,
 esp_err_t storageReadFile(const char* path, uint8_t* data, size_t len,
                           size_t* out_len);
 
+// Rename a file (temp -> final). Paths must be under /sdcard.
+esp_err_t storageRenameFile(const char* src, const char* dst);
+
+// Remove a file. Path must be under /sdcard.
+esp_err_t storageRemoveFile(const char* path);
+
 // Initialise the storage manager with a backend. Call once after
 // coreInit() and after the SD card is mounted.
 esp_err_t storageManagerInit(IStorageBackend* backend);

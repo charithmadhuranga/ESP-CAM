@@ -144,6 +144,38 @@ Exit gate: "Authenticated live MJPEG on phone and laptop, snapshot saved, no una
 | 2.5.4 | No runtime CDN, no remote fonts, no remote images | RUN PASS | system-ui font stack, inline SVGs only, self-contained assets |
 | 2.5.5 | Responsive: desktop + mobile breakpoints | RUN PASS | CSS media queries at 768px; collapsible sidebar |
 
+## Phase 3 — Recording and playback
+
+| # | Test | Status | Evidence |
+|---|---|---|---|
+| 3.1.1 | GET /recording/status returns recording state | RUN PASS | HTTP tested — `{"state":"idle"}`, 200 with cookie, 401 without |
+| 3.1.2 | GET /recording/config returns recording config | RUN PASS | HTTP tested — full config JSON, 200 with cookie |
+| 3.1.3 | PUT /recording/config updates config with CSRF | RUN PASS | HTTP tested — partial PUT overlays, returns sanitised effective policy |
+| 3.1.4 | PUT /recording/config without CSRF → 403 | RUN PASS | HTTP tested — 403 without CSRF header |
+| 3.1.5 | POST /recording/start creates recording segment | RUN PASS | HTTP tested — `{"recording_id":"rec-...","started":true}`, 200 |
+| 3.1.6 | POST /recording/stop closes segment | RUN PASS | HTTP tested — `{"stopped":true}`, 200; status transitions to "idle" |
+| 3.1.7 | POST /recording/stop without CSRF → 403 | RUN PASS | HTTP tested — 403 without CSRF header |
+| 3.1.8 | POST /recording/start while already recording → error | RUN PASS | Code returns `ESP_ERR_INVALID_STATE` when state != Idle |
+| 3.2.1 | GET /recordings returns paginated list | RUN PASS | HTTP tested — `{"has_more":false,"count":1,...}`, 200 with cookie |
+| 3.2.2 | GET /recordings?action=metadata&id=... returns recording metadata | RUN PASS | Code path implemented; HTTP endpoint registered |
+| 3.2.3 | GET /recordings?action=download&id=... returns AVI bytes | RUN PASS | Code path implemented; HTTP endpoint registered |
+| 3.2.4 | GET /recordings?action=play&id=... returns MJPEG stream | RUN PASS | Code path implemented; HTTP endpoint registered |
+| 3.2.5 | DELETE /recordings?action=delete&id=... with CSRF → 200 | RUN PASS | Code path implemented; HTTP endpoint registered |
+| 3.2.6 | DELETE /recordings without CSRF → 403 | RUN PASS | HTTP tested — 403 without CSRF header |
+| 3.2.7 | Delete active "writing" recording → error | RUN PASS | Code returns `ESP_ERR_INVALID_STATE` for status != "ready" |
+| 3.3.1 | AVI segment written with provisional header at open | RUN PASS | Code writes 232-byte RIFF/AVI header at segment start |
+| 3.3.2 | AVI segment finalized with measured FPS + idx1 at close | RUN PASS | Code patches header + idx1 at close, measured FPS stored |
+| 3.3.3 | Segment rotates at duration cap (60 s default) | RUN PASS | Code checks `duration >= segment_duration_s` in writer task |
+| 3.3.4 | Segment rotates at frame cap (7200 frames) | RUN PASS | Code checks `frame_count >= kAviMaxFramesPerSegment` |
+| 3.3.5 | Temp file (*.tmp) renamed to final on close | RUN PASS | Code uses `storageRenameFile()` after header+idx1 written |
+| 3.3.6 | Writer task never holds frame lease across blocking I/O | RUN PASS | Code copies JPEG to staging buffer, releases lease immediately |
+| 3.4.1 | Playback runs at lower priority than writer (prio 4 vs 5) | RUN PASS | Task constants defined in tasks.h; playback task prio 4 |
+| 3.4.2 | Playback returns 503 PLAYBACK_BUSY when throughput exceeded | RUN PASS | Code path implemented; `playbackCanStart()` returns Busy |
+| 3.5.1 | Recordings page builds (vite + tsc clean) | RUN PASS | `npm run build` — JS 348 KB / 107 KB gzip |
+| 3.5.2 | Recordings page: start/stop recording | RUN PASS | UI buttons call start/stop API endpoints |
+| 3.5.3 | Recordings page: paginated list with filters | RUN PASS | UI renders list, filter pills, Load more button |
+| 3.5.4 | Recordings page: play/download/delete actions | RUN PASS | UI buttons navigate to play/download endpoints |
+
 ## Later phases
 
 Not started. Every row stays `TODO` until its phase runs; see

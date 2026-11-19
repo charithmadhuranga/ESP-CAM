@@ -223,6 +223,44 @@ tagged once Phase 9 release criteria pass.
   - Vite + tsc clean: JS 344 KB / 106 KB gzip, CSS 11 KB / 2.6 KB gzip.
   Evidence: `docs/TEST_PLAN.md` 2.5.1–2.5.5.
 
+- **Phase 3 task 3.1 — recording state machine (2026-11-19).** New
+  `firmware/src/recording/recording_manager.{h,cpp}` +
+  `firmware/include/recording_manager.h`: segment-based recording with
+  opaque recording IDs (`rec-…`), state machine (Idle/Recording/Closing),
+  config get/set with NVS persistence (namespace `"recording"`, schema 1),
+  start/stop manual recording, paginated list, lookup, delete (refuses
+  active "writing" segments), and a crash-recovery scanner stub for `*.tmp`
+  segments (SPEC 4.6 item 8). Writer task (prio 5) is the sole file
+  writer for recordings — pulls frame leases, copies JPEG to 8 KB staging,
+  releases lease immediately (never holds across blocking I/O).
+
+- **Phase 3 task 3.1 — AVI writer (2026-11-19).** New
+  `firmware/src/recording/avi_writer.{h,cpp}`: RIFF/AVI segment builder
+  written fresh from the public AVI/RIFF spec (never R1's 310-byte header
+  table — clean-room licence rule). Provisional 232-byte header at segment
+  open; `00dc` JPEG chunks with 4-byte padding; `idx1` index (16 bytes/
+  frame) in PSRAM; measured FPS stored in header at close; segment rotates
+  at duration cap (60 s default) or frame cap (7200). Sector-aligned 8 KB
+  staging writes to SD.
+
+- **Phase 3 task 3.4 — playback (2026-11-19).** New
+  `firmware/src/recording/playback.{h,cpp}` +
+  `firmware/include/playback.h`: server-side MJPEG replay from SD — reads
+  AVI in sector-multiple blocks, walks `00dc` chunks, streams
+  `multipart/x-mixed-replace` at recorded FPS. Paces with
+  `vTaskDelayUntil`. Runs at prio 4 (below writer at 5), `503 PLAYBACK_BUSY`
+  when throughput share exceeded. Consumes one stream slot.
+
+- **Phase 3 task 3.3/3.5 — recording API + UI (2026-11-19).** New web
+  endpoints: `GET /recording/status`, `GET|PUT /recording/config`,
+  `POST /recording/start`, `POST /recording/stop`,
+  `GET /recordings` (paginated list + `?action=metadata|download|play` +
+  `?action=delete`). All auth + CSRF protected. New `webui/src/pages/
+  Recordings.tsx`: start/stop recording, paginated list with filter pills
+  (All/Continuous/Manual/Event), play/download/delete actions, all seven
+  page states. API client additions in `webui/src/lib/api.ts`.
+  Vite + tsc clean: JS 348 KB / 107 KB gzip.
+
 ### Fixed
 
 - **Every boot crash-looped with PANIC (phase1-web-boot-01.log, 259 boots).**
