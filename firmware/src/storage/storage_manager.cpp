@@ -244,6 +244,12 @@ public:
         return backend_->removeFile(path);
     }
 
+    esp_err_t statFile(const char* path, uint32_t* out_size,
+                       uint32_t* out_mtime) {
+        if (backend_ == nullptr) return ESP_ERR_INVALID_STATE;
+        return backend_->statFile(path, out_size, out_mtime);
+    }
+
     // ---- ID allocation ----------------------------------------------------
     esp_err_t allocateMediaId(MediaType type, char* out_id,
                               size_t out_cap) {
@@ -1623,6 +1629,13 @@ esp_err_t storageRemoveFile(const char* path) {
     if (g_mgr == nullptr) return ESP_ERR_INVALID_STATE;
     if (!g_mgr->pathIsUnderSd(path)) return ESP_ERR_INVALID_ARG;
     return g_mgr->removeFile(path);
+}
+
+esp_err_t storageStatFile(const char* path, uint32_t* out_size,
+                          uint32_t* out_mtime) {
+    if (g_mgr == nullptr) return ESP_ERR_INVALID_STATE;
+    if (!g_mgr->pathIsUnderSd(path)) return ESP_ERR_INVALID_ARG;
+    return g_mgr->statFile(path, out_size, out_mtime);
 }
 
 }  // namespace visioncam

@@ -50,6 +50,7 @@ idf_component_register(
         "motion/motion_manager.cpp"
         "timelapse/timelapse_manager.cpp"
         "ai/ai_manager.cpp"
+        "ai/tflite_micro_provider.cpp"
         "web_assets/web_asset_0.c"
         "web_assets/web_asset_1.c"
         "web_assets/web_asset_2.c"

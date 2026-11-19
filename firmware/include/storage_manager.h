@@ -191,6 +191,10 @@ esp_err_t storageReadFile(const char* path, uint8_t* data, size_t len,
 // Rename a file (temp -> final). Paths must be under /sdcard.
 esp_err_t storageRenameFile(const char* src, const char* dst);
 
+// Stat a file: get size/modtime. Path must be under /sdcard.
+esp_err_t storageStatFile(const char* path, uint32_t* out_size,
+                          uint32_t* out_mtime);
+
 // Remove a file. Path must be under /sdcard.
 esp_err_t storageRemoveFile(const char* path);
 

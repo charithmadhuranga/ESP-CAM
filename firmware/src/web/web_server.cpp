@@ -2123,6 +2123,202 @@ static esp_err_t aiEventsHandler(httpd_req_t* req) {
     return httpReplyOk(req, rid, payload);
 }
 
+// --- POST /ai/models/upload --- (Phase 6 task 6.3)
+// Streamed model upload to staging file. Never buffers whole model in RAM.
+// Uses httpd_req_recv loop with bounded chunks.
+static esp_err_t aiModelUploadHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    if (requireCsrf(req) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::CsrfInvalid,
+                              "CSRF token missing or invalid");
+    }
+    char qs[128] = {};
+    size_t qs_size = sizeof(qs);
+    if (httpd_req_get_url_query_str(req, qs, qs_size) != ESP_OK)
+        qs[0] = '\0';
+    char model_id[64] = {};
+    httpd_query_key_value(qs, "id", model_id, sizeof(model_id));
+    if (model_id[0] == '\0') {
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "model id required");
+    }
+
+    // Stream request body to staging file in bounded chunks:
+    char staging_path[128] = {};
+    int n = std::snprintf(staging_path, sizeof(staging_path),
+                          "/sdcard/models/staging/%s.tflite", model_id);
+    if (n < 0 || static_cast<size_t>(n) >= sizeof(staging_path)) {
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "model id too long");
+    }
+
+    // Remove any existing staged file with same id:
+    storageRemoveFile(staging_path);
+
+    size_t total_received = 0;
+    char recv_buf[1024] = {}; // bounded chunk, never whole model
+    int remaining = req->content_len;
+    esp_err_t err = ESP_OK;
+    while (remaining > 0) {
+        int recv = httpd_req_recv(req, recv_buf, sizeof(recv_buf));
+        if (recv <= 0) break;
+        total_received += recv;
+        if (total_received > 2 * 1024 * 1024) {
+            // Hard cap: 2 MB max
+            storageRemoveFile(staging_path);
+            return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                  "model too large (>2 MB)");
+        }
+        esp_err_t err = storageWriteFile(staging_path,
+                                         reinterpret_cast<const uint8_t*>(recv_buf),
+                                         recv);
+        if (err != ESP_OK) {
+            storageRemoveFile(staging_path);
+            return httpReplyError(req, rid, ErrCode::SdWriteFailed,
+                                  "model upload write failed");
+        }
+        remaining -= recv;
+    }
+
+    // Stage via TfliteMicroProvider:
+    void* file_buf = std::malloc(total_received);
+    if (file_buf == nullptr) {
+        storageRemoveFile(staging_path);
+        return httpReplyError(req, rid, ErrCode::Internal, "no memory");
+    }
+    size_t got = 0;
+    esp_err_t rerr = storageReadFile(staging_path,
+                                     reinterpret_cast<uint8_t*>(file_buf),
+                                     total_received, &got);
+    if (rerr != ESP_OK || got == 0) {
+        std::free(file_buf);
+        storageRemoveFile(staging_path);
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "model upload read failed");
+    }
+    err = visioncam::aiManagerUploadModel(model_id,
+                                          reinterpret_cast<uint8_t*>(file_buf),
+                                          got);
+    std::free(file_buf);
+    if (err != ESP_OK) {
+        storageRemoveFile(staging_path);
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "model upload stage failed");
+    }
+
+    char payload[128] = {};
+    std::snprintf(payload, sizeof(payload),
+                  "{\"model_id\":\"%s\",\"staged\":true,\"size_bytes\":%u}",
+                  model_id, static_cast<unsigned int>(got));
+    return httpReplyOk(req, rid, payload);
+}
+
+// --- POST /ai/models/{id}/validate --- (Phase 6 task 6.3)
+static esp_err_t aiModelValidateHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    if (requireCsrf(req) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::CsrfInvalid,
+                              "CSRF token missing or invalid");
+    }
+    char qs[128] = {};
+    size_t qs_size = sizeof(qs);
+    if (httpd_req_get_url_query_str(req, qs, qs_size) != ESP_OK)
+        qs[0] = '\0';
+    char model_id[64] = {};
+    httpd_query_key_value(qs, "id", model_id, sizeof(model_id));
+    if (model_id[0] == '\0') {
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "model id required");
+    }
+
+    esp_err_t err = visioncam::aiManagerValidateModel(model_id);
+    if (err != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "model validation failed");
+    }
+
+    char payload[128] = {};
+    std::snprintf(payload, sizeof(payload),
+                  "{\"model_id\":\"%s\",\"valid\":true,\"schema_version\":1}",
+                  model_id);
+    return httpReplyOk(req, rid, payload);
+}
+
+// --- POST /ai/models/{id}/activate --- (Phase 6 task 6.3)
+static esp_err_t aiModelActivateHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    if (requireCsrf(req) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::CsrfInvalid,
+                              "CSRF token missing or invalid");
+    }
+    char qs[128] = {};
+    size_t qs_size = sizeof(qs);
+    if (httpd_req_get_url_query_str(req, qs, qs_size) != ESP_OK)
+        qs[0] = '\0';
+    char model_id[64] = {};
+    httpd_query_key_value(qs, "id", model_id, sizeof(model_id));
+    if (model_id[0] == '\0') {
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "model id required");
+    }
+
+    esp_err_t err = visioncam::aiManagerActivateModel(model_id);
+    if (err == ESP_ERR_NOT_FOUND)
+        return httpReplyError(req, rid, ErrCode::NotFound,
+                              "model not found");
+    if (err != ESP_OK)
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "model activation failed");
+
+    // Switch provider to tflite_micro if not already:
+    visioncam::aiManagerSelectProvider(kProviderTflite);
+
+    char payload[128] = {};
+    std::snprintf(payload, sizeof(payload),
+                  "{\"model_id\":\"%s\",\"activated\":true}", model_id);
+    return httpReplyOk(req, rid, payload);
+}
+
+// --- POST /ai/models/deactivate --- (Phase 6 task 6.3)
+static esp_err_t aiModelDeactivateHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    if (requireCsrf(req) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::CsrfInvalid,
+                              "CSRF token missing or invalid");
+    }
+
+    esp_err_t err = visioncam::aiManagerDeactivateAI();
+    if (err != ESP_OK)
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "AI deactivation failed");
+
+    return httpReplyOk(req, rid, "{\"deactivated\":true}");
+}
+
+// --- POST /ai/models/rollback --- (Phase 6 task 6.3)
+static esp_err_t aiModelRollbackHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    if (requireCsrf(req) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::CsrfInvalid,
+                              "CSRF token missing or invalid");
+    }
+
+    esp_err_t err = visioncam::aiManagerRollbackModel();
+    if (err == ESP_ERR_INVALID_STATE)
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "no active model to roll back");
+    if (err != ESP_OK)
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "model rollback failed");
+
+    return httpReplyOk(req, rid, "{\"rolled_back\":true}");
+}
+
 // --- POST /snapshot --- (plan 02 task 2.3)
 // Dispatches on ?action=create|start|stop|generate|preview|download|delete
 static esp_err_t timelapseProjectsHandler(httpd_req_t* req) {
@@ -2499,6 +2695,11 @@ static const httpd_uri_t s_routes[] = {
     {"/ai/config", HTTP_PUT, aiConfigPutHandler, nullptr},
     {"/ai/models", HTTP_GET, aiModelsHandler, nullptr},
     {"/ai/events", HTTP_GET, aiEventsHandler, nullptr},
+    {"/ai/models/upload", HTTP_POST, aiModelUploadHandler, nullptr},
+    {"/ai/models/validate", HTTP_POST, aiModelValidateHandler, nullptr},
+    {"/ai/models/activate", HTTP_POST, aiModelActivateHandler, nullptr},
+    {"/ai/models/deactivate", HTTP_POST, aiModelDeactivateHandler, nullptr},
+    {"/ai/models/rollback", HTTP_POST, aiModelRollbackHandler, nullptr},
     // Catch-all static asset server (SPA fallback for unknown routes).
     // Specific API routes are registered above and match first.
     {"/*", HTTP_GET, assetHandler, nullptr},

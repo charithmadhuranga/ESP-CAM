@@ -28,6 +28,7 @@
 
 #include "event_bus.h"
 #include "tasks.h"
+#include "tflite_micro_provider.h"
 #include "wall_clock.h"
 
 namespace visioncam {
@@ -68,6 +69,7 @@ static bool g_initialized = false;
 // Active provider:
 static IInferenceProvider* g_provider = nullptr;
 static NoAiProvider* g_no_ai = nullptr;
+static TfliteMicroProvider* g_tflite = nullptr;
 
 // Bounded detection event cache:
 static AIDetectionEvent g_detections[kAIDetectionMaxEvents] = {};
@@ -170,6 +172,11 @@ esp_err_t aiManagerInit() {
         return err;
     }
 
+    // Create TfliteMicroProvider (available but returns NOT_SUPPORTED
+    // until the TFLM library is linked — owner decision D4):
+    g_tflite = new TfliteMicroProvider();
+    if (g_tflite == nullptr) return ESP_ERR_NO_MEM;
+
     // Select provider:
     err = aiManagerSelectProvider(g_config.provider.c_str());
     if (err != ESP_OK) {
@@ -203,6 +210,10 @@ esp_err_t aiManagerShutdown() {
     if (g_no_ai != nullptr) {
         delete g_no_ai;
         g_no_ai = nullptr;
+    }
+    if (g_tflite != nullptr) {
+        delete g_tflite;
+        g_tflite = nullptr;
     }
     return ESP_OK;
 }
@@ -321,21 +332,25 @@ esp_err_t aiManagerGetModelManifest(ModelManifest* /*out*/) {
     return ESP_ERR_NOT_SUPPORTED;
 }
 
-esp_err_t aiManagerUploadModel(const char* /*model_id*/,
-                               const uint8_t* /*data*/,
-                               size_t /*len*/) {
-    // Streamed model upload to /models/staging/ — not yet implemented
-    return ESP_ERR_NOT_SUPPORTED;
+esp_err_t aiManagerUploadModel(const char* model_id,
+                               const uint8_t* data, size_t len) {
+    if (g_tflite == nullptr) return ESP_ERR_INVALID_STATE;
+    return g_tflite->modelUploadStage(model_id, data, len);
 }
 
-esp_err_t aiManagerValidateModel(const char* /*model_id*/) {
-    // Model validation (header, checksum, operators, arena) — not yet implemented
-    return ESP_ERR_NOT_SUPPORTED;
+esp_err_t aiManagerValidateModel(const char* model_id) {
+    if (g_tflite == nullptr) return ESP_ERR_INVALID_STATE;
+    ModelManifest manifest{};
+    esp_err_t err = g_tflite->modelValidate(model_id, &manifest);
+    if (err != ESP_OK) return err;
+    // Manifest details could be returned via an out parameter, but for now
+    // we just validate:
+    return ESP_OK;
 }
 
-esp_err_t aiManagerActivateModel(const char* /*model_id*/) {
-    // Model activation (never overwrites active; keeps backup) — not yet implemented
-    return ESP_ERR_NOT_SUPPORTED;
+esp_err_t aiManagerActivateModel(const char* model_id) {
+    if (g_tflite == nullptr) return ESP_ERR_INVALID_STATE;
+    return g_tflite->modelActivate(model_id);
 }
 
 esp_err_t aiManagerDeactivateAI() {
@@ -345,8 +360,10 @@ esp_err_t aiManagerDeactivateAI() {
 }
 
 esp_err_t aiManagerRollbackModel() {
-    // Roll back to last-known-good model — not yet implemented
-    return ESP_ERR_NOT_SUPPORTED;
+    if (g_tflite == nullptr) return ESP_ERR_INVALID_STATE;
+    // Rollback applies to the currently active model; find it from config:
+    if (g_config.active_model_id.empty()) return ESP_ERR_INVALID_STATE;
+    return g_tflite->modelRollback(g_config.active_model_id.c_str());
 }
 
 esp_err_t aiManagerListEvents(uint32_t offset, uint32_t limit,

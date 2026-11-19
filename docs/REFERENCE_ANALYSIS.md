@@ -906,7 +906,10 @@ output exists (AGENTS rule 26). R1's published performance numbers are
      AI detection is Phase 6).
 - **Evidence:** SPEC §4.4, §4.4.1, §4.4.2, §4.4.3 define the interface.
   On-hardware AI test: UNVERIFIED (Phase 6) — TFLM on original ESP32 is
-  owner decision D4 (pending).
+  owner decision D4 (pending). TfliteMicroProvider class is implemented
+  with model staging, validation, activation, and rollback, but returns
+  ESP_ERR_NOT_SUPPORTED for all TFLM-specific operations until the
+  tensorflow-lite-micro library is linked as a managed component.
 
 ## Evidence discipline
 

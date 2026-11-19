@@ -293,6 +293,22 @@ tagged once Phase 9 release criteria pass.
   API: `GET/POST/DELETE /timelapse/projects` (+`?action=create|start|stop`
   params). All auth + CSRF protected.
 
+- **Phase 6 task 6.6 — TFLite Micro on-device AI (2026-11-19).** New
+  `firmware/src/ai/tflite_micro_provider.{h,cpp}` +
+  `firmware/include/tflite_micro_provider.h`: TFLite Micro provider class
+  with model staging (`modelUploadStage`), validation (`modelValidate` —
+  checks TFLM flatbuffer magic number), activation (`modelActivate` — moves
+  staged to `/models/active/`, backs up previous to `/models/backup/`),
+  rollback (`modelRollback` — restores from backup), and deletion
+  (`modelDelete`). All TFLM-specific operations return
+  `ESP_ERR_NOT_SUPPORTED` until the owner links the
+  tensorflow-lite-micro component (owner decision D4 pending). Model files
+  live under `/models/{staging,active,backup}/` per SPEC §4.8.
+  AI API: `POST /ai/models/upload`, `/ai/models/validate`,
+  `/ai/models/activate`, `/ai/models/deactivate`, `/ai/models/rollback` —
+  all auth + CSRF protected. Model upload streams to staging file in
+  bounded chunks (never buffers whole model in RAM, 2 MB hard cap).
+
 ### Fixed
 
 - **Every boot crash-looped with PANIC (phase1-web-boot-01.log, 259 boots).**

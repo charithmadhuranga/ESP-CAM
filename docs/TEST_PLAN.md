@@ -232,6 +232,19 @@ Exit gate: "Authenticated live MJPEG on phone and laptop, snapshot saved, no una
 | 6.4.4 | Model validation not yet implemented | RUN PASS | Code — returns ESP_ERR_NOT_SUPPORTED |
 | 6.4.5 | Model activation/rollback not yet implemented | RUN PASS | Code — returns ESP_ERR_NOT_SUPPORTED |
 
+## Phase 6 — AI framework (TFLite Micro on-device)
+
+| # | Test | Status | Evidence |
+|---|---|---|---|
+| 6.6.1 | POST /ai/models/upload stages model to /models/staging/ | RUN PASS | HTTP tested — `{"model_id":"test_model_v1","staged":true,"size_bytes":40}`, 200 with cookie + CSRF |
+| 6.6.2 | POST /ai/models/upload without CSRF → 403 | RUN PASS | HTTP tested — 403 without CSRF header |
+| 6.6.3 | Unauthenticated POST /ai/models/upload → 401 | RUN PASS | HTTP tested — 401 without cookie |
+| 6.6.4 | POST /ai/models/validate rejects invalid model (bad magic) | RUN PASS | HTTP tested — 400 with validation error |
+| 6.6.5 | POST /ai/models/activate fails without valid staged model | RUN PASS | HTTP tested — 500 activation failed |
+| 6.6.6 | POST /ai/models/deactivate switches to NoAiProvider | RUN PASS | HTTP tested — `{"deactivated":true}`, 200 |
+| 6.6.7 | POST /ai/models/rollback fails without active model | RUN PASS | HTTP tested — 400 no active model |
+| 6.6.8 | TfliteMicroProvider returns ESP_ERR_NOT_SUPPORTED (D4 pending) | RUN PASS | Code — begin(), infer(), modelValidate() all return ESP_ERR_NOT_SUPPORTED until TFLM library linked |
+
 ## Later phases
 
 Not started. Every row stays `TODO` until its phase runs; see
