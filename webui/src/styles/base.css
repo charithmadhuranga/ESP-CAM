@@ -95,12 +95,25 @@ td .button { margin: 2px 4px 2px 0; }
 .button-quiet { color: var(--muted); border-color: var(--border); background: transparent; }
 .button-danger { color: #ffc0c0; border-color: rgba(242,107,107,.35); background: rgba(242,107,107,.09); }
 .button-danger:hover:not(:disabled) { background: rgba(242,107,107,.18); }
+.button-flash-active { color: #f0c17a; border-color: rgba(230,162,60,.35); background: rgba(230,162,60,.1); }
+.button-flash-active:hover:not(:disabled) { background: rgba(230,162,60,.18); }
+.recording-button-dot, #recording-badge[data-state="recording"]::before {
+  display: inline-block; width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%;
+  background: #f26b6b; animation: recording-pulse 1.15s ease-in-out infinite;
+}
+.recording-button-dot { margin-right: 7px; }
+#recording-badge[data-state="recording"]::before { width: 6px; height: 6px; margin-right: 6px; content: ""; }
+@keyframes recording-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(242,107,107,.36); }
+  50% { opacity: .58; box-shadow: 0 0 0 4px rgba(242,107,107,0); }
+}
 .button-small { min-height: 29px; padding: 5px 8px; font-size: 10px; }
 .button-wide { width: 100%; margin-top: 8px; }
 .status-chip { display: inline-flex; min-height: 23px; align-items: center; padding: 3px 8px; border: 1px solid var(--border); border-radius: 99px; color: var(--muted); background: var(--surface-raised); font-size: 10px; font-weight: 600; white-space: nowrap; }
 .status-chip[data-state="good"] { color: #8ce2b1; border-color: rgba(47,191,113,.28); background: rgba(47,191,113,.1); }
 .status-chip[data-state="warn"] { color: #f0c17a; border-color: rgba(230,162,60,.3); background: rgba(230,162,60,.1); }
 .status-chip[data-state="bad"] { color: #ff9a9a; border-color: rgba(242,107,107,.3); background: rgba(242,107,107,.1); }
+.status-chip[data-state="recording"] { color: #ff9a9a; border-color: rgba(242,107,107,.34); background: rgba(242,107,107,.1); }
 .status-chip[data-state="muted"] { color: var(--muted); }
 .live-layout { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(230px, .6fr); align-items: start; gap: 14px; }
 .stream-panel { padding: 10px; }
@@ -190,4 +203,5 @@ td .button { margin: 2px 4px 2px 0; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
+  .recording-button-dot, #recording-badge[data-state="recording"]::before { animation: none; }
 }

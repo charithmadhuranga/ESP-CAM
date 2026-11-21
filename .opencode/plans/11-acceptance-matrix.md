@@ -40,9 +40,10 @@ Maintain the live status in `docs/TEST_PLAN.md`; this file is the map.
 
 | Item | Phase | Skill | Status |
 |---|---|---|---|
-| Live stream loads on desktop | 1 | `visioncam-webui` | TODO |
-| Live stream loads on mobile | 1 | `visioncam-webui` | TODO |
-| Stream disconnect cleans resources | 1 | `visioncam-dev` | TODO |
+| Live stream loads on desktop | 1 | `visioncam-webui` | UNVERIFIED |
+| Live stream loads on mobile | 1 | `visioncam-webui` | UNVERIFIED |
+| Stream disconnect cleans resources | 1 | `visioncam-dev` | UNVERIFIED |
+| Flash toggle works with SD mounted in 1-bit mode and turns off on stream close | 1 | `visioncam-hardware-validation` | UNVERIFIED |
 | Snapshot is valid JPEG | 1, 2 | `visioncam-hardware-validation` | TODO |
 | Camera settings apply and persist | 1 | `visioncam-api-contract` | TODO |
 | Maximum client limit enforced | 1 | `visioncam-dev` | TODO |

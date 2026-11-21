@@ -48,6 +48,7 @@ test('all registered JSON API surfaces have a frontend method', async () => {
     api.cameraStatus(),
     api.cameraSettings(),
     api.saveCameraSettings({ framesize: 10, quality: 12 }),
+    api.setFlash(true),
     api.recordingStatus(),
     api.recordingConfig(),
     api.saveRecordingConfig({ enabled: true, capture_fps: 10, segment_duration_s: 60 }),
@@ -89,6 +90,7 @@ test('all registered JSON API surfaces have a frontend method', async () => {
     'GET /device', 'GET /status', 'GET /health', 'GET /metrics', 'POST /wifi/config',
     'POST /device/restart',
     'GET /camera/status', 'GET /camera/settings', 'PUT /camera/settings',
+    'POST /camera/flash',
     'GET /recording/status', 'GET /recording/config', 'PUT /recording/config',
     'POST /recording/start', 'POST /recording/stop', 'GET /recordings',
     'DELETE /recordings', 'POST /snapshot', 'GET /storage', 'DELETE /storage',
@@ -117,6 +119,9 @@ test('all registered JSON API surfaces have a frontend method', async () => {
   assert.equal(wifiRequest.options.body,
     JSON.stringify({ ssid: 'Example "WiFi"', password: 'fake\\test-password' }));
   assert.equal(wifiRequest.options.headers['X-CSRF-Token'], 'csrf+token');
+  const flashRequest = calls.find(({ url }) => url === '/camera/flash');
+  assert.equal(flashRequest.options.body, JSON.stringify({ enabled: true }));
+  assert.equal(flashRequest.options.headers['X-CSRF-Token'], 'csrf+token');
 });
 
 test('requests use cookie sessions and add the double-submit CSRF header on writes', async () => {

@@ -6,6 +6,15 @@ tagged once Phase 9 release criteria pass.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Live View streaming (2026-11-22).** Corrected MJPEG multipart framing
+  and moved the bounded stream to an ESP-IDF asynchronous request worker so
+  it no longer blocks capture, flash, or other HTTP controls. The UI now
+  reports a no-frames timeout instead of staying on “Connecting…” forever.
+  Added authenticated, CSRF-protected flash control; GPIO4 is driven low
+  after SD 1-bit mount and when the stream closes.
+
 ### Added
 
 - **Wi-Fi first-run provisioning (2026-11-21).** A device with no stored
@@ -71,6 +80,21 @@ tagged once Phase 9 release criteria pass.
   gzip.
 
 ### Fixed
+
+- **Recording playback and downloads (2026-11-21).** Corrected MJPEG
+  playback's multipart boundary and `movi` frame offset, and stream JPEG data
+  through a fixed 8 KB storage-manager reader. Recording downloads now stream
+  the indexed file size in 4 KB chunks instead of allocating up to 8 MiB and
+  truncating larger AVI files. Recording controls now use distinct Start/Stop
+  labels, a pulsing active indicator, synchronized state across pages, and
+  inline playback loading/error feedback. Hardware playback and download
+  remain **UNVERIFIED**.
+
+- **Recording lookup after reboot (2026-11-21).** Persist the bounded
+  recording index on the SD card, reload and validate it at startup, and
+  continue IDs from the highest saved ID so listed recordings remain
+  addressable after restart. Finalize `.tmp` segments to `.avi` on stop and
+  correct the stored byte count to match the actual AVI size.
 
 - **Setup AP health status (2026-11-21).** The health endpoint now treats
   the working provisioning AP as healthy when the camera is initialized,

@@ -35,6 +35,10 @@
 // one and counted — fresh frames matter more than a backlog for live
 // view, motion and snapshots alike. Frame data is never logged (AGENTS
 // coding standards); only lengths, ids and counters are.
+//
+// Subscriber registration is serialized against capture distribution.
+// The capture task uses a try-lock and accounts a dropped distribution
+// instead of blocking on a consumer lifecycle change.
 
 #pragma once
 

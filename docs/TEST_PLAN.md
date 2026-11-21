@@ -88,6 +88,7 @@ ESP32-CAM-MB. Evidence:
 | 1.2d | Device/status/health/metrics/restart endpoints | RUN PASS | HTTP tested: /device, /status, /health, /metrics all return 200 with valid session cookie, 401 without |
 | 1.2e | Camera settings: GET/PUT /camera/settings with framesize/quality validation | RUN PASS | HTTP tested: GET returns current settings, PUT applies live changes |
 | 1.2f | Camera capture: POST /camera/capture returns JPEG | RUN PASS | HTTP tested: authenticated POST returns 200 with valid JPEG image (640x480, 19759 bytes), unauthenticated POST returns 401 |
+| 1.2g | Live MJPEG delivers browser frames while control APIs stay responsive; flash POST requires auth + CSRF and turns GPIO4 off when the stream closes | **UNVERIFIED on hardware** | Local Playwright mock verifies rendered stream state and flash transitions. Board procedure: with SD mounted in 1-bit mode, verify live frames, exercise camera/recording controls, toggle the lamp, then leave Live View and confirm the lamp is off |
 | 1.3a | Web UI builds (vite + tsc clean) | RUN PASS | `npm run build` — JS 333 KB / 104 KB gzip, CSS 11 KB / 2.6 KB gzip |
 | 1.3b | All seven page states implemented (loading, empty, error, degraded, success, auth, confirm) | RUN PASS | Login, Overview, Live View, Settings pages each implement loading/empty/error/toast states; ConfirmDialog for destructive actions |
 | 1.3c | No runtime CDN, no remote fonts, no remote images | RUN PASS | system-ui font stack, inline SVGs only, all assets self-contained |
@@ -98,15 +99,16 @@ ESP32-CAM-MB. Evidence:
 
 ## Phase 1 exit gate status
 
-**Complete — all items verified with hardware evidence.**
+**Revalidation pending — the asynchronous live-stream changes are not yet
+verified on the board.**
 
 Exit gate: "Authenticated live MJPEG on phone and laptop, snapshot saved, no unauthenticated stream access, UI fully offline."
 
 | Gate item | Status | Notes |
 |---|---|---|
-| Authenticated live MJPEG on phone and laptop | RUN PASS | HTTP tested end-to-end on 10.152.141.4: login 200 with cookies, /camera/capture returns 200 with valid JPEG (640x480), /camera/stream requires auth cookie (401 without) |
+| Authenticated live MJPEG on phone and laptop | **UNVERIFIED** | Existing device test only established auth rejection; async delivery and rendered frames require a fresh hardware run |
 | Snapshot saved | RUN PASS | POST /camera/capture returns 200 with valid JPEG image (JFIF standard, 640x480) |
-| No unauthenticated stream access | RUN PASS | Unauthenticated POST /camera/capture returns 401 |
+| No unauthenticated stream access | RUN PASS | Unauthenticated GET /camera/stream returns 401 |
 | UI fully offline | RUN PASS | All assets embedded; no CDN, no remote fonts, no remote images |
 
 ## Phase 2 — Storage and snapshots (in progress)
@@ -158,8 +160,9 @@ Exit gate: "Authenticated live MJPEG on phone and laptop, snapshot saved, no una
 | 3.1.8 | POST /recording/start while already recording → error | RUN PASS | Code returns `ESP_ERR_INVALID_STATE` when state != Idle |
 | 3.2.1 | GET /recordings returns paginated list | RUN PASS | HTTP tested — `{"has_more":false,"count":1,...}`, 200 with cookie |
 | 3.2.2 | GET /recordings?action=metadata&id=... returns recording metadata | RUN PASS | Code path implemented; HTTP endpoint registered |
-| 3.2.3 | GET /recordings?action=download&id=... returns AVI bytes | RUN PASS | Code path implemented; HTTP endpoint registered |
-| 3.2.4 | GET /recordings?action=play&id=... returns MJPEG stream | RUN PASS | Code path implemented; HTTP endpoint registered |
+| 3.2.3 | GET /recordings?action=download&id=... streams the full AVI | CODE BUILD PASS; MOCK E2E PASS; HW UNVERIFIED | Storage-manager reader sends the indexed size in bounded 4 KB chunks (no 8 MiB cap); Playwright verifies an attachment larger than 8 MiB is complete |
+| 3.2.4 | GET /recordings?action=play&id=... returns MJPEG stream | CODE BUILD PASS; MOCK E2E PASS; HW UNVERIFIED | Correct multipart boundary and first `00dc` offset; MJPEG data is read in fixed 8 KB blocks |
+| 3.2.5 | Recording ID lookup/index survives a reboot | CODE BUILD PASS; HW UNVERIFIED | Ready segments are atomically finalized and the bounded SD index is validated/reloaded on startup |
 | 3.2.5 | DELETE /recordings?action=delete&id=... with CSRF → 200 | RUN PASS | Code path implemented; HTTP endpoint registered |
 | 3.2.6 | DELETE /recordings without CSRF → 403 | RUN PASS | HTTP tested — 403 without CSRF header |
 | 3.2.7 | Delete active "writing" recording → error | RUN PASS | Code returns `ESP_ERR_INVALID_STATE` for status != "ready" |
@@ -172,9 +175,9 @@ Exit gate: "Authenticated live MJPEG on phone and laptop, snapshot saved, no una
 | 3.4.1 | Playback runs at lower priority than writer (prio 4 vs 5) | RUN PASS | Task constants defined in tasks.h; playback task prio 4 |
 | 3.4.2 | Playback returns 503 PLAYBACK_BUSY when throughput exceeded | RUN PASS | Code path implemented; `playbackCanStart()` returns Busy |
 | 3.5.1 | Recordings page builds (vite + tsc clean) | RUN PASS | `npm run build` — JS 348 KB / 107 KB gzip |
-| 3.5.2 | Recordings page: start/stop recording | RUN PASS | UI buttons call start/stop API endpoints |
+| 3.5.2 | Recording controls show distinct, synchronized start/stop state | MOCK E2E PASS; HW UNVERIFIED | Playwright verifies all page controls, pressed state, danger styling, and recording badge through start/stop transitions |
 | 3.5.3 | Recordings page: paginated list with filters | RUN PASS | UI renders list, filter pills, Load more button |
-| 3.5.4 | Recordings page: play/download/delete actions | RUN PASS | UI buttons navigate to play/download endpoints |
+| 3.5.4 | Recordings page: playback feedback and full-size download | MOCK E2E PASS; HW UNVERIFIED | Playwright verifies multipart playback feedback and complete AVI attachment; physical AVI compatibility remains unverified |
 
 ## Phase 4 — Motion and events
 

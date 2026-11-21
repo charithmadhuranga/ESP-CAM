@@ -49,9 +49,10 @@ R1 divergence in `docs/REFERENCE_ANALYSIS.md`.
 | smoke test `main.cpp` | 0 | reset reason, PSRAM, heap reporting |
 | core services (`core_init`, event bus, RTC ring log, resource monitor) | 1 | `coreInit()` runs first in `app_main`; typed bounded event queue (depth 16, drop-oldest); RTC ring log + crash-loop counter with health point at end of boot; heap thresholds 32 KB free / 16 KB largest internal |
 | camera manager | 1 | R2 init, PID check, warm-up, PWDN retry; live frame-size/quality settings; SPEC 9.1 recovery ladder (5 sensor-reset rungs, then power-cycle + re-init; 2 s gate, 10-attempt cap, terminal `CameraFailed`) |
-| frame manager | 1 | sole `esp_camera_fb_get`/`fb_return` owner (AGENTS rule 9); bounded pool (4 records), per-consumer queues (depth 2, drop-oldest), ~10 ms yield per frame |
+| frame manager | 1 | sole `esp_camera_fb_get`/`fb_return` owner (AGENTS rule 9); bounded pool (4 records), per-consumer queues (depth 2, drop-oldest); subscriber lifecycle synchronized, capture try-lock drops instead of blocking; ~10 ms yield per frame |
 | Wi-Fi manager | 1 | station mode; lwIP always init (web server needs tcpip); reconnect with exponential backoff + jitter; `Connected` only on GOT_IP |
-| HTTP server + embedded UI | 1 | `esp_http_server` on port 80, lru_purge, 4 KB stack, 6 max_open_sockets, 16 max_uri_handlers; `{ok,data,error,request_id}` envelope; auth + CSRF on all routes; embedded gzipped web assets (React UI) served with Content-Encoding: gzip; SPA fallback to index.html |
+| HTTP server + embedded UI | 1 | `esp_http_server` on port 80; authenticated asynchronous MJPEG worker (6 KB stack, one client) keeps control APIs responsive; `{ok,data,error,request_id}` envelope; auth + CSRF on state-changing routes; embedded gzipped web assets served with Content-Encoding: gzip; SPA fallback to index.html |
+| camera flash | 1 | Authenticated `POST /camera/flash`; GPIO4 is enabled only after SD mounts in supported 1-bit mode, defaults off, and turns off when the stream closes |
 | auth | 1 | single user (admin/admin default); salted iterated SHA-256 password hash; RAM-only CSPRNG sessions; HTTP-only SameSite cookies; CSRF double-submit; login throttling; session revocation on password change |
 | storage manager | 2 | SD 1-bit mount, FATFS VFS, no auto-format |
 | media index | 2 | versioned, paginated, opaque media IDs; JSONL + rebuildable cache; per-line validation; boot-time self-test |
@@ -77,7 +78,7 @@ Never estimate — paste real numbers or write `UNVERIFIED`.
 | Phase | Free heap B | Min heap B | Largest block B | Stack HWM (worst task) | FPS measured | Date / build |
 |---|---|---|---|---|---|---|
 | 0 | 3,588,215 (after Wi-Fi, no capture loop) | 3,549,752 | 3,407,872 | UNVERIFIED | UNVERIFIED — needs the Phase 1 capture loop; the R1 bar it must match is now recorded below | D2 reflash 2026-11-15 (smoke figures below) |
-| 1 | 4,429,511 (after boot banner) | 3,535,512 (after Wi-Fi step 14) | 3,014,656 | `main` 6,508 B / `vc_capture` unknown (not reported yet) | UNVERIFIED — capture loop FPS needs Phase 1 stream test | 2026-11-17 (phase1-web-boot-04.log) |
+| 1 | 4,429,511 (after boot banner) | 3,535,512 (after Wi-Fi step 14) | 3,014,656 | `main` 6,508 B / `vc_capture` unknown / `vc_stream` 6,144 B configured (HWM UNVERIFIED) | UNVERIFIED — capture loop FPS needs Phase 1 stream test | 2026-11-17 baseline; async stream worker added after |
 | 2 | 3,539,887 (after Phase 2 UI snapshots + rebuild traffic) | 2,955,416 | 47,104 | `httpd` 7,264 B peak / `vc_capture` 3,712 B / `main` 5,604 B | UNVERIFIED — FPS needs Phase 3 capture loop | 2026-11-19 (phase2_full.log) |
 | 3 | 3,342,704 (after recording writer + playback tasks) | 2,955,416 | 47,104 | `httpd` 7,264 B / `vc_writer` UNVERIFIED / `vc_capture` 3,712 B | UNVERIFIED — recording FPS needs capture loop integration | 2026-11-19 (phase3 build) |
 | 4 | 2,955,416 | 2,955,416 | 47,104 | `httpd` 7,264 B / `vc_motion` UNVERIFIED / `vc_capture` 3,712 B | UNVERIFIED — motion FPS needs capture loop | 2026-11-19 (phase4 build) |
@@ -85,6 +86,11 @@ Never estimate — paste real numbers or write `UNVERIFIED`.
 | 6 | 2,955,416 | 2,955,416 | 47,104 | `httpd` 7,264 B / `vc_ai` UNVERIFIED / `vc_capture` 3,712 B | UNVERIFIED — AI FPS needs capture loop | 2026-11-19 (phase6 build) |
 | 7 | 3,535,512 (after MQTT worker + HA discovery) | 3,535,512 | 3,014,656 | `vc_mqtt` 6,468 B / `vc_capture` 3,712 B | UNVERIFIED | 2026-11-21 (phase7 build) |
 | 8 | 102,252 used / 327,680 total (31.2% RAM) | 3,535,512 | 3,014,656 | `vc_netstore` 3,444 B / `httpd` 7,264 B / `vc_capture` 3,712 B | UNVERIFIED | 2026-11-21 (phase8 build) |
+
+Latest stream/flash build: 102,332 B RAM (31.2%) and 1,265,443 B flash
+(80.5% of the OTA app slot). The one live-stream worker uses a configured
+6,144 B stack; its high-water mark and on-board stream/flash behavior remain
+UNVERIFIED.
 
 **Smoke-run measurements (2026-11-17, board attached, evidence in
 `docs/evidence/`):**

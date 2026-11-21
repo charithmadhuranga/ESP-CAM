@@ -3,7 +3,7 @@
 //
 // Every number here is a STARTING ESTIMATE (SPEC section 8.1): priorities
 // are chosen against the measured R1 reference (SPEC 8.1.1 — capture 6,
-// HTTP/stream 5, playback 4, telemetry 3) and stacks against R1's 4 KB
+// HTTP 5, playback/stream 4, telemetry 3) and stacks against R1's 4 KB
 // capture / 4 KB HTTP on the original ESP32. The stack high-water mark of
 // each task is MEASURED on the board and recorded in docs/ARCHITECTURE.md
 // section 4 at the end of Phase 1 — never estimated twice.
@@ -36,9 +36,9 @@
 // by a stack that ran off its bottom (a stack grows down into the block
 // below it, and FreeRTOS allocates the stack BEFORE the TCB, so an earlier
 // task's TCB sits there). Evidence: docs/evidence/phase2-stack-boot-*.log.
-// 8192 also leaves headroom for the MJPEG stream handler that will run in
-// this same task. MEASURE the HWM in /metrics after Phase 2 and record it
-// in docs/ARCHITECTURE.md §4 — do not shrink this on estimate.
+// Long-running live MJPEG requests are copied to a bounded stream worker,
+// keeping this server task available for camera controls and other APIs.
+// MEASURE the HWM in /metrics and record it in docs/ARCHITECTURE.md §4.
 #define VC_STACK_HTTPD          8192
 
 // --- event bus dispatcher ---------------------------------------------------
@@ -81,6 +81,12 @@
 // the limited stream slots (max VC_MAX_STREAM_CLIENTS).
 #define VC_PRIO_PLAYBACK        4
 #define VC_STACK_PLAYBACK       5120
+
+// --- live MJPEG stream worker (Phase 1) ------------------------------------
+// Runs below the HTTP server and camera capture tasks. One bounded worker
+// keeps a live response from monopolising esp_http_server's request task.
+#define VC_PRIO_STREAM          4
+#define VC_STACK_STREAM         6144
 
 // --- motion engine task (Phase 4) ------------------------------------------
 // Decodes JPEG to a small grayscale bitmap, compares with the previous

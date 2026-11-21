@@ -22,6 +22,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 #include "camera_manager.h"
@@ -59,6 +60,9 @@ struct Subscriber {
 };
 
 Subscriber s_subs[VC_FRAME_SUBSCRIBERS];
+// Async HTTP consumers register and unregister while capture distributes
+// frames; capture uses a try-lock and drops rather than blocking.
+SemaphoreHandle_t s_subs_mutex = nullptr;
 
 std::atomic<bool>     s_running{false};
 std::atomic<bool>     s_camera_gone{false};
@@ -68,6 +72,7 @@ std::atomic<uint32_t> s_next_id{1};
 std::atomic<uint32_t> s_frames_captured{0};
 std::atomic<uint32_t> s_invalid_dropped{0};
 std::atomic<uint32_t> s_pool_dropped{0};
+std::atomic<uint32_t> s_subscriber_lock_dropped{0};
 std::atomic<uint32_t> s_leases_taken{0};
 std::atomic<uint32_t> s_leases_released{0};
 std::atomic<uint32_t> s_backpressure_waits{0};
@@ -77,6 +82,16 @@ std::atomic<uint64_t> s_last_ts{0};
 TaskHandle_t          s_task = nullptr;
 
 uint64_t nowUs() { return esp_timer_get_time(); }
+
+struct SubscriberLock {
+    bool locked;
+    explicit SubscriberLock(TickType_t timeout)
+        : locked(s_subs_mutex != nullptr &&
+                 xSemaphoreTake(s_subs_mutex, timeout) == pdPASS) {}
+    ~SubscriberLock() {
+        if (locked) xSemaphoreGive(s_subs_mutex);
+    }
+};
 
 // Takes a record with refs == 0, or nullptr when the pool is exhausted.
 // Static pool: no allocation ever happens here (AGENTS rule 13).
@@ -113,6 +128,11 @@ void recordUnref(Record* rec) {
 // cameraManagerShutdown() in main.cpp (or is itself the caller, via the
 // ladder's re-init rung).
 void flushQueuesOnCameraShutdown() {
+    SubscriberLock lock(portMAX_DELAY);
+    if (!lock.locked) {
+        ESP_LOGE(TAG, "camera shutdown could not lock subscriber registry");
+        return;
+    }
     unsigned flushed = 0;
     for (unsigned i = 0; i < VC_FRAME_SUBSCRIBERS; ++i) {
         Subscriber& sub = s_subs[i];
@@ -166,6 +186,8 @@ unsigned buffersHeldByUs() {
 // cameraManagerFrameBufferCount() records can hold buffers, so the loop is
 // bounded by the queue contents and always terminates.
 void evictForCapture() {
+    SubscriberLock lock(0);
+    if (!lock.locked) return;
     const unsigned fb_count = cameraManagerFrameBufferCount();
     while (buffersHeldByUs() >= fb_count) {
         Subscriber* fullest = nullptr;
@@ -200,6 +222,11 @@ void evictForCapture() {
 // when that consumer is behind; the dropped record loses the queue's
 // reference (a leased one survives in the consumer's hands).
 void distribute(Record* rec) {
+    SubscriberLock lock(0);
+    if (!lock.locked) {
+        s_subscriber_lock_dropped.fetch_add(1);
+        return;
+    }
     for (unsigned i = 0; i < VC_FRAME_SUBSCRIBERS; ++i) {
         Subscriber& sub = s_subs[i];
         if (!sub.used || sub.queue == nullptr) continue;
@@ -342,6 +369,10 @@ size_t frameJpegCapacity() { return cameraManagerJpegCapacity(); }
 
 esp_err_t frameManagerInit() {
     if (s_task_alive.load()) return ESP_ERR_INVALID_STATE;
+    if (s_subs_mutex == nullptr) {
+        s_subs_mutex = xSemaphoreCreateMutex();
+        if (s_subs_mutex == nullptr) return ESP_ERR_NO_MEM;
+    }
     s_task_parked.store(false);
     // Flush hook: every camera teardown drains our subscriber queues while
     // the driver is down (see flushQueuesOnCameraShutdown). Registered
@@ -369,14 +400,21 @@ esp_err_t frameManagerInit() {
 
 esp_err_t frameManagerSubscribe(FrameSubscriberId* out_id, const char* name) {
     if (out_id == nullptr) return ESP_ERR_INVALID_ARG;
+    if (s_subs_mutex == nullptr) return ESP_ERR_INVALID_STATE;
+    QueueHandle_t queue = xQueueCreate(VC_FRAME_QUEUE_DEPTH, sizeof(Record*));
+    if (queue == nullptr) return ESP_ERR_NO_MEM;
+    SubscriberLock lock(portMAX_DELAY);
+    if (!lock.locked) {
+        vQueueDelete(queue);
+        return ESP_ERR_TIMEOUT;
+    }
     for (unsigned i = 0; i < VC_FRAME_SUBSCRIBERS; ++i) {
         if (s_subs[i].used) continue;
         // Fixed depth, bounded by VC_FRAME_QUEUE_DEPTH. Overflow policy:
         // drop-oldest, applied at push time by distribute() and one step
         // early by evictForCapture() when the queue holds every driver
         // buffer (both count into stats.queue_dropped). Never blocks.
-        s_subs[i].queue = xQueueCreate(VC_FRAME_QUEUE_DEPTH, sizeof(Record*));
-        if (s_subs[i].queue == nullptr) return ESP_ERR_NO_MEM;
+        s_subs[i].queue = queue;
         s_subs[i].used = true;
         s_subs[i].dropped = 0;
         std::strncpy(s_subs[i].name, name != nullptr ? name : "consumer",
@@ -386,13 +424,19 @@ esp_err_t frameManagerSubscribe(FrameSubscriberId* out_id, const char* name) {
                  i, s_subs[i].name, static_cast<unsigned>(VC_FRAME_QUEUE_DEPTH));
         return ESP_OK;
     }
+    vQueueDelete(queue);
     ESP_LOGE(TAG, "subscriber registry full (%u slots)",
              static_cast<unsigned>(VC_FRAME_SUBSCRIBERS));
     return ESP_ERR_NO_MEM;
 }
 
 esp_err_t frameManagerUnsubscribe(FrameSubscriberId id) {
-    if (id >= VC_FRAME_SUBSCRIBERS || !s_subs[id].used) return ESP_ERR_INVALID_ARG;
+    if (id >= VC_FRAME_SUBSCRIBERS || s_subs_mutex == nullptr) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    SubscriberLock lock(portMAX_DELAY);
+    if (!lock.locked) return ESP_ERR_TIMEOUT;
+    if (!s_subs[id].used) return ESP_ERR_INVALID_ARG;
     Subscriber& sub = s_subs[id];
     // Mark unused BEFORE tearing the queue down: distribute() reads `used`
     // first, so clearing it first guarantees no concurrent push can observe
@@ -493,11 +537,17 @@ FrameManagerStats frameManagerGetStats() {
     st.leases_taken = s_leases_taken.load();
     st.leases_released = s_leases_released.load();
     st.subscribers = 0;
+    SubscriberLock lock(portMAX_DELAY);
+    if (!lock.locked) {
+        st.queue_dropped = s_subscriber_lock_dropped.load();
+        return st;
+    }
     for (unsigned i = 0; i < VC_FRAME_SUBSCRIBERS; ++i) {
         if (!s_subs[i].used) continue;
         st.subscribers++;
         st.queue_dropped += s_subs[i].dropped;
     }
+    st.queue_dropped += s_subscriber_lock_dropped.load();
     st.last_frame_len = s_last_len.load();
     st.last_frame_ts_us = s_last_ts.load();
     return st;

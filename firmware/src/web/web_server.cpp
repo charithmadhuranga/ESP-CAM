@@ -1,8 +1,7 @@
 // web_server.cpp — see web_server.h.
 //
 // esp_http_server core (SPEC 6.0): one instance, lru_purge on,
-// max_open_sockets = 6 (4 API clients + 2 stream slots — smaller than R1's
-// 7), task stack from VC_STACK_HTTPD in tasks.h. Every JSON response uses
+// max_open_sockets = 7, task stack from VC_STACK_HTTPD in tasks.h. Every JSON response uses
 // the {ok,data,error,request_id} envelope with a monotonic per-boot
 // request_id.
 //
@@ -36,6 +35,7 @@
 #include "network_manager.h"
 #include "resource_monitor.h"
 #include "ring_log.h"
+#include "sd_bringup.h"
 #include "storage_manager.h"
 #include "snapshot_manager.h"
 #include "wall_clock.h"   // kWallClockEraThreshold — snapshot time gate
@@ -51,6 +51,7 @@
 namespace visioncam {
 
 const char* TAG = "vc_web";
+static std::atomic<int> g_live_streams{0};
 
 namespace {
 
@@ -1183,6 +1184,50 @@ static esp_err_t cameraCaptureHandler(httpd_req_t* req) {
     return err;
 }
 
+// --- POST /camera/flash -------------------------------------------------------
+static esp_err_t cameraFlashHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    if (requireCsrf(req) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::CsrfInvalid,
+                              "CSRF token missing or invalid");
+    }
+
+    char body[48] = {};
+    size_t body_len = 0;
+    char enabled_value[8] = {};
+    if (readJsonBody(req, body, sizeof(body), body_len) != ESP_OK ||
+        !jsonScalar(body, "\"enabled\"", enabled_value,
+                    sizeof(enabled_value)) ||
+        (std::strcmp(enabled_value, "true") != 0 &&
+         std::strcmp(enabled_value, "false") != 0)) {
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "enabled must be a boolean");
+    }
+    const bool enabled = std::strcmp(enabled_value, "true") == 0;
+    if (enabled && g_live_streams.load() == 0) {
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "flash can only be enabled during live view");
+    }
+    if (visioncam::sdCard() == nullptr) {
+        return httpReplyError(req, rid, ErrCode::SdNotMounted,
+                              "flash control requires the SD card mounted in 1-bit mode");
+    }
+
+    const esp_err_t err = visioncam::sdFlashLedSet(enabled);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "flash LED update failed: %s", esp_err_to_name(err));
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "flash LED could not be updated");
+    }
+
+    char payload[40] = {};
+    std::snprintf(payload, sizeof(payload),
+                  "{\"enabled\":%s,\"schema_version\":1}",
+                  enabled ? "true" : "false");
+    return httpReplyOk(req, rid, payload);
+}
+
 // --- GET /storage -----------------------------------------------------------
 // Single dispatcher for all storage actions. Route table has 16 handler
 // limit (14 Phase 1 + catch-all + 1 storage), so all storage actions share
@@ -1865,39 +1910,70 @@ static esp_err_t recordingDownloadHandler(httpd_req_t* req) {
         return httpReplyError(req, rid, ErrCode::NotFound,
                               "recording not found");
     }
-    uint32_t fsize = info.size_bytes;
-    if (fsize == 0 || fsize > 8 * 1024 * 1024) fsize = 8 * 1024 * 1024;
-    uint8_t* fbuf = static_cast<uint8_t*>(malloc(fsize));
-    if (fbuf == nullptr) {
-        return httpReplyError(req, rid, ErrCode::Internal, "no memory");
+    if (info.size_bytes == 0) {
+        return httpReplyError(req, rid, ErrCode::NotFound,
+                              "recording file is empty");
     }
-    size_t got = 0;
-    esp_err_t rerr = visioncam::storageReadFile(info.path, fbuf, fsize, &got);
-    if (rerr != ESP_OK || got == 0) {
-        free(fbuf);
+
+    visioncam::StorageReadHandle reader{};
+    esp_err_t rerr = visioncam::storageOpenReadFile(info.path, &reader);
+    if (rerr != ESP_OK) {
         return httpReplyError(req, rid, ErrCode::NotFound,
                               "recording file not found");
     }
+
+    uint8_t chunk[4096];
+    uint32_t remaining = info.size_bytes;
+    size_t got = 0;
+    rerr = visioncam::storageReadOpenFile(
+        &reader, chunk, std::min(static_cast<size_t>(remaining), sizeof(chunk)),
+        &got);
+    if (rerr != ESP_OK || got == 0 || got > remaining) {
+        const esp_err_t close_err = visioncam::storageCloseReadFile(&reader);
+        if (close_err != ESP_OK)
+            ESP_LOGE(TAG, "recording download: failed to close file");
+        return httpReplyError(req, rid, ErrCode::NotFound,
+                              "recording file could not be read");
+    }
+
     httpd_resp_set_type(req, "video/x-msvideo");
     httpd_resp_set_hdr(req, "Content-Disposition",
                        std::string("attachment; filename=\"")
                            .append(info.recording_id)
                            .append(".avi\"")
                            .c_str());
-    size_t sent = 0;
-    while (sent < got) {
-        const size_t chunk = std::min(got - sent, static_cast<size_t>(2048));
-        if (httpd_resp_send_chunk(req,
-                                  reinterpret_cast<const char*>(fbuf + sent),
-                                  chunk) != ESP_OK) {
-            free(fbuf);
+    while (true) {
+        if (httpd_resp_send_chunk(req, reinterpret_cast<const char*>(chunk),
+                                  got) != ESP_OK) {
+            const esp_err_t close_err =
+                visioncam::storageCloseReadFile(&reader);
+            if (close_err != ESP_OK)
+                ESP_LOGE(TAG, "recording download: failed to close file");
             return ESP_FAIL;
         }
-        sent += chunk;
+        remaining -= static_cast<uint32_t>(got);
+        if (remaining == 0) break;
+
+        got = 0;
+        rerr = visioncam::storageReadOpenFile(
+            &reader, chunk,
+            std::min(static_cast<size_t>(remaining), sizeof(chunk)), &got);
+        if (rerr != ESP_OK || got == 0 || got > remaining) {
+            ESP_LOGE(TAG, "recording download: read failed before EOF");
+            const esp_err_t close_err =
+                visioncam::storageCloseReadFile(&reader);
+            if (close_err != ESP_OK)
+                ESP_LOGE(TAG, "recording download: failed to close file");
+            return ESP_FAIL;
+        }
     }
-    httpd_resp_send_chunk(req, nullptr, 0);
-    free(fbuf);
-    return ESP_OK;
+
+    rerr = visioncam::storageCloseReadFile(&reader);
+    if (rerr != ESP_OK) {
+        ESP_LOGE(TAG, "recording download: failed to close file");
+        return ESP_FAIL;
+    }
+    return httpd_resp_send_chunk(req, nullptr, 0);
 }
 
 // --- GET /recordings/{id}/play --- server-side MJPEG replay
@@ -1944,12 +2020,12 @@ static esp_err_t recordingPlayHandler(httpd_req_t* req) {
         if (result == PlaybackResult::Stopped) break;
         if (result != PlaybackResult::Ok) {
             visioncam::playbackStreamEnd(req);
-            return httpReplyError(req, rid, ErrCode::Internal,
-                                  "playback stream failed");
+            ESP_LOGE(TAG, "playback stream failed");
+            return ESP_FAIL;
         }
     }
     visioncam::playbackStreamEnd(req);
-    return ESP_OK;
+    return httpd_resp_send_chunk(req, nullptr, 0);
 }
 
 // --- DELETE /recordings/{id} ---
@@ -2200,26 +2276,23 @@ static esp_err_t motionStatusHandler(httpd_req_t* req) {
 //
 // Contract:
 //   - auth required (SPEC §6.3): a stream is still media.
-//   - the handler never touches esp_camera_fb_* — it takes leases from the
-//     frame manager, copies nothing, and releases the lease on EVERY exit
-//     path (AGENTS rule 9). A slow client loses frames (the consumer queue
-//     is depth-2 drop-oldest by design) instead of stalling capture.
+//   - the worker never touches esp_camera_fb_* — it takes leases from the
+//     frame manager, copies into a bounded buffer, then releases each lease
+//     before socket I/O (AGENTS rule 9). A slow client loses frames (the
+//     consumer queue is depth-2 drop-oldest) instead of stalling capture.
 //   - bounded: kMaxLiveStreams concurrent streams, an idle timeout when
 //     the camera produces nothing, and an overall session cap so a
 //     forgotten browser tab cannot hold a socket/subscriber forever.
 //   - the subscription is per connection and is always released (RAII).
-constexpr int kMaxLiveStreams = 2;
+constexpr int kMaxLiveStreams = VC_MAX_STREAM_CLIENTS;
 constexpr uint32_t kLiveStreamIdleMs = 10000;   // no frame -> close
 constexpr uint32_t kLiveStreamMaxMs = 30u * 60u * 1000u;  // 30 min cap
 // Hard ceiling for one frame copy (AGENTS rule 13: fixed, never sized from
 // user input). A frame larger than this is dropped, never truncated.
 constexpr size_t kLiveStreamFrameCap = 256 * 1024;
 
-// Concurrent live streams (bounded — a stream owns a socket AND a frame
-// subscriber slot; the httpd task is single, so more streams only starve
-// the APIs).
-static std::atomic<int> g_live_streams{0};
-
+// Concurrent live streams (bounded — each stream owns a socket, worker task,
+// and frame subscriber slot).
 // RAII frame-manager subscription for a live stream. The registry is
 // bounded (VC_FRAME_SUBSCRIBERS) and the handler must give the slot back
 // on every exit path — a leak would starve the snapshot capture.
@@ -2260,34 +2333,32 @@ struct LiveStreamBuffer {
     ~LiveStreamBuffer() { heap_caps_free(data); }
 };
 
-static esp_err_t cameraStreamHandler(httpd_req_t* req) {
-    uint32_t rid = httpNextRequestId();
-    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
-    if (!cameraManagerInitialised()) {
-        return httpReplyError(req, rid, ErrCode::Internal,
-                              "camera not initialised");
-    }
-    // Bounded concurrency: beyond this the socket stays free for the
-    // settings/media APIs. Reported with the envelope code, not a hang.
-    if (g_live_streams.fetch_add(1) >= kMaxLiveStreams) {
-        g_live_streams.fetch_sub(1);
-        return httpReplyError(req, rid, ErrCode::StreamSlotLimit,
-                              "too many live streams");
-    }
+static void cameraStreamTaskBody(httpd_req_t* req) {
     struct StreamCountGuard {
         ~StreamCountGuard() { g_live_streams.fetch_sub(1); }
     } count_guard;
 
     LiveSubGuard sub_guard;
     if (sub_guard.acquire() != ESP_OK) {
-        return httpReplyError(req, rid, ErrCode::Internal,
-                              "stream slot unavailable");
+        httpReplyError(req, httpNextRequestId(), ErrCode::Internal,
+                       "stream slot unavailable");
+        return;
     }
 
-    httpd_resp_set_type(req, "multipart/x-mixed-replace");
+    struct FlashOffGuard {
+        ~FlashOffGuard() {
+            if (sdFlashLedEnabled()) {
+                const esp_err_t err = sdFlashLedSet(false);
+                if (err != ESP_OK) {
+                    ESP_LOGE(TAG, "flash LED could not be turned off after stream: %s",
+                             esp_err_to_name(err));
+                }
+            }
+        }
+    } flash_off_guard;
+
+    httpd_resp_set_type(req, "multipart/x-mixed-replace; boundary=vcframe");
     httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
-    httpd_resp_set_hdr(req, "Content-Type",
-                       "multipart/x-mixed-replace; boundary=--vcframe");
 
     const uint32_t started =
         static_cast<uint32_t>(esp_timer_get_time() / 1000);
@@ -2298,18 +2369,13 @@ static esp_err_t cameraStreamHandler(httpd_req_t* req) {
         if (now - started > kLiveStreamMaxMs) break;
 
         FrameLease lease{};
-        // Idle timeout: if no frame arrives the camera is not producing
-        // (down, failed, recovering) — close instead of holding both the
-        // socket and the subscriber slot indefinitely.
         if (!frameAcquire(sub_guard.sub, lease, kLiveStreamIdleMs)) break;
 
-        // Copy out of the lease, release, THEN send: the send is blocking
-        // socket I/O and the lease must never be held across it.
         const size_t len = lease.len;
         const bool size_ok = (len > 0 && buf.growTo(len));
         if (size_ok) frameLeaseCopyTo(lease, buf.data, buf.cap);
         frameRelease(lease);
-        if (!size_ok) continue;   // oversized/empty: dropped, not sent
+        if (!size_ok) continue;
 
         char hdr[128] = {};
         const int hlen = std::snprintf(hdr, sizeof(hdr),
@@ -2322,14 +2388,64 @@ static esp_err_t cameraStreamHandler(httpd_req_t* req) {
         if (httpd_resp_send_chunk(req,
                                   reinterpret_cast<const char*>(buf.data),
                                   len) != ESP_OK) break;
+        if (httpd_resp_send_chunk(req, "\r\n", 2) != ESP_OK) break;
     }
-    // Normal end of a chunked multipart response; the return code is
-    // irrelevant because the client is gone by definition.
     httpd_resp_send_chunk(req, nullptr, 0);
     ESP_LOGI(TAG, "live stream ended after %u ms",
              static_cast<unsigned>(
                  static_cast<uint32_t>(esp_timer_get_time() / 1000) -
                  started));
+}
+
+static void cameraStreamTask(void* arg) {
+    auto* req = static_cast<httpd_req_t*>(arg);
+    cameraStreamTaskBody(req);
+    const esp_err_t err = httpd_req_async_handler_complete(req);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "live stream async request cleanup failed: %s",
+                 esp_err_to_name(err));
+    }
+    vTaskDelete(nullptr);
+}
+
+static esp_err_t cameraStreamHandler(httpd_req_t* req) {
+    const uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    if (!cameraManagerInitialised()) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "camera not initialised");
+    }
+    if (g_live_streams.fetch_add(1) >= kMaxLiveStreams) {
+        g_live_streams.fetch_sub(1);
+        return httpReplyError(req, rid, ErrCode::StreamSlotLimit,
+                              "too many live streams");
+    }
+
+    httpd_req_t* async_req = nullptr;
+    const esp_err_t begin_err = httpd_req_async_handler_begin(req, &async_req);
+    if (begin_err != ESP_OK) {
+        g_live_streams.fetch_sub(1);
+        ESP_LOGE(TAG, "could not create async live stream request: %s",
+                 esp_err_to_name(begin_err));
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "could not start live stream");
+    }
+
+    const BaseType_t task_created =
+        xTaskCreate(cameraStreamTask, "vc_stream", VC_STACK_STREAM, async_req,
+                    VC_PRIO_STREAM, nullptr);
+    if (task_created != pdPASS) {
+        g_live_streams.fetch_sub(1);
+        httpReplyError(async_req, rid, ErrCode::Internal,
+                       "could not start live stream task");
+        const esp_err_t complete_err =
+            httpd_req_async_handler_complete(async_req);
+        if (complete_err != ESP_OK) {
+            ESP_LOGE(TAG, "failed to release async request after task error: %s",
+                     esp_err_to_name(complete_err));
+        }
+        return ESP_OK;
+    }
     return ESP_OK;
 }
 
@@ -2978,8 +3094,10 @@ static const httpd_uri_t s_routes[] = {
     {"/camera/settings", HTTP_GET, cameraSettingsGetHandler, nullptr},
     {"/camera/settings", HTTP_PUT, cameraSettingsPutHandler, nullptr},
     {"/camera/capture", HTTP_POST, cameraCaptureHandler, nullptr},
-    // Live MJPEG view (Phase 1 exit gate: authenticated live stream).
-    {"/camera/stream", HTTP_GET, cameraStreamHandler, nullptr},    // Snapshot (plan 02 task 2.3)
+    {"/camera/flash", HTTP_POST, cameraFlashHandler, nullptr},
+    // Live MJPEG view (authenticated async stream keeps API handlers responsive).
+    {"/camera/stream", HTTP_GET, cameraStreamHandler, nullptr},
+    // Snapshot (plan 02 task 2.3)
     {"/snapshot", HTTP_POST, snapshotCaptureHandler, nullptr},
     {"/snapshot", HTTP_GET, snapshotImageHandler, nullptr},
     // Storage

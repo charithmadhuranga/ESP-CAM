@@ -702,6 +702,40 @@ playback timing, timelapse, upload, WebDAV, HA discovery, and every
 | Config | Key/value file + Preferences, save + reboot | NVS authoritative, versioned, live apply |
 | Auto-format SD | Exposed as a parameter | Never (SPEC §2.3) |
 
+## Live MJPEG and flash control — 2026-11-22
+
+- **Studied:** SPEC §6.3 and §2.3; the pinned ESP-IDF `esp_http_server`
+  asynchronous-request API; existing GPIO4 / SD 1-bit findings above and in
+  `docs/HARDWARE.md` §4.
+- **What it does / limits / failure modes:**
+  - The MJPEG response is multipart: every JPEG part needs its declared
+    boundary, image content length, and CRLF separator. Missing the separator
+    can leave a browser image in a perpetual loading state.
+  - `esp_http_server` dispatches handlers on one server task. A long-lived
+    synchronous stream therefore prevents flash, capture, and other API
+    handlers from running until that stream ends.
+  - GPIO4 is active-high and doubles as SD D1. The supported SDMMC width is
+    1-bit, so the pin is only configured for flash after mounting the card;
+    it is driven low on mount and unmount. If there is no mounted SD card,
+    flash control fails explicitly. Flash can only be enabled during an
+    active live stream and is turned off when that stream closes.
+- **Decision:** **adapt** — use ESP-IDF's asynchronous request-copy API for
+  one bounded stream worker, complete every async request on all paths, send
+  standards-compliant multipart separators, and expose an authenticated +
+  CSRF-protected `POST /camera/flash`. The worker drives the flash off when
+  the stream closes. Subscriber lifecycle changes are synchronized with
+  capture distribution; capture drops rather than blocks on that lock.
+- **Reason:** keep control endpoints responsive during live view, bound the
+  extra task to 6,144 B stack and one client, and preserve the board's
+  GPIO4/SD constraint.
+- **Divergence from R1:** no source copied. The async request lifecycle is
+  implemented using the pinned ESP-IDF public API; no R1 HTTP or GPIO code
+  was translated. Flash remains off by default and stream cleanup forces it
+  off.
+- **Evidence:** source-level and browser-mock tests are added; firmware build
+  and Playwright results are reported with this change. Live stream/flash
+  operation on the board remains **UNVERIFIED** until reflashed and tested.
+
 ## Evidence discipline
 
 Every row above marked `UNVERIFIED` stays that way until a serial log or tool

@@ -7,6 +7,7 @@
 
 #include "sd_bringup.h"
 
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 
@@ -25,6 +26,8 @@ namespace {
 const char* TAG = "vc_sd";
 
 sdmmc_card_t* s_card = nullptr;
+std::atomic<bool> s_gpio4_ready{false};
+std::atomic<bool> s_flash_led_enabled{false};
 
 // --- Verified facts about ESP32 SDMMC in IDF 6.1.0 -------------------------
 //
@@ -68,8 +71,24 @@ static_assert(BOARD_SD_D3 == SDMMC_SLOT1_IOMUX_PIN_NUM_D3,
 
 const sdmmc_card_t* sdCard() { return s_card; }
 
+esp_err_t sdFlashLedSet(bool enabled) {
+    if (s_card == nullptr || !s_gpio4_ready.load()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    const esp_err_t err =
+        gpio_set_level(static_cast<gpio_num_t>(BOARD_FLASH_LED), enabled ? 1 : 0);
+    if (err == ESP_OK) s_flash_led_enabled.store(enabled);
+    return err;
+}
+
+bool sdFlashLedEnabled() {
+    return s_gpio4_ready.load() && s_flash_led_enabled.load();
+}
+
 esp_err_t sdMount(SdReport& report) {
     report = SdReport{};
+    s_gpio4_ready.store(false);
+    s_flash_led_enabled.store(false);
 
     // --- host ---------------------------------------------------------------
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
@@ -162,22 +181,26 @@ esp_err_t sdMount(SdReport& report) {
     }
 
     // --- GPIO4 / flash lamp (task 0.3 step 13) ------------------------------
-    // R1 drives GPIO4 low right after mounting because its SD library
-    // initialises that pin even in 1-line mode (utilsFS.cpp:81-84). Whether
-    // the ESP-IDF SDMMC driver does the same is exactly what this step is
-    // meant to find out, so the result is recorded in docs/HARDWARE.md and
-    // stays UNVERIFIED until a serial log exists.
+    // Keep GPIO4 low at startup; only the 1-bit SD configuration leaves
+    // SD D1 available for the flash LED.
     gpio_config_t led = {};
     led.pin_bit_mask = 1ULL << BOARD_FLASH_LED;
     led.mode         = GPIO_MODE_OUTPUT;
     led.pull_up_en   = GPIO_PULLUP_DISABLE;
     led.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    gpio_config(&led);
-    gpio_set_level(static_cast<gpio_num_t>(BOARD_FLASH_LED), 0);
-    report.gpio4_driven_low = true;
-    ESP_LOGI(TAG, "GPIO%d (flash lamp / SD D1) driven low after mount — confirm "
-                  "the lamp stays OFF on hardware (step 13)",
-             BOARD_FLASH_LED);
+    esp_err_t led_err = gpio_config(&led);
+    if (led_err == ESP_OK) {
+        led_err = gpio_set_level(static_cast<gpio_num_t>(BOARD_FLASH_LED), 0);
+    }
+    if (led_err == ESP_OK) {
+        s_gpio4_ready.store(true);
+        report.gpio4_driven_low = true;
+        ESP_LOGI(TAG, "GPIO%d (flash lamp / SD D1) driven low after mount",
+                 BOARD_FLASH_LED);
+    } else {
+        ESP_LOGE(TAG, "GPIO%d flash LED initialization failed: %s",
+                 BOARD_FLASH_LED, esp_err_to_name(led_err));
+    }
 
     return ESP_OK;
 }
@@ -226,12 +249,21 @@ esp_err_t sdSelfTest() {
 
 void sdUnmount() {
     if (s_card == nullptr) return;
+    if (sdFlashLedEnabled()) {
+        const esp_err_t led_err = sdFlashLedSet(false);
+        if (led_err != ESP_OK) {
+            ESP_LOGE(TAG, "GPIO%d flash LED could not be turned off: %s",
+                     BOARD_FLASH_LED, esp_err_to_name(led_err));
+        }
+    }
     // IDF 6.1 naming inconsistency, verified in esp_vfs_fat.h: the mount is
     // esp_vfs_fat_sdmmc_mount() (line 190) but the unmount is
     // esp_vfs_fat_sdcard_unmount() (line 249) — there is no
     // esp_vfs_fat_sdmmc_unmount().
     esp_vfs_fat_sdcard_unmount(kSdMountPoint, s_card);
     s_card = nullptr;
+    s_gpio4_ready.store(false);
+    s_flash_led_enabled.store(false);
     ESP_LOGI(TAG, "SD unmounted");
 }
 

@@ -14,7 +14,6 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
-#include <vector>
 
 #include "avi_writer.h"
 #include "esp_http_server.h"
@@ -30,6 +29,7 @@
 namespace visioncam {
 
 static const char* TAG = "vc_play";
+constexpr char kPlaybackBoundary[] = "frameboundary";
 
 // ---- Module state --------------------------------------------------------
 static bool g_initialized = false;
@@ -38,17 +38,14 @@ static bool g_initialized = false;
 struct PlaybackSession {
     bool active = false;
     httpd_req_t* req = nullptr;
-    FILE* file = nullptr;
+    StorageReadHandle reader{};
     char recording_id[24] = {};
     uint32_t total_frames = 0;
     uint32_t frame_index = 0;
     uint32_t measured_fps = 0;
-    uint32_t movi_offset = 0;   // offset of movi data start
-    uint32_t idx1_offset = 0;   // offset of idx1 in file
-    uint32_t idx1_count = 0;
-    uint8_t read_buf[8192];     // sector-aligned read buffer
-    uint32_t buf_len = 0;
-    uint32_t buf_pos = 0;
+    uint32_t file_size = 0;
+    uint32_t file_offset = 0;
+    uint8_t read_buf[8192];
 };
 
 static PlaybackSession g_session;
@@ -60,30 +57,6 @@ static uint32_t readLe32(const uint8_t* p) {
            (static_cast<uint32_t>(p[1]) << 8) |
            (static_cast<uint32_t>(p[2]) << 16) |
            (static_cast<uint32_t>(p[3]) << 24);
-}
-
-static bool findFourcc(FILE* f, uint32_t fourcc, uint32_t* out_offset) {
-    // Scan file for a fourcc marker. Returns offset of the fourcc.
-    uint8_t buf[4];
-    while (std::fread(buf, 1, 4, f) == 4) {
-        if (readLe32(buf) == fourcc) {
-            *out_offset = static_cast<uint32_t>(std::ftell(f)) - 4;
-            return true;
-        }
-        // Step back 3 bytes to handle overlapping markers:
-        std::fseek(f, -3, SEEK_CUR);
-    }
-    return false;
-}
-
-static bool readChunkHeader(FILE* f, uint32_t* out_fourcc, uint32_t* out_size,
-                            uint32_t* out_offset) {
-    uint8_t hdr[8];
-    if (std::fread(hdr, 1, 8, f) != 8) return false;
-    *out_offset = static_cast<uint32_t>(std::ftell(f)) - 8;
-    *out_fourcc = readLe32(hdr + 0);
-    *out_size = readLe32(hdr + 4);
-    return true;
 }
 
 // ---- Public API ----------------------------------------------------------
@@ -107,112 +80,150 @@ esp_err_t playbackStreamStart(httpd_req_t* req, const char* recording_id,
     if (!g_initialized) return ESP_ERR_INVALID_STATE;
     if (g_session.active) return ESP_ERR_INVALID_STATE;
 
-    // Look up recording:
     RecordingInfo info{};
     if (recordingManagerLookup(recording_id, &info) != ESP_OK)
         return ESP_ERR_NOT_FOUND;
+    if (info.size_bytes < kAviHeaderBytes || info.frame_count == 0)
+        return ESP_ERR_INVALID_STATE;
 
-    // Open the AVI file:
-    g_session.file = std::fopen(info.path, "r");
-    if (g_session.file == nullptr) return ESP_ERR_NOT_FOUND;
+    esp_err_t err = storageOpenReadFile(info.path, &g_session.reader);
+    if (err != ESP_OK) return err;
+    g_session.file_size = info.size_bytes;
 
-    // Find movi and idx1:
-    uint32_t movi_off = 0, idx1_off = 0;
-    if (!findFourcc(g_session.file, kFourccMovi, &movi_off)) {
-        std::fclose(g_session.file);
-        g_session.file = nullptr;
+    uint8_t header[512] = {};
+    const size_t header_len =
+        std::min(static_cast<size_t>(info.size_bytes), sizeof(header));
+    size_t header_read = 0;
+    err = storageReadOpenFile(&g_session.reader, header, header_len,
+                              &header_read);
+    if (err != ESP_OK || header_read != header_len) {
+        playbackStreamEnd(req);
+        return err == ESP_OK ? ESP_ERR_INVALID_STATE : err;
+    }
+
+    uint32_t movi_offset = UINT32_MAX;
+    for (size_t i = 0; i + sizeof(uint32_t) <= header_read; ++i) {
+        if (readLe32(header + i) == kFourccMovi) {
+            movi_offset = static_cast<uint32_t>(i);
+            break;
+        }
+    }
+    if (movi_offset == UINT32_MAX || movi_offset > info.size_bytes - 4) {
+        playbackStreamEnd(req);
         return ESP_ERR_INVALID_STATE;
     }
-    // movi fourcc is at movi_off, then 4-byte size, then "movi" form type:
-    std::fseek(g_session.file, movi_off + 8, SEEK_SET); // past LIST header
-    // Now at first chunk:
-    g_session.movi_offset = static_cast<uint32_t>(std::ftell(g_session.file));
 
-    if (!findFourcc(g_session.file, kFourccIdx1, &idx1_off)) {
-        // No idx1 - will walk sequentially
-        g_session.idx1_offset = 0;
-        g_session.idx1_count = 0;
-    } else {
-        g_session.idx1_offset = idx1_off;
-        // Read idx1 size:
-        std::fseek(g_session.file, idx1_off + 4, SEEK_SET);
-        uint8_t size_buf[4];
-        if (std::fread(size_buf, 1, 4, g_session.file) == 4) {
-            g_session.idx1_count = readLe32(size_buf) / kIdxEntryBytes;
-        }
-        g_session.total_frames = g_session.idx1_count;
+    // The chunk walker skips the writer's zero-sized 8-byte movi placeholder.
+    g_session.file_offset = movi_offset + sizeof(uint32_t);
+    err = storageSeekReadFile(&g_session.reader, g_session.file_offset);
+    if (err != ESP_OK) {
+        playbackStreamEnd(req);
+        return err;
     }
-
-    g_session.active = true;
-    g_session.req = req;
+    g_session.total_frames = info.frame_count;
     g_session.frame_index = 0;
     g_session.measured_fps = info.fps;
+    g_session.req = req;
     std::strncpy(g_session.recording_id, recording_id,
                  sizeof(g_session.recording_id) - 1);
+    g_session.active = true;
 
-    // Set response headers for multipart/x-mixed-replace:
-    httpd_resp_set_type(req, "multipart/x-mixed-replace");
+    httpd_resp_set_type(
+        req, "multipart/x-mixed-replace; boundary=frameboundary");
     httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
-    const char* boundary = "--frameboundary";
-    httpd_resp_set_hdr(req, "Content-Type",
-                       std::string("multipart/x-mixed-replace; boundary=")
-                           .append(boundary)
-                           .c_str());
 
     ESP_LOGI(TAG, "playback start: %s (%u frames, %u fps)", recording_id,
              g_session.total_frames, g_session.measured_fps);
     return ESP_OK;
 }
 
-PlaybackResult playbackStreamFrame(httpd_req_t* /*req*/) {
-    if (!g_session.active || g_session.file == nullptr)
+PlaybackResult playbackStreamFrame(httpd_req_t* req) {
+    if (!g_session.active || g_session.reader.backend_handle == nullptr)
         return PlaybackResult::Error;
 
-    // If we've sent all frames, stop:
-    if (g_session.total_frames > 0 &&
-        g_session.frame_index >= g_session.total_frames) {
+    if (g_session.frame_index >= g_session.total_frames) {
+        static constexpr char end_boundary[] = "--frameboundary--\r\n";
+        if (httpd_resp_send_chunk(req, end_boundary,
+                                  sizeof(end_boundary) - 1) != ESP_OK) {
+            return PlaybackResult::Stopped;
+        }
         return PlaybackResult::Stopped;
     }
 
-    // Walk to next 00dc chunk:
-    uint32_t fourcc = 0, size = 0, offset = 0;
-    if (!readChunkHeader(g_session.file, &fourcc, &size, &offset)) {
-        return PlaybackResult::Stopped;
-    }
+    if (g_session.file_offset > g_session.file_size ||
+        g_session.file_size - g_session.file_offset < 8)
+        return PlaybackResult::Error;
 
+    uint8_t chunk_header[8] = {};
+    size_t header_read = 0;
+    if (storageReadOpenFile(&g_session.reader, chunk_header,
+                            sizeof(chunk_header), &header_read) != ESP_OK ||
+        header_read != sizeof(chunk_header)) {
+        return PlaybackResult::Error;
+    }
+    const uint32_t fourcc = readLe32(chunk_header);
+    const uint32_t size = readLe32(chunk_header + 4);
+    g_session.file_offset += sizeof(chunk_header);
     if (fourcc != kFourcc00dc) {
-        // Skip non-00dc chunks (e.g. idx1):
-        std::fseek(g_session.file, aviPad4(size), SEEK_CUR);
-        return PlaybackResult::Ok; // try again for next chunk
+        const uint32_t padded = aviPad4(size);
+        if (padded > g_session.file_size - g_session.file_offset)
+            return PlaybackResult::Error;
+        g_session.file_offset += padded;
+        if (storageSeekReadFile(&g_session.reader,
+                                g_session.file_offset) != ESP_OK)
+            return PlaybackResult::Error;
+        return PlaybackResult::Ok;
     }
 
-    // Read the JPEG data:
-    std::vector<uint8_t> jpeg(size);
-    if (std::fread(jpeg.data(), 1, size, g_session.file) != size) {
+    if (size == 0 || size > g_session.file_size - g_session.file_offset) {
         return PlaybackResult::Error;
     }
 
-    // Skip padding to 4-byte boundary:
-    uint32_t padded = aviPad4(size);
-    if (padded > size) {
-        std::fseek(g_session.file, padded - size, SEEK_CUR);
-    }
+    const uint32_t padded = aviPad4(size);
+    if (padded > g_session.file_size - g_session.file_offset)
+        return PlaybackResult::Error;
 
-    // Send multipart boundary + headers + JPEG:
     char boundary_hdr[128];
     int hdr_len = std::snprintf(boundary_hdr, sizeof(boundary_hdr),
-                                "--frameboundary\r\n"
+                                "--%s\r\n"
                                 "Content-Type: image/jpeg\r\n"
                                 "Content-Length: %u\r\n"
                                 "\r\n",
+                                kPlaybackBoundary,
                                 static_cast<unsigned int>(size));
+    if (hdr_len <= 0 ||
+        static_cast<size_t>(hdr_len) >= sizeof(boundary_hdr))
+        return PlaybackResult::Error;
     if (httpd_resp_send_chunk(g_session.req, boundary_hdr,
                               hdr_len) != ESP_OK) {
         return PlaybackResult::Error;
     }
-    if (httpd_resp_send_chunk(g_session.req,
-                              reinterpret_cast<const char*>(jpeg.data()),
-                              size) != ESP_OK) {
+    uint32_t jpeg_remaining = size;
+    while (jpeg_remaining > 0) {
+        const size_t want = std::min(static_cast<size_t>(jpeg_remaining),
+                                     sizeof(g_session.read_buf));
+        size_t got = 0;
+        if (storageReadOpenFile(&g_session.reader, g_session.read_buf, want,
+                                &got) != ESP_OK ||
+            got != want) {
+            return PlaybackResult::Error;
+        }
+        if (httpd_resp_send_chunk(
+                g_session.req,
+                reinterpret_cast<const char*>(g_session.read_buf), got) !=
+            ESP_OK) {
+            return PlaybackResult::Error;
+        }
+        jpeg_remaining -= static_cast<uint32_t>(got);
+    }
+    g_session.file_offset += padded;
+    if (storageSeekReadFile(&g_session.reader, g_session.file_offset) !=
+        ESP_OK)
+        return PlaybackResult::Error;
+
+    static constexpr char frame_end[] = "\r\n";
+    if (httpd_resp_send_chunk(g_session.req, frame_end,
+                              sizeof(frame_end) - 1) != ESP_OK) {
         return PlaybackResult::Error;
     }
 
@@ -228,16 +239,16 @@ PlaybackResult playbackStreamFrame(httpd_req_t* /*req*/) {
 }
 
 void playbackStreamEnd(httpd_req_t* /*req*/) {
-    if (g_session.file != nullptr) {
-        std::fclose(g_session.file);
-        g_session.file = nullptr;
+    if (g_session.reader.backend_handle != nullptr) {
+        const esp_err_t err = storageCloseReadFile(&g_session.reader);
+        if (err != ESP_OK) ESP_LOGE(TAG, "failed to close playback file");
     }
     g_session.active = false;
     g_session.req = nullptr;
     g_session.frame_index = 0;
     g_session.total_frames = 0;
-    g_session.buf_len = 0;
-    g_session.buf_pos = 0;
+    g_session.file_size = 0;
+    g_session.file_offset = 0;
 }
 
 esp_err_t playbackStatus(PlaybackStatus* /*out*/) {

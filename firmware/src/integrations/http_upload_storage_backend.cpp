@@ -172,6 +172,27 @@ esp_err_t HttpUploadStorageBackend::readFile(const char* /*path*/,
     return ESP_ERR_NOT_SUPPORTED;
 }
 
+esp_err_t HttpUploadStorageBackend::openReadFile(const char* /*path*/,
+                                                 void** /*out_handle*/) {
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t HttpUploadStorageBackend::readOpenFile(void* /*handle*/,
+                                                 uint8_t* /*data*/,
+                                                 size_t /*len*/,
+                                                 size_t* /*out_len*/) {
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t HttpUploadStorageBackend::seekReadFile(void* /*handle*/,
+                                                 uint32_t /*offset*/) {
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+esp_err_t HttpUploadStorageBackend::closeReadFile(void* /*handle*/) {
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
 esp_err_t HttpUploadStorageBackend::renameFile(const char* /*src*/,
                                                const char* /*dst*/) {
     return ESP_ERR_NOT_SUPPORTED;

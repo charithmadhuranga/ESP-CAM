@@ -5,7 +5,19 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const root = path.resolve(__dirname, '../src');
-const state = { wifiAttempts: [], writes: 0 };
+const downloadBody = Buffer.alloc(8 * 1024 * 1024 + 64, 0x41);
+downloadBody.write('RIFF', 0);
+downloadBody.write('AVI ', 8);
+const state = {
+  wifiAttempts: [],
+  writes: 0,
+  recordingState: 'idle',
+  playRequests: [],
+  downloads: [],
+  flashEnabled: false,
+  flashUpdates: [],
+  streamRequests: 0
+};
 const csrfToken = 'playwright-csrf-token';
 const sessionToken = 'playwright-session';
 
@@ -38,6 +50,12 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === '/__test/reset') {
     state.wifiAttempts = [];
     state.writes = 0;
+    state.recordingState = 'idle';
+    state.playRequests = [];
+    state.downloads = [];
+    state.flashEnabled = false;
+    state.flashUpdates = [];
+    state.streamRequests = 0;
     res.writeHead(204).end();
     return;
   }
@@ -117,6 +135,26 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === 'POST' && url.pathname === '/recording/start') {
+    state.writes++;
+    state.recordingState = 'recording';
+    jsonResponse(res, envelope({ recording_id: 'rec-test-001', started: true }));
+    return;
+  }
+  if (req.method === 'POST' && url.pathname === '/recording/stop') {
+    state.writes++;
+    state.recordingState = 'idle';
+    jsonResponse(res, envelope({ stopped: true }));
+    return;
+  }
+  if (req.method === 'POST' && url.pathname === '/camera/flash') {
+    const body = await readBody(req);
+    state.flashEnabled = body.enabled === true;
+    state.flashUpdates.push(state.flashEnabled);
+    jsonResponse(res, envelope({ enabled: state.flashEnabled }));
+    return;
+  }
+
   if (req.method !== 'GET') {
     state.writes++;
     jsonResponse(res, envelope({ saved: true, deleted: 0, restarting: true }));
@@ -128,15 +166,86 @@ const server = http.createServer(async (req, res) => {
   else if (url.pathname === '/status') data = { wifi: { state: 'AP', configured: false, ap_mode: true, provision_pending: false }, time_synced: false, heap_free_bytes: 180000 };
   else if (url.pathname === '/health') data = { healthy: true };
   else if (url.pathname === '/camera/status') data = { initialised: true, sensor: 'OV2640', framesize: 10, quality: 12 };
+  else if (url.pathname === '/camera/stream') {
+    state.streamRequests++;
+    if (!req.headers.cookie?.includes(`visioncam_session=${sessionToken}`)) {
+      res.writeHead(401).end();
+      return;
+    }
+    const jpeg = Buffer.from(
+      '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAb/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAH/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAEFAqf/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAEDAQE/AV//xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAECAQE/AV//2Q==',
+      'base64'
+    );
+    res.writeHead(200, {
+      'Content-Type': 'multipart/x-mixed-replace; boundary=vcframe',
+      'Cache-Control': 'no-cache'
+    });
+    const frame = Buffer.concat([
+      Buffer.from(`--vcframe\r\nContent-Type: image/jpeg\r\nContent-Length: ${jpeg.length}\r\n\r\n`),
+      jpeg,
+      Buffer.from('\r\n')
+    ]);
+    res.write(Buffer.concat([frame, frame]));
+    const streamTimer = setTimeout(() => res.end('\r\n--vcframe--\r\n'), 15000);
+    res.on('close', () => clearTimeout(streamTimer));
+    return;
+  }
   else if (url.pathname === '/camera/settings') data = { framesize: 10, quality: 12 };
-  else if (url.pathname === '/recording/status') data = { state: 'idle' };
+  else if (url.pathname === '/recording/status') data = { state: state.recordingState };
   else if (url.pathname === '/recording/config') data = { enabled: true, capture_fps: 10, segment_duration_s: 60 };
   else if (url.pathname === '/motion/config') data = { enabled: true, sample_rate_idle_hz: 5, sample_rate_rec_hz: 1, threshold: 25, min_changed_ratio: 5, cooldown_ms: 1000, min_frames: 2, settle_frames: 2, record_on_motion: false, snapshot_on_motion: true, mqtt_notify: false };
   else if (url.pathname === '/motion/status') data = { active: false, events_total: 0 };
   else if (url.pathname === '/storage' && url.searchParams.get('action') === 'status') data = { used_bytes: 0, free_bytes: 1000000, total_bytes: 1000000, media_count: 0 };
   else if (url.pathname === '/storage' && url.searchParams.get('action') === 'files') data = { items: [], count: 0, has_more: false };
   else if (url.pathname === '/storage' && url.searchParams.get('action') === 'retention') data = { enabled: false, max_used_percent: 90, retention_days_manual: 30, retention_days_motion: 30, retention_days_detection: 30, retention_days_timelapse: 30 };
-  else if (url.pathname === '/recordings') data = { items: [], count: 0, has_more: false };
+  else if (url.pathname === '/recordings' && url.searchParams.get('action') === 'play') {
+    const id = url.searchParams.get('id');
+    state.playRequests.push(id);
+    if (!req.headers.cookie?.includes(`visioncam_session=${sessionToken}`)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' }).end(
+        JSON.stringify({ ok: false, error: { message: 'Sign in required' } })
+      );
+      return;
+    }
+    const jpeg = Buffer.from(
+      '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAb/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAH/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oACAEBAAEFAqf/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAEDAQE/AV//xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oACAECAQE/AV//2Q==',
+      'base64'
+    );
+    const boundary = Buffer.from(
+      `--frameboundary\r\nContent-Type: image/jpeg\r\nContent-Length: ${jpeg.length}\r\n\r\n`
+    );
+    res.writeHead(200, {
+      'Content-Type': 'multipart/x-mixed-replace; boundary=frameboundary',
+      'Cache-Control': 'no-cache'
+    });
+    res.end(Buffer.concat([boundary, jpeg, Buffer.from('\r\n--frameboundary--\r\n')]));
+    return;
+  } else if (url.pathname === '/recordings' && url.searchParams.get('action') === 'download') {
+    const id = url.searchParams.get('id');
+    state.downloads.push(id);
+    if (!req.headers.cookie?.includes(`visioncam_session=${sessionToken}`)) {
+      res.writeHead(401).end();
+      return;
+    }
+    res.writeHead(200, {
+      'Content-Type': 'video/x-msvideo',
+      'Content-Disposition': `attachment; filename="${id}.avi"`
+    });
+    res.end(downloadBody);
+    return;
+  } else if (url.pathname === '/recordings') {
+    data = {
+      items: [{
+        recording_id: 'rec-test-001',
+        category: 'manual',
+        size_bytes: 4096,
+        duration_s: 12,
+        start_time: 1730000000
+      }],
+      count: 1,
+      has_more: false
+    };
+  }
   else if (url.pathname === '/integrations/mqtt') data = { enabled: false, status: { state: 'Disabled', connected: false } };
   else if (url.pathname === '/integrations/home-assistant/status') data = { enabled: false, connected: false, discovery_published: false, state: 'Disabled' };
   else if (url.pathname === '/integrations/network-storage') data = { enabled: false, available: false, state: 'Disabled', auth_token_configured: false };

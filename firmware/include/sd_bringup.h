@@ -30,6 +30,11 @@ struct SdReport {
 // (SPEC section 2.3, AGENTS rule 30).
 esp_err_t sdMount(SdReport& report);
 
+// GPIO4 is the flash LED and SD D1. It is controllable only after the
+// supported 1-bit SD mount has configured the pin as an output.
+esp_err_t sdFlashLedSet(bool enabled);
+bool sdFlashLedEnabled();
+
 // write -> read back -> compare -> delete (task 0.3 step 12).
 esp_err_t sdSelfTest();
 

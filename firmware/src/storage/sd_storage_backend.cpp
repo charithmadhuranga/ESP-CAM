@@ -230,6 +230,48 @@ esp_err_t SdStorageBackend::readFile(const char* path, uint8_t* data,
     return ESP_OK;
 }
 
+esp_err_t SdStorageBackend::openReadFile(const char* path,
+                                         void** out_handle) {
+    if (path == nullptr || out_handle == nullptr) return ESP_ERR_INVALID_ARG;
+    FILE* file = std::fopen(path, "rb");
+    if (file == nullptr) {
+        if (errno == ENOENT) return ESP_ERR_NOT_FOUND;
+        ESP_LOGE(TAG, "openReadFile: fopen failed for %s: %s", path,
+                 std::strerror(errno));
+        return ESP_FAIL;
+    }
+    *out_handle = file;
+    return ESP_OK;
+}
+
+esp_err_t SdStorageBackend::readOpenFile(void* handle, uint8_t* data,
+                                         size_t len, size_t* out_len) {
+    if (handle == nullptr || data == nullptr || out_len == nullptr)
+        return ESP_ERR_INVALID_ARG;
+    FILE* file = static_cast<FILE*>(handle);
+    *out_len = std::fread(data, 1, len, file);
+    return std::ferror(file) ? ESP_FAIL : ESP_OK;
+}
+
+esp_err_t SdStorageBackend::seekReadFile(void* handle, uint32_t offset) {
+    if (handle == nullptr) return ESP_ERR_INVALID_ARG;
+    FILE* file = static_cast<FILE*>(handle);
+    if (std::fseek(file, static_cast<long>(offset), SEEK_SET) != 0) {
+        ESP_LOGE(TAG, "seekReadFile: fseek failed");
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+
+esp_err_t SdStorageBackend::closeReadFile(void* handle) {
+    if (handle == nullptr) return ESP_ERR_INVALID_ARG;
+    if (std::fclose(static_cast<FILE*>(handle)) != 0) {
+        ESP_LOGE(TAG, "closeReadFile: fclose failed");
+        return ESP_FAIL;
+    }
+    return ESP_OK;
+}
+
 esp_err_t SdStorageBackend::removeFile(const char* path) {
     if (::remove(path) != 0) {
         if (errno == ENOENT) return ESP_ERR_NOT_FOUND;

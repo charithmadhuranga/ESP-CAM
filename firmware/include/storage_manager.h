@@ -43,6 +43,10 @@ class HttpUploadStorageBackend;
 
 namespace visioncam {
 
+struct StorageReadHandle {
+    void* backend_handle = nullptr;
+};
+
 // Snapshot source (SPEC 4.5).
 enum class SnapshotSource : uint8_t {
     Manual = 0,
@@ -204,6 +208,14 @@ esp_err_t storageListDir(const char* dir, DirEntry* entries,
 // Read bytes from a file via the storage backend. Path must be under /sdcard.
 esp_err_t storageReadFile(const char* path, uint8_t* data, size_t len,
                           size_t* out_len);
+
+// Open a file through the storage manager for bounded sequential reads.
+// The path must be under /sdcard; close the handle on every exit path.
+esp_err_t storageOpenReadFile(const char* path, StorageReadHandle* out);
+esp_err_t storageReadOpenFile(StorageReadHandle* handle, uint8_t* data,
+                              size_t len, size_t* out_len);
+esp_err_t storageSeekReadFile(StorageReadHandle* handle, uint32_t offset);
+esp_err_t storageCloseReadFile(StorageReadHandle* handle);
 
 // Rename a file (temp -> final). Paths must be under /sdcard.
 esp_err_t storageRenameFile(const char* src, const char* dst);

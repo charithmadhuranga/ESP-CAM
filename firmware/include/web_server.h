@@ -37,10 +37,8 @@ namespace visioncam {
 
 // --- server configuration --------------------------------------------------
 
-// Total concurrent sockets the server may hold. Documented total: 4 API
-// clients + 2 stream slots = 6 (smaller than R1's 7; the ESP32's RAM and
-// the single-core capture task make a larger limit pointless — a stream
-// client consumes one slot for the whole connection).
+// Total concurrent sockets the server may hold. The original ESP32 uses a
+// small fixed limit of 7; the live stream itself is limited to one client.
 constexpr int kHttpMaxOpenSockets = 7;
 
 // The server task stack. Not a number of its own: tasks.h is the single

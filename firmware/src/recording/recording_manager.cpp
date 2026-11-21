@@ -10,6 +10,7 @@
 #include "recording_manager.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -122,11 +123,191 @@ static void framesizeToDimensions(framesize_t fs, uint32_t* w,
 
 static esp_err_t allocateRecordingId(char* out_id, size_t out_cap) {
     if (out_id == nullptr || out_cap < 24) return ESP_ERR_INVALID_ARG;
-    if (g_rec_next_id >= kRecordingMaxSegments) return ESP_ERR_NO_MEM;
+    if (g_rec_next_id > 99999999) return ESP_ERR_NO_MEM;
     int n = std::snprintf(out_id, out_cap, "rec-%08u",
                           static_cast<unsigned int>(g_rec_next_id++));
     return (n > 0 && static_cast<size_t>(n) < out_cap) ? ESP_OK
                                                        : ESP_ERR_INVALID_SIZE;
+}
+
+static bool recordingIdValue(const char* id, uint32_t* out_value) {
+    if (id == nullptr || out_value == nullptr ||
+        std::strncmp(id, "rec-", 4) != 0 || std::strlen(id) != 12)
+        return false;
+    char* end = nullptr;
+    const unsigned long value = std::strtoul(id + 4, &end, 10);
+    if (end == id + 4 || *end != '\0' || value == 0 ||
+        value > 99999999)
+        return false;
+    *out_value = static_cast<uint32_t>(value);
+    return true;
+}
+
+static bool jsonStringField(const char* line, const char* key,
+                            char* out, size_t out_cap) {
+    char pattern[48] = {};
+    const int pattern_len =
+        std::snprintf(pattern, sizeof(pattern), "\"%s\":\"", key);
+    if (pattern_len <= 0 ||
+        static_cast<size_t>(pattern_len) >= sizeof(pattern))
+        return false;
+    const char* value = std::strstr(line, pattern);
+    if (value == nullptr) return false;
+    value += pattern_len;
+    const char* end = std::strchr(value, '"');
+    if (end == nullptr || static_cast<size_t>(end - value) >= out_cap)
+        return false;
+    const size_t len = static_cast<size_t>(end - value);
+    std::memcpy(out, value, len);
+    out[len] = '\0';
+    return true;
+}
+
+static bool jsonU32Field(const char* line, const char* key,
+                        uint32_t* out_value) {
+    char pattern[48] = {};
+    const int pattern_len =
+        std::snprintf(pattern, sizeof(pattern), "\"%s\":", key);
+    if (pattern_len <= 0 ||
+        static_cast<size_t>(pattern_len) >= sizeof(pattern))
+        return false;
+    const char* value = std::strstr(line, pattern);
+    if (value == nullptr) return false;
+    value += pattern_len;
+    char* end = nullptr;
+    const unsigned long parsed = std::strtoul(value, &end, 10);
+    if (end == value || parsed > UINT32_MAX) return false;
+    *out_value = static_cast<uint32_t>(parsed);
+    return true;
+}
+
+static void addRecordingIndexEntry(const RecordingInfo& info) {
+    if (g_rec_index_count == kRecordingMaxSegments) {
+        std::memmove(g_rec_index, g_rec_index + 1,
+                     (kRecordingMaxSegments - 1) * sizeof(g_rec_index[0]));
+        g_rec_index_count--;
+    }
+    g_rec_index[g_rec_index_count++] = info;
+}
+
+static esp_err_t persistRecordingIndex() {
+    constexpr size_t kMaxLineBytes = 384;
+    constexpr size_t kIndexBufferBytes =
+        kRecordingMaxSegments * kMaxLineBytes;
+    char* buffer = static_cast<char*>(heap_caps_malloc(
+        kIndexBufferBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (buffer == nullptr) return ESP_ERR_NO_MEM;
+
+    size_t used = 0;
+    for (uint32_t i = 0; i < g_rec_index_count; ++i) {
+        const RecordingInfo& info = g_rec_index[i];
+        if (std::strcmp(info.status, "ready") != 0) continue;
+        const int written = std::snprintf(
+            buffer + used, kIndexBufferBytes - used,
+            "{\"recording_id\":\"%s\",\"path\":\"%s\","
+            "\"category\":\"%s\",\"start_time\":%u,"
+            "\"duration_s\":%u,\"frame_count\":%u,\"size_bytes\":%u,"
+            "\"width\":%u,\"height\":%u,\"fps\":%u,"
+            "\"recovered\":%s,\"event_marked\":%s,\"status\":\"ready\"}\n",
+            info.recording_id, info.path, info.category,
+            static_cast<unsigned>(info.start_time),
+            static_cast<unsigned>(info.duration_s),
+            static_cast<unsigned>(info.frame_count),
+            static_cast<unsigned>(info.size_bytes),
+            static_cast<unsigned>(info.width),
+            static_cast<unsigned>(info.height),
+            static_cast<unsigned>(info.fps),
+            info.recovered ? "true" : "false",
+            info.event_marked ? "true" : "false");
+        if (written < 0 ||
+            static_cast<size_t>(written) >= kIndexBufferBytes - used) {
+            heap_caps_free(buffer);
+            return ESP_ERR_INVALID_SIZE;
+        }
+        used += static_cast<size_t>(written);
+    }
+
+    const esp_err_t err = storageWriteFile(
+        kRecordingIndexPath, reinterpret_cast<const uint8_t*>(buffer), used);
+    heap_caps_free(buffer);
+    return err;
+}
+
+static esp_err_t loadRecordingIndex() {
+    StorageReadHandle reader{};
+    esp_err_t err = storageOpenReadFile(kRecordingIndexPath, &reader);
+    if (err == ESP_ERR_NOT_FOUND) return ESP_OK;
+    if (err != ESP_OK) return err;
+
+    char line[384] = {};
+    size_t line_len = 0;
+    uint8_t chunk[512];
+    bool overflow = false;
+    for (;;) {
+        size_t got = 0;
+        err = storageReadOpenFile(&reader, chunk, sizeof(chunk), &got);
+        if (err != ESP_OK) break;
+        if (got == 0) break;
+
+        for (size_t i = 0; i < got; ++i) {
+            if (chunk[i] != '\n') {
+                if (line_len + 1 >= sizeof(line)) {
+                    overflow = true;
+                    continue;
+                }
+                if (!overflow) line[line_len++] = static_cast<char>(chunk[i]);
+                continue;
+            }
+            if (!overflow && line_len > 0) {
+                line[line_len] = '\0';
+                RecordingInfo info{};
+                uint32_t id_value = 0;
+                const bool valid =
+                    jsonStringField(line, "recording_id", info.recording_id,
+                                    sizeof(info.recording_id)) &&
+                    recordingIdValue(info.recording_id, &id_value) &&
+                    jsonStringField(line, "path", info.path,
+                                    sizeof(info.path)) &&
+                    std::strncmp(info.path, "/sdcard/recording/", 18) == 0 &&
+                    jsonStringField(line, "category", info.category,
+                                    sizeof(info.category)) &&
+                    jsonStringField(line, "status", info.status,
+                                    sizeof(info.status)) &&
+                    std::strcmp(info.status, "ready") == 0 &&
+                    jsonU32Field(line, "start_time", &info.start_time) &&
+                    jsonU32Field(line, "duration_s", &info.duration_s) &&
+                    jsonU32Field(line, "frame_count", &info.frame_count) &&
+                    jsonU32Field(line, "size_bytes", &info.size_bytes) &&
+                    jsonU32Field(line, "width", &info.width) &&
+                    jsonU32Field(line, "height", &info.height) &&
+                    jsonU32Field(line, "fps", &info.fps);
+                uint32_t file_size = 0;
+                if (valid && storageStatFile(info.path, &file_size, nullptr) ==
+                                 ESP_OK &&
+                    file_size == info.size_bytes) {
+                    const char* recovered =
+                        std::strstr(line, "\"recovered\":true");
+                    const char* event_marked =
+                        std::strstr(line, "\"event_marked\":true");
+                    info.recovered = recovered != nullptr;
+                    info.event_marked = event_marked != nullptr;
+                    addRecordingIndexEntry(info);
+                    if (id_value >= g_rec_next_id)
+                        g_rec_next_id = id_value + 1;
+                } else {
+                    ESP_LOGW(TAG, "ignoring invalid/stale recording index row");
+                }
+            }
+            line_len = 0;
+            overflow = false;
+        }
+    }
+    const esp_err_t close_err = storageCloseReadFile(&reader);
+    if (err != ESP_OK) return err;
+    if (close_err != ESP_OK) return close_err;
+    ESP_LOGI(TAG, "loaded %u recordings from SD index",
+             static_cast<unsigned>(g_rec_index_count));
+    return ESP_OK;
 }
 
 // ---- Segment file operations ---------------------------------------------
@@ -203,8 +384,7 @@ static esp_err_t segmentOpen(const char* rec_id, uint32_t category,
     g_cur_stage_offset = 0;
 
     // Record in index as "writing":
-    RecordingInfo& info =
-        g_rec_index[g_rec_index_count % kRecordingMaxSegments];
+    RecordingInfo info{};
     std::memset(&info, 0, sizeof(info));
     std::strncpy(info.recording_id, rec_id, sizeof(info.recording_id) - 1);
     std::strncpy(info.path, g_cur_final_path, sizeof(info.path) - 1);
@@ -215,7 +395,7 @@ static esp_err_t segmentOpen(const char* rec_id, uint32_t category,
     info.height = height;
     info.fps = g_config.capture_fps;
     std::strncpy(info.status, "writing", sizeof(info.status) - 1);
-    g_rec_index_count++;
+    addRecordingIndexEntry(info);
 
     ESP_LOGI(TAG, "segment open: %s (%s, %lux%u, %u fps)", rec_id,
              categoryName(category), width, height,
@@ -315,23 +495,35 @@ static esp_err_t segmentClose() {
     g_cur_file = nullptr;
     ESP_LOGI(TAG, "segment close: fclose OK");
 
+    esp_err_t rename_err =
+        storageRenameFile(g_cur_temp_path, g_cur_final_path);
+    if (rename_err != ESP_OK) {
+        ESP_LOGE(TAG, "segment close: failed to finalize recording file");
+        return rename_err;
+    }
+
     // Record in index as "ready":
     for (uint32_t i = 0; i < g_rec_index_count; i++) {
         if (std::strcmp(g_rec_index[i].recording_id, g_cur_rec_id) == 0) {
             g_rec_index[i].duration_s = duration;
             g_rec_index[i].frame_count = g_cur_frame_count;
             g_rec_index[i].size_bytes =
-                g_cur_movi_size + hdr_size + 8 + idx1_size;
+                g_cur_movi_size + 8 + idx1_size;
             g_rec_index[i].fps = measured_fps;
             std::strncpy(g_rec_index[i].status, "ready",
                          sizeof(g_rec_index[i].status) - 1);
             break;
         }
     }
+    const esp_err_t index_err = persistRecordingIndex();
+    if (index_err != ESP_OK) {
+        ESP_LOGE(TAG, "segment close: recording index persist failed: %s",
+                 esp_err_to_name(index_err));
+    }
 
     ESP_LOGI(TAG, "segment close: %s (%u frames, %u bytes, %u fps, %u s)",
              g_cur_rec_id, g_cur_frame_count,
-             static_cast<unsigned int>(g_cur_movi_size + hdr_size + 8 +
+             static_cast<unsigned int>(g_cur_movi_size + 8 +
                                        idx1_size),
              measured_fps, duration);
 
@@ -345,7 +537,7 @@ static esp_err_t segmentClose() {
     g_cur_idx1_count = 0;
     g_cur_stage_offset = 0;
 
-    return ESP_OK;
+    return index_err;
 }
 
 // ---- Writer task ---------------------------------------------------------
@@ -425,6 +617,13 @@ static void writerTask(void* /*param*/) {
 
 esp_err_t recordingManagerInit(const RecordingConfig* config) {
     if (config != nullptr) g_config = *config;
+
+    const esp_err_t index_err = loadRecordingIndex();
+    if (index_err != ESP_OK) {
+        ESP_LOGE(TAG, "recording index load failed: %s",
+                 esp_err_to_name(index_err));
+        return index_err;
+    }
 
     // Load config from NVS:
     nvs_handle_t h = 0;
@@ -631,6 +830,8 @@ esp_err_t recordingManagerLookup(const char* recording_id,
             return ESP_OK;
         }
     }
+    ESP_LOGW(TAG, "recording id not found: %s (%u indexed)",
+             recording_id, static_cast<unsigned>(g_rec_index_count));
     return ESP_ERR_NOT_FOUND;
 }
 
@@ -658,6 +859,12 @@ esp_err_t recordingManagerDelete(const char* recording_id) {
             g_rec_index_count--;
             break;
         }
+    }
+    err = persistRecordingIndex();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "recording deleted but index update failed: %s",
+                 esp_err_to_name(err));
+        return err;
     }
 
     ESP_LOGI(TAG, "recording deleted: %s", recording_id);

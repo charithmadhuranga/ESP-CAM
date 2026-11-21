@@ -86,12 +86,12 @@
             <div><p class="eyebrow">DEVICE AT A GLANCE</p><h2>Camera overview</h2><p id="overview-detail" class="muted">Status is read directly from the device.</p></div>
             <div class="button-row">
               <button class="button button-secondary" type="button" data-command="capture-snapshot">Capture snapshot</button>
-              <button class="button button-primary" type="button" data-command="toggle-recording">Start / stop recording</button>
+              <button class="button button-primary" type="button" data-command="toggle-recording" aria-pressed="false">Start recording</button>
             </div>
           </div>
           <div class="stat-grid">
             <article class="stat-card"><span class="stat-icon">◉</span><p class="stat-label">Camera</p><strong id="stat-camera" class="stat-value">—</strong><small>OV2640 sensor</small></article>
-            <article class="stat-card"><span class="stat-icon">●</span><p class="stat-label">Recording</p><strong id="stat-recording" class="stat-value">—</strong><span id="recording-badge" class="status-chip" data-state="muted">Checking</span></article>
+            <article class="stat-card"><span class="stat-icon">●</span><p class="stat-label">Recording</p><strong id="stat-recording" class="stat-value">—</strong><span id="recording-badge" class="status-chip" data-state="muted" role="status" aria-live="polite">Checking</span></article>
             <article class="stat-card"><span class="stat-icon">⌁</span><p class="stat-label">Motion events</p><strong id="stat-motion" class="stat-value">—</strong><small>Since boot</small></article>
             <article class="stat-card"><span class="stat-icon">▤</span><p class="stat-label">SD card used</p><strong id="stat-sd" class="stat-value">—</strong><small id="stat-sd-detail">—</small></article>
           </div>
@@ -120,10 +120,10 @@
         </div>
 
         <div id="page-live" class="page" hidden>
-          <div class="page-heading"><div><p class="eyebrow">CAMERA · STREAM</p><h2>Live view</h2><p class="muted">MJPEG stream is authenticated and stops when you leave this page.</p></div><div class="button-row"><span id="stream-state" class="status-chip" data-state="muted">Not connected</span><button class="button button-secondary" type="button" data-command="capture-frame">Capture frame</button><button class="button button-primary" type="button" data-command="capture-snapshot">Save snapshot</button></div></div>
+          <div class="page-heading"><div><p class="eyebrow">CAMERA · STREAM</p><h2>Live view</h2><p class="muted">MJPEG stream is authenticated and stops when you leave this page.</p></div><div class="button-row"><span id="stream-state" class="status-chip" data-state="muted">Not connected</span><button id="flash-toggle" class="button button-secondary" type="button" data-command="toggle-flash" aria-pressed="false">Turn flash on</button><button class="button button-secondary" type="button" data-command="capture-frame">Capture frame</button><button class="button button-primary" type="button" data-command="capture-snapshot">Save snapshot</button></div></div>
           <div class="live-layout">
             <article class="panel stream-panel"><div class="stream-frame"><img id="live-stream" alt="Live camera stream"><img id="capture-preview" class="capture-preview" alt="Captured camera frame" hidden><span class="stream-watermark">VISIONCAM · LIVE</span></div></article>
-            <article class="panel"><div class="panel-heading"><div><p class="eyebrow">QUICK CONTROL</p><h3>Recording</h3></div></div><p class="muted">Recording is written to the microSD card in MJPEG AVI segments.</p><button class="button button-primary button-wide" type="button" data-command="toggle-recording">Start / stop recording</button><div class="divider"></div><p class="eyebrow">STREAM POLICY</p><p class="muted">Frames are delivered by the frame manager. Closing this page releases the stream connection.</p></article>
+            <article class="panel"><div class="panel-heading"><div><p class="eyebrow">QUICK CONTROL</p><h3>Recording</h3></div></div><p class="muted">Recording is written to the microSD card in MJPEG AVI segments.</p><button class="button button-primary button-wide" type="button" data-command="toggle-recording" aria-pressed="false">Start recording</button><div class="divider"></div><p class="eyebrow">STREAM POLICY</p><p class="muted">Frames are delivered by the frame manager. Closing this page releases the stream and turns the flash off. The flash uses GPIO4, available in the supported SD 1-bit mode.</p></article>
           </div>
         </div>
 
@@ -133,7 +133,7 @@
         </div>
 
         <div id="page-recordings" class="page" hidden>
-          <div class="page-heading"><div><p class="eyebrow">LOCAL MEDIA</p><h2>Recordings</h2><p class="muted">MJPEG AVI files can be replayed or downloaded from the microSD card.</p></div><div class="button-row"><button class="button button-secondary" type="button" data-command="refresh-recordings">Refresh</button><button class="button button-primary" type="button" data-command="toggle-recording">Start / stop</button></div></div>
+          <div class="page-heading"><div><p class="eyebrow">LOCAL MEDIA</p><h2>Recordings</h2><p class="muted">MJPEG AVI files can be replayed or downloaded from the microSD card.</p></div><div class="button-row"><button class="button button-secondary" type="button" data-command="refresh-recordings">Refresh</button><button class="button button-primary" type="button" data-command="toggle-recording" aria-pressed="false">Start recording</button></div></div>
           <article class="panel"><div class="table-wrap"><table><thead><tr><th>Recording ID</th><th>Category</th><th>Size</th><th>Duration</th><th>Started</th><th>Actions</th></tr></thead><tbody id="recordings-body"></tbody></table></div><div class="pagination"><button id="recording-prev" class="button button-small button-secondary" type="button" data-command="recording-prev">Previous</button><span id="recording-page-label">Page 1</span><button id="recording-next" class="button button-small button-secondary" type="button" data-command="recording-next">Next</button></div></article>
         </div>
 
@@ -256,7 +256,7 @@
   </div>
 
   <dialog id="media-dialog" class="modal"><div class="modal-heading"><div><p class="eyebrow">SNAPSHOT</p><h2 id="media-preview-id">Preview</h2></div><button class="button button-small button-secondary" type="button" data-command="close-dialog">Close</button></div><img id="media-preview" class="modal-image" alt="Selected snapshot"></dialog>
-  <dialog id="playback-dialog" class="modal"><div class="modal-heading"><div><p class="eyebrow">MJPEG PLAYBACK</p><h2 id="playback-title">Recording</h2></div><button class="button button-small button-secondary" type="button" data-command="close-dialog">Close</button></div><div class="playback-frame"><img id="playback-image" alt="Recording playback"></div></dialog>
+  <dialog id="playback-dialog" class="modal"><div class="modal-heading"><div><p class="eyebrow">MJPEG PLAYBACK</p><h2 id="playback-title">Recording</h2></div><button class="button button-small button-secondary" type="button" data-command="close-dialog">Close</button></div><p id="playback-status" class="muted" role="status" aria-live="polite">Playback is ready.</p><div class="playback-frame"><img id="playback-image" alt="Recording playback" hidden></div></dialog>
   <dialog id="details-dialog" class="modal"><div class="modal-heading"><div><p class="eyebrow">MEDIA METADATA</p><h2>Details</h2></div><button class="button button-small button-secondary" type="button" data-command="close-dialog">Close</button></div><pre id="details-output" class="preview-output"></pre></dialog>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
   <script src="/app.js" defer></script>

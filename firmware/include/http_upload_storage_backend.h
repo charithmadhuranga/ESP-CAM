@@ -105,6 +105,11 @@ public:
                          size_t len) override;
     esp_err_t readFile(const char* path, uint8_t* data, size_t len,
                        size_t* out_len) override;
+    esp_err_t openReadFile(const char* path, void** out_handle) override;
+    esp_err_t readOpenFile(void* handle, uint8_t* data, size_t len,
+                           size_t* out_len) override;
+    esp_err_t seekReadFile(void* handle, uint32_t offset) override;
+    esp_err_t closeReadFile(void* handle) override;
     esp_err_t renameFile(const char* src, const char* dst) override;
     esp_err_t statFile(const char* path, uint32_t* out_size,
                        uint32_t* out_mtime) override;

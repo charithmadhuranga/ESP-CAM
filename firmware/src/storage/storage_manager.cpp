@@ -790,6 +790,28 @@ public:
         return backend_->readFile(path, data, len, out_len);
     }
 
+    esp_err_t openReadFile(const char* path, void** out_handle) {
+        if (!pathIsUnderSd(path) || out_handle == nullptr)
+            return ESP_ERR_INVALID_ARG;
+        return backend_->openReadFile(path, out_handle);
+    }
+
+    esp_err_t readOpenFile(void* handle, uint8_t* data, size_t len,
+                           size_t* out_len) {
+        if (handle == nullptr) return ESP_ERR_INVALID_ARG;
+        return backend_->readOpenFile(handle, data, len, out_len);
+    }
+
+    esp_err_t seekReadFile(void* handle, uint32_t offset) {
+        if (handle == nullptr) return ESP_ERR_INVALID_ARG;
+        return backend_->seekReadFile(handle, offset);
+    }
+
+    esp_err_t closeReadFile(void* handle) {
+        if (handle == nullptr) return ESP_ERR_INVALID_ARG;
+        return backend_->closeReadFile(handle);
+    }
+
     // Recursively scan a directory for .jpg media files, create index
     // records, and append them to the media index JSONL file.
     //
@@ -1671,6 +1693,36 @@ esp_err_t storageReadFile(const char* path, uint8_t* data, size_t len,
     if (g_mgr == nullptr) return ESP_ERR_INVALID_STATE;
     if (!g_mgr->pathIsUnderSd(path)) return ESP_ERR_INVALID_ARG;
     return g_mgr->readFile(path, data, len, out_len);
+}
+
+esp_err_t storageOpenReadFile(const char* path, StorageReadHandle* out) {
+    if (g_mgr == nullptr) return ESP_ERR_INVALID_STATE;
+    if (out == nullptr || out->backend_handle != nullptr)
+        return ESP_ERR_INVALID_ARG;
+    return g_mgr->openReadFile(path, &out->backend_handle);
+}
+
+esp_err_t storageReadOpenFile(StorageReadHandle* handle, uint8_t* data,
+                              size_t len, size_t* out_len) {
+    if (g_mgr == nullptr) return ESP_ERR_INVALID_STATE;
+    if (handle == nullptr || data == nullptr || out_len == nullptr)
+        return ESP_ERR_INVALID_ARG;
+    return g_mgr->readOpenFile(handle->backend_handle, data, len, out_len);
+}
+
+esp_err_t storageSeekReadFile(StorageReadHandle* handle, uint32_t offset) {
+    if (g_mgr == nullptr) return ESP_ERR_INVALID_STATE;
+    if (handle == nullptr) return ESP_ERR_INVALID_ARG;
+    return g_mgr->seekReadFile(handle->backend_handle, offset);
+}
+
+esp_err_t storageCloseReadFile(StorageReadHandle* handle) {
+    if (g_mgr == nullptr) return ESP_ERR_INVALID_STATE;
+    if (handle == nullptr || handle->backend_handle == nullptr)
+        return ESP_ERR_INVALID_ARG;
+    const esp_err_t err = g_mgr->closeReadFile(handle->backend_handle);
+    handle->backend_handle = nullptr;
+    return err;
 }
 
 esp_err_t storageRenameFile(const char* src, const char* dst) {

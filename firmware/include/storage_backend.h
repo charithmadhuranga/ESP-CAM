@@ -15,6 +15,7 @@
 //   - writeFile()    write bytes to an opaque-path file (create/overwrite)
 //   - appendFile()   append bytes to an opaque-path file (for JSONL index)
 //   - readFile()     read bytes from an opaque-path file
+//   - open/read/seek/closeReadFile() bounded sequential file reads
 //   - removeFile()   delete an opaque-path file
 //   - renameFile()   atomically rename (temp → final)
 //   - statFile()     get size/modtime
@@ -101,6 +102,14 @@ public:
     // Read up to len bytes from path into data. Returns actual bytes read.
     virtual esp_err_t readFile(const char* path, uint8_t* data,
                                size_t len, size_t* out_len) = 0;
+
+    // Open a file for bounded sequential reads. The returned handle is owned
+    // by the backend and must be released with closeReadFile().
+    virtual esp_err_t openReadFile(const char* path, void** out_handle) = 0;
+    virtual esp_err_t readOpenFile(void* handle, uint8_t* data, size_t len,
+                                   size_t* out_len) = 0;
+    virtual esp_err_t seekReadFile(void* handle, uint32_t offset) = 0;
+    virtual esp_err_t closeReadFile(void* handle) = 0;
 
     // Delete path. Returns ESP_ERR_NOT_FOUND if absent.
     virtual esp_err_t removeFile(const char* path) = 0;

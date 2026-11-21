@@ -88,6 +88,7 @@ const API = (() => {
     cameraStatus: () => request('/camera/status'),
     cameraSettings: () => request('/camera/settings'),
     saveCameraSettings: (settings) => request('/camera/settings', 'PUT', settings),
+    setFlash: (enabled) => request('/camera/flash', 'POST', { enabled }),
     captureFrame: async () => {
       const headers = {};
       const token = csrfToken();
@@ -154,6 +155,14 @@ const API = (() => {
 const UI = {
   page: 'overview',
   pollTimer: null,
+  recordingPollTimer: null,
+  recordingBusy: false,
+  recordingState: null,
+  flashEnabled: false,
+  flashBusy: false,
+  flashRequest: null,
+  streamTimer: null,
+  streamPollTimer: null,
   frameUrl: null,
   storageOffset: 0,
   recordingOffset: 0,
@@ -179,8 +188,11 @@ const UI = {
 
   showLogin(message = '') {
     clearInterval(this.pollTimer);
+    clearInterval(this.recordingPollTimer);
     this.pollTimer = null;
+    this.recordingPollTimer = null;
     this.stopStream();
+    this.flashEnabled = false;
     this.el('app').hidden = true;
     this.el('login-page').hidden = false;
     this.el('first-login-page').hidden = true;
@@ -198,6 +210,11 @@ const UI = {
     this.el('login-page').hidden = true;
     this.el('first-login-page').hidden = true;
     this.el('app').hidden = false;
+    this.flashEnabled = false;
+    const flashButton = this.el('flash-toggle');
+    flashButton.textContent = 'Turn flash on';
+    flashButton.setAttribute('aria-pressed', 'false');
+    flashButton.classList.remove('button-flash-active');
     await this.navigate('overview');
     this.startPolling();
   },
@@ -220,7 +237,11 @@ const UI = {
       integrations: 'Integrations'
     })[page];
     this.el('sidebar').classList.remove('open');
-    if (page !== 'live') this.stopStream();
+    if (page !== 'live') {
+      const turnFlashOff = this.flashEnabled || this.flashBusy;
+      this.stopStream();
+      if (turnFlashOff) await this.setFlash(false);
+    }
     if (page === 'overview') await this.loadOverview();
     if (page === 'live') await this.startStream();
     if (page === 'snapshots') {
@@ -242,6 +263,42 @@ const UI = {
     return result.data;
   },
 
+  updateRecordingState(state) {
+    const active = state === 'recording';
+    const known = active || state === 'idle';
+    this.recordingState = known ? state : null;
+    this.setText('stat-recording', known ? (active ? 'Recording' : 'Idle') : 'Unknown');
+    this.setStatus(
+      'recording-badge',
+      known ? (active ? 'Recording' : 'Not recording') : 'Status unavailable',
+      active ? 'recording' : (known ? 'muted' : 'bad')
+    );
+    document.querySelectorAll('[data-command="toggle-recording"]').forEach((button) => {
+      button.classList.toggle('button-primary', !active);
+      button.classList.toggle('button-danger', active);
+      button.setAttribute('aria-pressed', String(active));
+      button.setAttribute('aria-label', active ? 'Stop recording' : 'Start recording');
+      if (active) {
+        const indicator = document.createElement('span');
+        indicator.className = 'recording-button-dot';
+        indicator.setAttribute('aria-hidden', 'true');
+        button.replaceChildren(indicator, document.createTextNode('Stop recording'));
+      } else {
+        button.textContent = known ? 'Start recording' : 'Recording status unavailable';
+      }
+      button.disabled = !known || this.recordingBusy;
+    });
+  },
+
+  async refreshRecordingStatus() {
+    try {
+      const recording = await this.data(API.recordingStatus());
+      this.updateRecordingState(recording.state);
+    } catch {
+      this.updateRecordingState(null);
+    }
+  },
+
   async loadOverview() {
     try {
       const [device, status, health, camera, recording, motion, storage, ha] = await Promise.all([
@@ -254,7 +311,7 @@ const UI = {
       this.setText('firmware-version', device.firmware_version || 'Firmware');
       this.setText('footer-firmware', `VisionCam Pro · ${device.firmware_version || 'firmware'}`);
       this.setText('stat-camera', camera.initialised ? 'Online' : 'Unavailable');
-      this.setText('stat-recording', recording.state || 'Unknown');
+      this.updateRecordingState(recording.state);
       this.setText('stat-motion', motion.events_total ?? 0);
       this.setText('stat-sd', this.formatBytes(storage.used_bytes));
       this.setText('stat-wifi', `${status.wifi?.state || 'Unknown'}${Number.isFinite(status.wifi?.rssi) && status.wifi.rssi < 0 ? ` · ${status.wifi.rssi} dBm` : ''}`);
@@ -265,7 +322,6 @@ const UI = {
       this.setText('stat-sd-detail', `${this.formatBytes(storage.free_bytes)} free · ${storage.media_count} items`);
       this.setStatus('device-state', health.healthy ? 'Online' : 'Degraded', health.healthy ? 'good' : 'warn');
       this.setStatus('mqtt-badge', ha.connected ? 'MQTT connected' : 'MQTT offline', ha.connected ? 'good' : 'muted');
-      this.setStatus('recording-badge', recording.state === 'recording' ? 'Recording' : 'Not recording', recording.state === 'recording' ? 'warn' : 'muted');
       this.setText('overview-detail', `${camera.sensor || 'Camera'} · ${camera.framesize} · JPEG quality ${camera.quality}`);
     } catch (error) {
       this.setStatus('device-state', 'Status unavailable', 'bad');
@@ -303,23 +359,86 @@ const UI = {
   async startStream() {
     this.stopStream();
     const image = this.el('live-stream');
-    this.el('stream-state').textContent = 'Connecting…';
-    image.onload = () => { this.el('stream-state').textContent = 'Live'; };
-    image.onerror = () => { this.el('stream-state').textContent = 'Unavailable'; };
+    const markLive = () => {
+      if (image.naturalWidth > 0 && image.naturalHeight > 0) {
+        clearTimeout(this.streamTimer);
+        clearInterval(this.streamPollTimer);
+        this.setStatus('stream-state', 'Live', 'good');
+      }
+    };
+    this.setStatus('stream-state', 'Connecting…', 'muted');
+    image.onload = markLive;
+    image.onerror = () => {
+      clearTimeout(this.streamTimer);
+      clearInterval(this.streamPollTimer);
+      this.setStatus('stream-state', 'Unavailable', 'bad');
+    };
+    this.streamPollTimer = setInterval(markLive, 250);
+    this.streamTimer = setTimeout(() => {
+      if (this.el('stream-state').textContent === 'Connecting…') {
+        clearInterval(this.streamPollTimer);
+        this.setStatus('stream-state', 'No frames received', 'warn');
+      }
+    }, 12000);
     image.src = '/camera/stream';
   },
 
   stopStream() {
+    clearTimeout(this.streamTimer);
+    this.streamTimer = null;
+    clearInterval(this.streamPollTimer);
+    this.streamPollTimer = null;
     const image = this.el('live-stream');
     if (image) {
       image.onload = null;
       image.onerror = null;
       image.removeAttribute('src');
     }
+    this.setStatus('stream-state', 'Not connected', 'muted');
     if (this.frameUrl) {
       URL.revokeObjectURL(this.frameUrl);
       this.frameUrl = null;
     }
+  },
+
+  setFlash(enabled, notifySuccess = false) {
+    const previous = this.flashRequest || Promise.resolve(true);
+    const operation = previous.then(async () => {
+      if (this.flashEnabled === enabled) return true;
+      this.flashBusy = true;
+      const button = this.el('flash-toggle');
+      button.disabled = true;
+      try {
+        const result = await API.setFlash(enabled);
+        if (!result.ok) {
+          this.toast(this.messageOf(result, 'Flash control failed'), 'error');
+          return false;
+        }
+        if (result.data?.enabled !== enabled) {
+          this.toast('Device returned an unexpected flash state', 'error');
+          return false;
+        }
+        this.flashEnabled = enabled;
+        button.textContent = enabled ? 'Turn flash off' : 'Turn flash on';
+        button.setAttribute('aria-pressed', String(enabled));
+        button.classList.toggle('button-flash-active', enabled);
+        if (notifySuccess) {
+          this.toast(enabled ? 'Flash is on' : 'Flash is off', 'success');
+        }
+        return true;
+      } finally {
+        this.flashBusy = false;
+        button.disabled = false;
+      }
+    });
+    this.flashRequest = operation;
+    return operation.finally(() => {
+      if (this.flashRequest === operation) this.flashRequest = null;
+    });
+  },
+
+  toggleFlash() {
+    return this.setFlash(!this.flashEnabled, true);
   },
 
   async captureFrame() {
@@ -342,15 +461,23 @@ const UI = {
   },
 
   async toggleRecording() {
+    if (this.recordingBusy) return;
+    this.recordingBusy = true;
+    this.updateRecordingState(this.recordingState);
     try {
       const { state } = await this.data(API.recordingStatus());
       const result = state === 'recording'
         ? await this.data(API.stopRecording())
         : await this.data(API.startRecording());
+      this.updateRecordingState(state === 'recording' ? 'idle' : 'recording');
       this.toast(state === 'recording' ? 'Recording stopped' : `Recording started${result.recording_id ? ` · ${result.recording_id}` : ''}`, 'success');
       await this.loadOverview();
       if (this.page === 'recordings') await this.loadRecordings();
     } catch (error) { this.toast(error.message, 'error'); }
+    finally {
+      this.recordingBusy = false;
+      this.updateRecordingState(this.recordingState);
+    }
   },
 
   async loadMedia() {
@@ -572,6 +699,8 @@ const UI = {
         window.location.assign(API.recordingDownloadUrl(id));
       } else if (action === 'play-recording') {
         this.el('playback-title').textContent = `Playback · ${id}`;
+        this.setText('playback-status', 'Connecting to the recording…');
+        this.el('playback-image').hidden = false;
         this.el('playback-image').src = `${API.recordingPlayUrl(id)}&t=${Date.now()}`;
         this.el('playback-dialog').showModal();
       } else if (action === 'delete-media') {
@@ -678,10 +807,14 @@ const UI = {
 
   startPolling() {
     clearInterval(this.pollTimer);
+    clearInterval(this.recordingPollTimer);
     this.pollTimer = setInterval(() => {
       if (document.hidden) return;
       if (this.page === 'overview') this.loadOverview();
     }, 15000);
+    this.recordingPollTimer = setInterval(() => {
+      if (!document.hidden) this.refreshRecordingStatus();
+    }, 5000);
   },
 
   async onFormSubmit(event) {
@@ -740,6 +873,18 @@ const UI = {
 
   bind() {
     document.addEventListener('submit', (event) => this.onFormSubmit(event));
+    this.el('playback-image').addEventListener('load', () => {
+      this.setText('playback-status', 'Recording is playing.');
+    });
+    this.el('playback-image').addEventListener('error', () => {
+      this.setText('playback-status', 'Playback could not be loaded. Check the recording and try again.');
+      this.el('playback-image').hidden = true;
+    });
+    this.el('playback-dialog').addEventListener('close', () => {
+      this.el('playback-image').removeAttribute('src');
+      this.el('playback-image').hidden = true;
+      this.setText('playback-status', 'Playback is ready.');
+    });
     document.addEventListener('click', (event) => {
       const nav = event.target.closest('[data-page]');
       if (nav) {
@@ -756,6 +901,7 @@ const UI = {
       } else if (command === 'capture-frame') this.captureFrame();
       else if (command === 'capture-snapshot') this.captureSnapshot();
       else if (command === 'toggle-recording') this.toggleRecording();
+      else if (command === 'toggle-flash') this.toggleFlash();
       else if (command === 'refresh-media') this.loadMedia();
       else if (command === 'refresh-recordings') this.loadRecordings();
       else if (command === 'media-prev') {
