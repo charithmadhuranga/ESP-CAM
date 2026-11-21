@@ -57,6 +57,16 @@ struct AIStatus {
     std::string last_error;
 };
 
+// ---- Model list row (GET /ai/models) --------------------------------------
+// One row per *.tflite file found under /sdcard/models. Opaque IDs only
+// (AGENTS rule 15): the API never exposes filesystem paths.
+struct AIModelInfo {
+    char model_id[64];   // filename without the ".tflite" suffix
+    char state[12];      // "staged" | "active" | "backup"
+    uint32_t size_bytes = 0;
+    uint32_t mtime = 0;  // epoch seconds, 0 when unknown
+};
+
 // ---- Public API ----------------------------------------------------------
 
 // Initialise AI manager. Call after event bus, frame manager, motion manager.
@@ -102,6 +112,10 @@ esp_err_t aiManagerRollbackModel();
 // List detection events (paginated).
 esp_err_t aiManagerListEvents(uint32_t offset, uint32_t limit,
                               AIDetectionEvent* out, size_t out_cap,
+                              size_t* out_count, bool* out_has_more);
+
+// List staged/active/backup models (bounded; *out_has_more on truncation).
+esp_err_t aiManagerListModels(AIModelInfo* out, size_t cap,
                               size_t* out_count, bool* out_has_more);
 
 // ---- Internal: called by AI task ----------------------------------------

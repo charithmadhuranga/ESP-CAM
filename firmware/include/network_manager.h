@@ -24,11 +24,10 @@
 // No credentials live here: they come from NVS via wifi_credentials.h and
 // are never logged (AGENTS rule 17).
 //
-// Degraded operation (SPEC 9): with no configured SSID the manager stays
-// Off and never touches the Wi-Fi driver — the camera, recording and the
-// embedded UI keep working over no network at all. Losing the network
-// never stops a camera task: events are published to the bounded bus and
-// reconnection happens on this module's own low-priority task.
+// Degraded operation (SPEC 9): with no configured SSID the manager starts
+// a setup SoftAP; the authenticated web UI can provision a network. Losing
+// the network never stops a camera task: events are published to the
+// bounded bus and reconnection happens on this module's own low-priority task.
 
 #pragma once
 
@@ -39,10 +38,12 @@
 namespace visioncam {
 
 enum class WifiState : uint8_t {
-    Off = 0,         // radio not started: unconfigured, or explicitly stopped
+    Off = 0,         // radio not started: explicitly stopped
     Connecting,      // radio up, associating (or associated without an IP)
     Connected,       // GOT_IP: a real address (DESIGN "real connection" rule)
     Disconnected,    // was up, lost it; retrying on backoff
+    Ap,              // SoftAP mode: no credentials configured, device is its
+                     // own access point for direct configuration
 };
 
 // Human-readable state name for logs, API responses and the UI payload.
@@ -55,6 +56,8 @@ struct WifiStatus {
     WifiState  state = WifiState::Off;
     bool       configured = false;    // a usable SSID exists in NVS
     bool       radio_up = false;      // esp_wifi driver started by this module
+    bool       ap_mode = false;       // true when setup SoftAP is running
+    bool       provision_pending = false;  // verified; awaiting software reboot
     bool       time_synced = false;   // SNTP reported a successful sync
     int8_t     rssi = 0;              // dBm, valid while Connected
     uint32_t   connects = 0;          // GOT_IP count since boot
@@ -66,19 +69,26 @@ struct WifiStatus {
     esp_err_t  last_connect_err = ESP_OK;  // driver error from the last start()
 };
 
-// Loads credentials and, when one exists, initialises the Wi-Fi driver,
-// starts the radio and begins connecting. Call ONCE, early: after
+// Loads credentials and initialises Wi-Fi in station mode, or starts the
+// setup SoftAP in AP+station mode when none exist. Call ONCE, early: after
 // coreInit() (needs the event bus) and BEFORE camera bring-up (hazard
-// note above). When no SSID is configured the driver is left untouched so
-// other radio users (the Phase 0 smoke SoftAP) can still function, and
-// WifiState::Off is returned without error — "not configured" is a valid
-// local-first operating mode, not a failure.
+// note above). When no SSID is configured WifiState::Ap is returned without
+// error — "not configured" is a valid setup state, not a failure.
 // Idempotent: a second call returns ESP_ERR_INVALID_STATE.
 esp_err_t networkManagerInit();
 
+// While in setup AP mode, associates with the supplied network and persists
+// stages it for the next software reboot only after receiving an IP address.
+// NVS is updated on the next boot before camera initialization, avoiding a
+// flash-cache-off write while the camera ISR is active.
+esp_err_t networkManagerProvision(const char* ssid, const char* pass);
+
+// Switch from AP+STA to STA after a successful provisioning response.
+// Requires a staged network that has a valid station IP.
+esp_err_t networkManagerStopSetupAp();
+
 // Disconnects and stops the radio. NEVER call this while the camera is
-// streaming (hazard note above); the boot-time shutdown path and task
-// 1.2's config endpoints are the only callers. Succeeds when already off.
+// streaming (hazard note above). Succeeds when already off.
 esp_err_t networkManagerStop();
 
 // Snapshot of the live state. Safe to call from any task; refreshes RSSI

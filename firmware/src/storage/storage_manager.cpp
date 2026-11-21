@@ -10,6 +10,8 @@
 
 #include "storage_manager.h"
 
+#include "http_upload_storage_backend.h"
+
 #include <algorithm>
 #include <cinttypes>
 #include <cstdio>
@@ -91,9 +93,23 @@ void formatIso8601(uint32_t epoch, char* out, size_t out_cap) {
     const time_t t = static_cast<time_t>(epoch);
     std::tm tm{};
     gmtime_r(&t, &tm);
+    // Clamp before formatting. -Os turns on -Werror=format-truncation, and
+    // GCC models tm_year+1900 as an unbounded int, so "%04d" could print up
+    // to 10 digits (21..73 B of output) into a caller's 32-byte buffer. The
+    // clamps pin every field to the width its conversion specifies (20 chars
+    // + NUL, well inside any caller), which is also what gmtime_r yields for
+    // a uint32_t epoch (year <= 2106) — the comparisons are belt-and-braces
+    // for a failed gmtime_r (tm left zeroed → 1900-01-01, still in range).
+    int year = tm.tm_year + 1900;
+    int mon = tm.tm_mon + 1;
+    if (year < 0) year = 0; else if (year > 9999) year = 9999;
+    if (mon < 1) mon = 1; else if (mon > 12) mon = 12;
+    int day = tm.tm_mday;   if (day < 1) day = 1;   else if (day > 31) day = 31;
+    int hour = tm.tm_hour;  if (hour < 0) hour = 0; else if (hour > 23) hour = 23;
+    int min = tm.tm_min;    if (min < 0) min = 0;   else if (min > 59) min = 59;
+    int sec = tm.tm_sec;    if (sec < 0) sec = 0;   else if (sec > 59) sec = 59;
     std::snprintf(out, out_cap, "%04d-%02d-%02dT%02d:%02d:%02dZ",
-                  tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
-                  tm.tm_hour, tm.tm_min, tm.tm_sec);
+                  year, mon, day, hour, min, sec);
 }
 
 // Parse ISO-8601 to seconds since epoch (best effort).
@@ -248,6 +264,17 @@ public:
                        uint32_t* out_mtime) {
         if (backend_ == nullptr) return ESP_ERR_INVALID_STATE;
         return backend_->statFile(path, out_size, out_mtime);
+    }
+
+    esp_err_t listDir(const char* dir, DirEntry* entries,
+                      size_t max_entries, size_t* out_count) {
+        if (backend_ == nullptr) return ESP_ERR_INVALID_STATE;
+        return backend_->listDir(dir, entries, max_entries, out_count);
+    }
+
+    esp_err_t appendFile(const char* path, const uint8_t* data, size_t len) {
+        if (backend_ == nullptr) return ESP_ERR_INVALID_STATE;
+        return backend_->appendFile(path, data, len);
     }
 
     // ---- ID allocation ----------------------------------------------------
@@ -1483,6 +1510,18 @@ const char* storageMountPoint() {
     return g_mgr != nullptr ? g_mgr->mountPoint() : "";
 }
 
+// Optional network-storage (HTTP upload) backend — set from main.cpp.
+static HttpUploadStorageBackend* g_netstore = nullptr;
+
+esp_err_t storageSetNetstoreBackend(HttpUploadStorageBackend* backend) {
+    g_netstore = backend;
+    return ESP_OK;
+}
+
+HttpUploadStorageBackend* storageGetNetstoreBackend() {
+    return g_netstore;
+}
+
 // ---- Index parsing self-test ---------------------------------------------
 bool storageSelfTestIndexParsing() {
     if (g_mgr == nullptr) return false;
@@ -1609,6 +1648,22 @@ esp_err_t storageWriteFile(const char* path, const uint8_t* data,
     if (g_mgr == nullptr) return ESP_ERR_INVALID_STATE;
     if (!g_mgr->pathIsUnderSd(path)) return ESP_ERR_INVALID_ARG;
     return g_mgr->writeFile(path, data, len);
+}
+
+esp_err_t storageAppendFile(const char* path, const uint8_t* data,
+                            size_t len) {
+    if (g_mgr == nullptr) return ESP_ERR_INVALID_STATE;
+    if (!g_mgr->pathIsUnderSd(path)) return ESP_ERR_INVALID_ARG;
+    return g_mgr->appendFile(path, data, len);
+}
+
+esp_err_t storageListDir(const char* dir, DirEntry* entries,
+                         size_t max_entries, size_t* out_count) {
+    if (g_mgr == nullptr) return ESP_ERR_INVALID_STATE;
+    if (entries == nullptr || out_count == nullptr)
+        return ESP_ERR_INVALID_ARG;
+    if (!g_mgr->pathIsUnderSd(dir)) return ESP_ERR_INVALID_ARG;
+    return g_mgr->listDir(dir, entries, max_entries, out_count);
 }
 
 esp_err_t storageReadFile(const char* path, uint8_t* data, size_t len,

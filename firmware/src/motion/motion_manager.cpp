@@ -125,28 +125,50 @@ static esp_err_t decodeJpegToGray(const uint8_t* jpeg, uint32_t jpeg_len,
     const uint8_t* outbuf = cfg.outbuf;
     if (outbuf == nullptr) return ESP_FAIL;
 
-    // Downsample: for each 96x96 output pixel, average the source block:
+    // Downsample to 96x96. The decoded image at 1:8 scale is SMALLER than
+    // 96x96 for every frame size the camera actually runs (VGA 640x480 ->
+    // 80x60, QVGA -> 40x30), so plain floor-mapping produced EMPTY source
+    // blocks and count == 0 -> r_sum / count divided by zero and panicked
+    // the motion task (Guru "IntegerDivideByZero", boot-16). The mapping
+    // below is centred, keeps at least one source pixel per output pixel,
+    // clamps to the decoded bounds, and guards count == 0 — an undersized
+    // source is upscaled by sampling, never averaged to a crash.
+    if (src_w == 0 || src_h == 0) return ESP_ERR_INVALID_SIZE;
+
     for (uint32_t oy = 0; oy < kMotionGrayDim; ++oy) {
+        // Centred scale: output pixel oy covers the middle of its bin.
+        const uint32_t sy_start =
+            (static_cast<uint64_t>(oy) * src_h) / kMotionGrayDim;
+        uint32_t sy_end =
+            (static_cast<uint64_t>(oy + 1) * src_h) / kMotionGrayDim;
+        if (sy_end <= sy_start) sy_end = sy_start + 1;
+        if (sy_start >= src_h) continue;   // beyond the decoded image
+        if (sy_end > src_h) sy_end = src_h;
+
         for (uint32_t ox = 0; ox < kMotionGrayDim; ++ox) {
-            uint32_t sx_start = (ox * src_w) / kMotionGrayDim;
-            uint32_t sx_end = ((ox + 1) * src_w) / kMotionGrayDim;
-            uint32_t sy_start = (oy * src_h) / kMotionGrayDim;
-            uint32_t sy_end = ((oy + 1) * src_h) / kMotionGrayDim;
+            const uint32_t sx_start =
+                (static_cast<uint64_t>(ox) * src_w) / kMotionGrayDim;
+            uint32_t sx_end =
+                (static_cast<uint64_t>(ox + 1) * src_w) / kMotionGrayDim;
+            if (sx_end <= sx_start) sx_end = sx_start + 1;
+            if (sx_start >= src_w) continue;
+            if (sx_end > src_w) sx_end = src_w;
 
             uint32_t r_sum = 0, g_sum = 0, b_sum = 0, count = 0;
             for (uint32_t sy = sy_start; sy < sy_end; ++sy) {
                 for (uint32_t sx = sx_start; sx < sx_end; ++sx) {
-                    size_t idx = (sy * src_w + sx) * 3;
+                    const size_t idx = (static_cast<size_t>(sy) * src_w + sx) * 3;
                     r_sum += outbuf[idx];
                     g_sum += outbuf[idx + 1];
                     b_sum += outbuf[idx + 2];
                     ++count;
                 }
             }
+            const uint32_t denom = (count != 0) ? count : 1u;
             gray_out[oy * kMotionGrayDim + ox] =
-                rgbToGray(static_cast<uint8_t>(r_sum / count),
-                          static_cast<uint8_t>(g_sum / count),
-                          static_cast<uint8_t>(b_sum / count));
+                rgbToGray(static_cast<uint8_t>(r_sum / denom),
+                          static_cast<uint8_t>(g_sum / denom),
+                          static_cast<uint8_t>(b_sum / denom));
         }
     }
     return ESP_OK;
@@ -231,11 +253,23 @@ static void motionTask(void* /*param*/) {
             continue;
         }
 
-        // Copy JPEG to staging, release lease immediately:
-        if (lease.len > 0 && lease.len <= kMotionJpegMaxBytes) {
-            std::memcpy(g_jpeg_staging, lease.data, lease.len);
+        // Copy JPEG to staging, release lease immediately. The length is
+        // captured BEFORE release: frameRelease() zeroes the lease (it is
+        // single-use by design — frame_manager.h), and reading lease.len
+        // afterwards returned 0, so every decode was handed
+        // indata_size=0 and failed with JDR_INP "wrong termination of
+        // input stream" — motion never detected anything (boot logs showed
+        // the same esp_jpeg_decode(97) failure at every check, ~344/boot).
+        const uint32_t jpeg_len = lease.len;
+        const bool size_ok = (jpeg_len > 0 && jpeg_len <= kMotionJpegMaxBytes);
+        if (size_ok) {
+            std::memcpy(g_jpeg_staging, lease.data, jpeg_len);
         }
         frameRelease(lease);
+        if (!size_ok) {
+            ++g_status.checks_skipped;
+            continue;   // empty or oversized frame: counted, never decoded
+        }
 
         // Ignore warm-up frames:
         if (g_warmup_frames < g_config.settle_frames) {
@@ -249,7 +283,7 @@ static void motionTask(void* /*param*/) {
 
         // Decode JPEG to grayscale:
         uint32_t decode_start = uptimeMs();
-        esp_err_t derr = decodeJpegToGray(g_jpeg_staging, lease.len, g_gray_curr);
+        esp_err_t derr = decodeJpegToGray(g_jpeg_staging, jpeg_len, g_gray_curr);
         uint32_t decode_ms = uptimeMs() - decode_start;
         g_status.decode_time_ms_last = decode_ms;
 

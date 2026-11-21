@@ -79,17 +79,64 @@ frame size, quality and card? Suggested: **10 %**.
 **Answered: 10 % (2026-11-15)** — acceptance bar for the Phase 3 and
 Phase 9 parity tests (SPEC §11.10).
 
-## D4 — On-device TFLite Micro (needed by Phase 6)
+## D4 — On-device TFLite Micro (needed by Phase 6) — **ANSWERED 2026-11-20**
 
 The original ESP32 has little headroom for TFLM. After the Phase 6 benchmark
 you may declare on-device AI **unsupported** beyond the single benchmarked
 model. Confirm you accept that outcome.
+
+**Answered: selectable in the UI, library not linked (2026-11-20).**
+
+- `TfliteMicroProvider` stays compiled in and **appears as a first-class
+  choice** in the UI next to `External` and `Disabled` — the user is never
+  shown a firmware without the option.
+- `espressif/esp-tflite-micro` is **not linked**: `begin()`/`infer()` and
+  model activation return `ESP_ERR_NOT_SUPPORTED`, and the UI reports the
+  choice as *Unavailable — on-device runtime not included in this build*
+  rather than hiding it (webui AGENTS.md: pair colour with a word).
+- Rationale: flash is already 92.6 % of the 1.5 MB app slot and TFLM adds
+  an estimated 200–400 KB, so linking it now would break the < 90 % budget
+  and jeopardise Phases 7–9. R1's own evidence (ML feasible only on
+  ESP32-S3) supports deferring.
+- **Revisit trigger:** if flash is freed below ~70 % and the owner wants
+  on-device inference, link the pinned component and implement the
+  interpreter methods in `firmware/src/ai/tflite_micro_provider.cpp`
+  (`initializeInterpreter` / `decodeJpegToTensor` / `parseOutputTensors`).
 
 ## D5 — Deployment SD card (needed by Phase 9)
 
 Which SD card model(s) will the 24-hour long-run and power-loss tests use?
 Record the exact model — card quality is a measured variable (R1 found a
 no-name "Class 6" card about 3x slower than a genuine Sandisk 4 GB Class 2).
+
+**Answered: genuine SanDisk 8 GB, no speed-class marking visible** (owner
+2026-11-16; reformat + measurement context in `docs/HARDWARE.md` §4.2.1).
+
+## D6 — AI default state and provider selection (owner directive, 2026-11-20)
+
+> "The on-device AI functionality and the external AI functionality should
+> be enabled by default in the firmware. The user only has to select his
+> choice in the UI, configure it and use it."
+
+**Answered: framework ON, provider `none` at first boot (2026-11-20).**
+
+- The AI subsystem is initialised on **every** boot — task running,
+  providers constructed, `/ai/status` live. No build flag, menuconfig
+  option or firmware re-flash may ever be required to use AI.
+- Shipped default: `enabled = true`, `provider = "none"` (NoAiProvider).
+  `none` is "AI on, nothing selected yet" — it is *not* "AI off", so the UI
+  never asks the user to "enable AI first"; it asks them to *choose*.
+- The user's choice is made **only** in the UI (AI Detection provider
+  pills → `PUT /ai/config {"provider": …}`) and persists in NVS. Switching
+  providers takes effect immediately, without reboot.
+- Picking `external_ai` then requires configuring base URL/auth; picking
+  `tflite_micro` shows the D4 *Unavailable* state until the runtime is
+  linked. Both remain honest, non-blocking states — the camera keeps
+  running in all cases (SPEC §9).
+- This supersedes SPEC §4.4's "`NoAiProvider` (default)" only in wording:
+  `none` is still the *default provider*, but `enabled` now ships `true`.
+  Recorded here because AGENTS rule 27 forbids changing a default
+  silently.
 
 ---
 
@@ -100,5 +147,6 @@ no-name "Class 6" card about 3x slower than a genuine Sandisk 4 GB Class 2).
 | D1 | Licence A / B | **A — Clean-room.** R1 is behavioural reference only; no R1 code copied or mechanically translated; never linked into a release build. | 2026-11-15 |
 | D2 | R1 baseline run | **Run during Phase 0.** Owner flashes R1 unmodified and records the baseline table; procedure is Phase 0 task 1. | 2026-11-15 |
 | D3 | FPS tolerance | **10 %.** Acceptance bar for Phase 3 / Phase 9 parity tests (SPEC §11.10). | 2026-11-15 |
-| D4 | TFLM supported / unsupported | *(pending)* | |
+| D4 | TFLM supported / unsupported | **Selectable in the UI, runtime not linked.** All three choices (`TFLite Micro` / `External` / `Disabled`) ship in the UI; TFLM reports *Unavailable — not included in this build* until flash headroom allows linking `esp-tflite-micro`. | 2026-11-20 |
+| D6 | AI default state | **Framework ON, provider = `none`.** A fresh device boots with the AI subsystem initialised and ready; the user picks `external_ai` or `tflite_micro` in the UI and configures it — no separate "enable AI" step and no firmware change ever needed to switch provider. | 2026-11-20 |
 | D5 | SD card model | **Answered: genuine SanDisk 8 GB, no speed-class marking visible** (owner 2026-11-16). Was pre-flashed with Linux Mint; reformatted MBR+FAT32 by `tools/sd_format/` same day (`docs/HARDWARE.md` §4.2.1). Class recorded as "no marking" — Phase 9 measures real throughput instead | 2026-11-16 |

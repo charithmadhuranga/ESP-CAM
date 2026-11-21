@@ -1,32 +1,55 @@
-# React + TypeScript + Vite
+# VisionCam Pro embedded UI
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+The UI is a dependency-free, same-origin HTML/CSS/JavaScript application
+served by the firmware. It avoids runtime frameworks, remote fonts/CDNs,
+credential storage, and unbounded polling. API requests use the firmware's
+HTTP-only session cookie and double-submit CSRF cookie.
 
-Currently, two official plugins are available:
+## First-run Wi-Fi
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+With no saved network credentials, the camera opens `VisionCam-XXXXXX`
+(WPA2 passphrase `visioncam`) at `http://192.168.4.1`. Sign in, open
+**Settings → Connect camera to Wi-Fi**, and enter the 2.4 GHz SSID and
+password. Credentials are staged only after the camera successfully joins the
+network. The setup AP then closes and the camera restarts automatically to
+apply them to NVS before camera startup. After reboot, use the camera's
+address on the configured Wi-Fi network.
 
-## React Compiler
+## Development and validation
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```sh
+cd webui
+npm run check
+cd ..
+python3 tools/embed_web_assets/embed_web_assets.py webui/src firmware/src/web_assets
+pio run
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+The first command runs JavaScript syntax validation and API-client contract
+tests. The embed step gzip-compresses all assets under `webui/src`; generated
+C files and the manifest are compiled into the firmware.
+
+## Firmware API coverage
+
+The UI consumes the endpoints registered in `firmware/src/web/web_server.cpp`:
+
+- Authentication: session, login, logout, first-login password setup, and
+  password/username changes.
+- Device and diagnostics: device info, status, health, metrics, and restart.
+- Camera and capture: camera status/settings, single-frame capture,
+  authenticated MJPEG stream, and saved snapshots.
+- Media/storage: paginated media and recordings, metadata, image view,
+  recording playback/download/delete, index rebuild, storage status, and
+  retention policy/preview/run.
+- Motion: status and configuration.
+- Integrations: MQTT configuration/test/reconnect/test-publish, Home
+  Assistant discovery/status, network-storage configuration/test/queue.
+
+AI and timelapse APIs are not presented: their handlers are intentionally
+excluded from the current firmware build. FTP/WebDAV, flash-LED control,
+snapshot download, and direct Wi-Fi configuration are also not registered
+firmware routes.
+
+Keep the UI route methods aligned with `webui/tests/api-contract.test.js`.
+Tests do not send commands to a physical camera; hardware acceptance remains
+tracked in `docs/TEST_PLAN.md`.

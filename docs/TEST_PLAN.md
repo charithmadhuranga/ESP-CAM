@@ -245,6 +245,42 @@ Exit gate: "Authenticated live MJPEG on phone and laptop, snapshot saved, no una
 | 6.6.7 | POST /ai/models/rollback fails without active model | RUN PASS | HTTP tested — 400 no active model |
 | 6.6.8 | TfliteMicroProvider returns ESP_ERR_NOT_SUPPORTED (D4 pending) | RUN PASS | Code — begin(), infer(), modelValidate() all return ESP_ERR_NOT_SUPPORTED until TFLM library linked |
 
+## Phase 8 — Network storage
+
+| # | Test | Status | Evidence |
+|---|---|---|---|
+| 8.1.1 | GET /integrations/network-storage returns config (secrets stripped) | RUN PASS | HTTP tested — `auth_token_configured` boolean, token value never echoed, 200 with cookie, 401 without |
+| 8.1.2 | PUT /integrations/network-storage updates config with CSRF | RUN PASS | HTTP tested — partial overlay, `auth_token` write-only, bad scheme → 400, no-CSRF → 403 |
+| 8.1.3 | PUT /integrations/network-storage without CSRF → 403 | RUN PASS | HTTP tested — 403 without CSRF header |
+| 8.1.4 | Unauthenticated /integrations/network-storage → 401 | RUN PASS | HTTP tested — 401 without cookie |
+| 8.1.5 | POST /integrations/network-storage/test reports reachability | RUN PASS | HTTP tested — reachable → 200 `{"reachable":true}`, unreachable → 503 `code:15` |
+| 8.1.6 | GET /integrations/network-storage/queue returns queue status | RUN PASS | HTTP tested — `queue_depth`, `uploads_total`, `state`, 200 with cookie |
+| 8.1.7 | AP mode when no credentials: SoftAP "VisionCam-XXXXXX" at 192.168.4.1 | RUN PASS | Serial verified — `AP mode: ssid=VisionCam-92B680 pass=visioncam ip=192.168.4.1` |
+| 8.1.8 | Network storage backend init fail-soft | RUN PASS | Serial verified — device boots and serves UI without network storage config |
+| 8.2.1 | Upload queue bounded (drop-oldest overflow) | Code implemented | Queue cap `upload_queue_limit` (max 128), drop-oldest when full |
+| 8.2.2 | Heap gate refuses TLS below threshold | Code implemented | Gate: free heap < 64 KB or largest block < 16 KB → defer |
+| 8.2.3 | Exponential backoff on upload failure | Code implemented | Base interval × 2^attempts, capped at 300 s |
+| 8.2.4 | Delete-after-upload opt-in, default off | Code implemented | `delete_after_upload` default false, gated by config |
+
+## Embedded Web UI — current route coverage
+
+| # | Test | Status | Evidence |
+|---|---|---|---|
+| UI.1 | Frontend JavaScript syntax, API contract, and browser E2E tests | RUN PASS | `cd webui && npm run test:all` — 4 Node tests + 6 Playwright tests passed against the local mock |
+| UI.2 | Web assets embedded in firmware | RUN PASS | Asset embed generated 4 assets: 79,246 B raw / 18,786 B gzip |
+| UI.3 | Firmware build and flash with refreshed assets | RUN PASS | `pio run` — 1,257,951 B flash (80.0%), 102,340 B RAM (31.2%); upload to `/dev/ttyUSB0` verified by esptool |
+| UI.4 | Browser/device interaction and responsive hardware validation | UNVERIFIED | Six Playwright workflows pass against the local API mock; physical device interaction remains unverified |
+
+## Wi-Fi setup AP onboarding
+
+| # | Test | Status | Evidence |
+|---|---|---|---|
+| WIFI.1 | No stored SSID starts setup AP at 192.168.4.1 | RUN PASS | After clearing only saved Wi-Fi keys, the board boot log reported AP at 192.168.4.1 and the workstation scan detected `VisionCam-XXXXXX` |
+| WIFI.2 | Authenticated + CSRF-protected setup form validates and tests a 2.4 GHz connection before staging | CODE / MOCK E2E PASS | `POST /wifi/config`; candidate staged only after GOT_IP |
+| WIFI.3 | Wrong password or unavailable AP keeps setup AP and stored credentials | CODE / MOCK E2E PASS | Provision timeout/error does not replace stored credentials |
+| WIFI.4 | Successful setup closes AP, restarts, persists credentials, and joins station network | CODE / MOCK E2E PASS; HW PARTIAL | Success path switches to STA and restarts after response; serial provisioning verified `GOT_IP 10.151.183.4` (RSSI -55 dBm). Physical `/wifi/config` AP shutdown path remains unverified. |
+| WIFI.5 | Configured station boot does not advertise setup AP | RUN PASS | After flashing, serial reported `GOT_IP 10.151.183.4`; workstation scan did not see `VisionCam-XXXXXX` |
+
 ## Later phases
 
 Not started. Every row stays `TODO` until its phase runs; see

@@ -1,190 +1,234 @@
 #!/usr/bin/env python3
-"""tools/embed_web_assets.py — embed the built web UI into the firmware.
+"""
+VisionCam Web UI Asset Embedder
 
-Reads the Vite build output from webui/dist/, gzip-compresses each asset,
-content-hashes it (SHA-256), and emits:
-
-  firmware/include/web_assets.h   — extern declarations + asset manifest struct
-  firmware/src/web_assets.c       — compressed byte arrays + manifest table
-
-The manifest maps URL paths (e.g. "/", "/assets/index-....js") to asset
-records: content hash, uncompressed size, compressed size, MIME type, and a
-pointer into the compressed byte pool. The web server looks up the manifest
-and serves bytes with the appropriate Content-Type / Content-Encoding headers.
-
-All output is C — no Python dependency in the firmware build.
-
-Usage:
-    python3 tools/embed_web_assets.py <webui_dist_dir> <output_dir>
-
-Example:
-    python3 tools/embed_web_assets.py webui/dist firmware/src/web_assets
+Embeds HTML, CSS, and JavaScript into the ESP32 firmware as gzip-compressed
+C arrays. Generates:
+  - firmware/src/web_assets/web_asset_N.c (gzip byte arrays)
+  - firmware/src/web_assets/web_assets_manifest.h (manifest header)
+  - firmware/src/web_assets/web_assets_manifest.c (manifest data)
 """
 
 import gzip
 import hashlib
-import mimetypes
 import os
+import shutil
 import sys
-import json
+from pathlib import Path
 
 
-def c_identifier(name: str) -> str:
-    """Convert a file path to a valid C identifier."""
-    # Replace non-alphanumeric with underscore
-    ident = "".join(c if c.isalnum() else "_" for c in name)
-    # Ensure it doesn't start with a digit
-    if ident and ident[0].isdigit():
-        ident = "_" + ident
-    return ident or "_asset"
+MIME_TYPES = {
+    '.html': 'text/html',
+    '.css': 'text/css',
+    '.js': 'text/javascript',
+    '.svg': 'image/svg+xml',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.json': 'application/json',
+    '.txt': 'text/plain',
+}
 
 
-def mime_type(path: str) -> str:
-    mt, _ = mimetypes.guess_type(path)
-    return mt or "application/octet-stream"
+def find_assets(source_dir):
+    """Find all HTML, CSS, JS, SVG files in the source directory."""
+    assets = []
+    for f in Path(source_dir).rglob('*'):
+        if f.is_file() and f.suffix.lower() in MIME_TYPES:
+            assets.append(f)
+    return sorted(assets)
 
 
-def c_string_literal(s: str) -> str:
-    """Emit a C string literal with proper escaping."""
-    out = ['"']
-    for ch in s:
-        if ch == '"':
-            out.append('\\"')
-        elif ch == "\\":
-            out.append("\\\\")
-        elif ch == "\n":
-            out.append("\\n")
-        elif ch == "\r":
-            out.append("\\r")
-        elif ch == "\t":
-            out.append("\\t")
-        elif ord(ch) < 32:
-            out.append(f"\\x{ord(ch):02x}")
-        else:
-            out.append(ch)
-    out.append('"')
-    return "".join(out)
+def gzip_data(data: bytes) -> bytes:
+    """Gzip-compress raw bytes."""
+    return gzip.compress(data, compresslevel=9)
 
 
-def format_bytes(data: bytes, ident: str, per_line: int = 12) -> str:
-    """Format a byte array as a C const uint8_t[] definition."""
-    lines = [f"const uint8_t {ident}[] = {{"]
-    for i in range(0, len(data), per_line):
-        chunk = data[i : i + per_line]
-        hex_values = ", ".join(f"0x{b:02x}" for b in chunk)
-        lines.append(f"    {hex_values},")
-    lines.append("};\n")
-    return "\n".join(lines)
+def sha256(data: bytes) -> str:
+    """Compute SHA-256 hex digest."""
+    return hashlib.sha256(data).hexdigest()
 
 
-def embed(dist_dir: str, out_dir: str) -> None:
-    os.makedirs(out_dir, exist_ok=True)
+def asset_to_c_var(name: str) -> str:
+    """Convert an asset path/name to a C variable name."""
+    safe = name.replace('.', '_').replace('/', '_').replace('-', '_')
+    return f'web_asset_{safe}'
 
-    assets = []  # list of dicts: url, ident, hash, mime, raw_size, comp_size
 
-    for root, _dirs, files in os.walk(dist_dir):
-        for fname in sorted(files):
-            full_path = os.path.join(root, fname)
-            rel_path = os.path.relpath(full_path, dist_dir)
-            # URL path: use forward slashes, leading "/"
-            url_path = "/" + rel_path.replace(os.sep, "/")
+def generate_asset_c_file(var_name: str, data: bytes, raw_size: int,
+                          comp_size: int, sha_hash: str, url: str) -> str:
+    """Generate C source file content for a gzip-compressed asset."""
+    lines = []
+    lines.append(f'// Asset: {url}')
+    lines.append(f'// Raw size: {raw_size} bytes')
+    lines.append(f'// Compressed size: {comp_size} bytes')
+    lines.append(f'// SHA-256: {sha_hash}')
+    lines.append('')
+    lines.append('#include <stdint.h>')
+    lines.append('')
+    lines.append(f'const uint8_t {var_name}[] = {{')
+    
+    bytes_per_line = 16
+    for i in range(0, len(data), bytes_per_line):
+        chunk = data[i:i + bytes_per_line]
+        hex_values = ', '.join(f'0x{b:02x}' for b in chunk)
+        lines.append(f'    {hex_values},')
+    
+    lines.append('};')
+    lines.append('')
+    return '\n'.join(lines)
 
-            with open(full_path, "rb") as f:
-                raw_data = f.read()
 
-            raw_size = len(raw_data)
-            file_hash = hashlib.sha256(raw_data).hexdigest()
+def embed_assets(source_dir, target_dir):
+    """Copy and embed all web assets into the target directory."""
+    print(f"Scanning for assets in: {source_dir}")
 
-            # Gzip compress (maximum compression)
-            comp_data = gzip.compress(raw_data, compresslevel=9)
-            comp_size = len(comp_data)
+    assets = find_assets(source_dir)
+    if not assets:
+        print("No web assets found!")
+        return 1
 
-            ident = c_identifier(f"web_asset_{len(assets)}")
+    total_files = 0
+    total_raw = 0
+    total_comp = 0
 
-            assets.append(
-                {
-                    "url": url_path,
-                    "ident": ident,
-                    "hash": file_hash,
-                    "mime": mime_type(url_path),
-                    "raw_size": raw_size,
-                    "comp_size": comp_size,
-                }
-            )
+    manifest_entries = []
 
-            # Write the compressed byte array to a separate .c file per asset
-            # to keep translation units small.
-            asset_c_path = os.path.join(out_dir, f"{ident}.c")
-            with open(asset_c_path, "w") as f:
-                f.write(f"// Asset: {url_path}\n")
-                f.write(f"// Raw size: {raw_size} bytes\n")
-                f.write(f"// Compressed size: {comp_size} bytes\n")
-                f.write(f"// SHA-256: {file_hash}\n\n")
-                f.write("#include <stdint.h>\n\n")
-                f.write(format_bytes(comp_data, ident))
+    for asset_path in assets:
+        # Read raw file
+        with open(asset_path, 'rb') as f:
+            raw_data = f.read()
+        
+        raw_size = len(raw_data)
+        
+        # Compute URL from path relative to source_dir
+        rel_path = str(asset_path.relative_to(source_dir))
+        url = '/' + rel_path.replace('\\', '/')
+        
+        mime = MIME_TYPES.get(asset_path.suffix.lower(), 'application/octet-stream')
+        sha_hash = sha256(raw_data)
+        
+        # Gzip compress
+        comp_data = gzip_data(raw_data)
+        comp_size = len(comp_data)
+        
+        print(f"  {url}: raw={raw_size:,} comp={comp_size:,} ({comp_size/raw_size*100:.0f}%) mime={mime}")
+        
+        total_raw += raw_size
+        total_comp += comp_size
+        total_files += 1
+        
+        # Generate C variable name
+        var_name = asset_to_c_var(url)
+        
+        # Generate C file content
+        c_content = generate_asset_c_file(var_name, comp_data, raw_size, comp_size,
+                                  sha_hash, url)
+        
+        # Write C file
+        c_path = Path(target_dir) / f'{var_name}.c'
+        with open(c_path, 'w') as f:
+            f.write(c_content)
+        
+        manifest_entries.append({
+            'url': url,
+            'var_name': var_name,
+            'raw_size': raw_size,
+            'comp_size': comp_size,
+            'hash': sha_hash,
+            'mime': mime,
+            'c_path': c_path,
+        })
 
-    # Write the manifest header
-    manifest_h_path = os.path.join(out_dir, "web_assets_manifest.h")
-    with open(manifest_h_path, "w") as f:
-        f.write("// Auto-generated by tools/embed_web_assets.py — DO NOT EDIT\n\n")
-        f.write("#ifndef WEB_ASSETS_MANIFEST_H\n")
-        f.write("#define WEB_ASSETS_MANIFEST_H\n\n")
-        f.write("#include <stdint.h>\n")
-        f.write("#include <stddef.h>\n\n")
-        f.write("typedef struct {\n")
-        f.write("    const char *url;\n")
-        f.write("    const uint8_t *data;\n")
-        f.write("    uint32_t raw_size;\n")
-        f.write("    uint32_t comp_size;\n")
-        f.write("    const char *hash;\n")
-        f.write("    const char *mime;\n")
-        f.write("} WebAsset;\n\n")
-        f.write(f"extern const WebAsset web_assets[{len(assets)}];\n")
-        f.write(f"extern const size_t web_assets_count;\n\n")
-        f.write("#endif\n")
+    # Generate manifest header
+    header_lines = []
+    header_lines.append('// Auto-generated by tools/embed_web_assets.py — DO NOT EDIT')
+    header_lines.append('')
+    header_lines.append('#ifndef WEB_ASSETS_MANIFEST_H')
+    header_lines.append('#define WEB_ASSETS_MANIFEST_H')
+    header_lines.append('')
+    header_lines.append('#include <stdint.h>')
+    header_lines.append('#include <stddef.h>')
+    header_lines.append('')
+    header_lines.append('typedef struct {')
+    header_lines.append('    const char *url;')
+    header_lines.append('    const uint8_t *data;')
+    header_lines.append('    uint32_t raw_size;')
+    header_lines.append('    uint32_t comp_size;')
+    header_lines.append('    const char *hash;')
+    header_lines.append('    const char *mime;')
+    header_lines.append('} WebAsset;')
+    header_lines.append('')
+    header_lines.append(f'extern const WebAsset web_assets[{len(manifest_entries)}];')
+    header_lines.append(f'extern const size_t web_assets_count;')
+    header_lines.append('')
+    header_lines.append('#endif')
+    
+    header_path = Path(target_dir) / 'web_assets_manifest.h'
+    with open(header_path, 'w') as f:
+        f.write('\n'.join(header_lines) + '\n')
 
-    # Write the manifest source
-    manifest_c_path = os.path.join(out_dir, "web_assets_manifest.c")
-    with open(manifest_c_path, "w") as f:
-        f.write("// Auto-generated by tools/embed_web_assets.py — DO NOT EDIT\n\n")
-        f.write('#include "web_assets_manifest.h"\n\n')
-        for i, asset in enumerate(assets):
-            f.write(f"extern const uint8_t {asset['ident']}[];\n")
-        f.write("\n")
-        f.write("const WebAsset web_assets[] = {\n")
-        for asset in assets:
-            f.write("    {\n")
-            f.write(f'        .url = {c_string_literal(asset["url"])},\n')
-            f.write(f"        .data = {asset['ident']},\n")
-            f.write(f"        .raw_size = {asset['raw_size']}u,\n")
-            f.write(f"        .comp_size = {asset['comp_size']}u,\n")
-            f.write(f'        .hash = {c_string_literal(asset["hash"])},\n')
-            f.write(f'        .mime = {c_string_literal(asset["mime"])},\n')
-            f.write("    },\n")
-        f.write("};\n")
-        f.write(f"const size_t web_assets_count = {len(assets)}u;\n")
+    # Generate manifest C file
+    manifest_lines = []
+    manifest_lines.append('// Auto-generated by tools/embed_web_assets.py — DO NOT EDIT')
+    manifest_lines.append('')
+    manifest_lines.append('#include "web_assets_manifest.h"')
+    manifest_lines.append('')
+    
+    # External declarations
+    for entry in manifest_entries:
+        manifest_lines.append(f'extern const uint8_t {entry["var_name"]}[];')
+    
+    manifest_lines.append('')
+    manifest_lines.append('const WebAsset web_assets[] = {')
+    for i, entry in enumerate(manifest_entries):
+        comma = ',' if i < len(manifest_entries) - 1 else ''
+        manifest_lines.append('    {')
+        manifest_lines.append(f'        .url = "{entry["url"]}",')
+        manifest_lines.append(f'        .data = {entry["var_name"]},')
+        manifest_lines.append(f'        .raw_size = {entry["raw_size"]}u,')
+        manifest_lines.append(f'        .comp_size = {entry["comp_size"]}u,')
+        manifest_lines.append(f'        .hash = "{entry["hash"]}",')
+        manifest_lines.append(f'        .mime = "{entry["mime"]}",')
+        manifest_lines.append(f'    }}{comma}')
+    manifest_lines.append('};')
+    manifest_lines.append(f'const size_t web_assets_count = {len(manifest_entries)}u;')
+    
+    manifest_path = Path(target_dir) / 'web_assets_manifest.c'
+    with open(manifest_path, 'w') as f:
+        f.write('\n'.join(manifest_lines) + '\n')
 
     # Print summary
-    total_raw = sum(a["raw_size"] for a in assets)
-    total_comp = sum(a["comp_size"] for a in assets)
-    print(f"Embedded {len(assets)} assets")
-    print(f"  Total raw size:  {total_raw} bytes ({total_raw / 1024:.1f} KB)")
-    print(f"  Total comp size: {total_comp} bytes ({total_comp / 1024:.1f} KB)")
-    print(f"  Compression: {100 * (1 - total_comp / total_raw):.1f}% smaller")
-    print(f"  Output: {out_dir}/")
+    print(f"\n{'=' * 60}")
+    print(f"Total files: {total_files}")
+    print(f"Total raw size:  {total_raw:,} bytes ({total_raw / 1024:.1f} KB)")
+    print(f"Total comp size: {total_comp:,} bytes ({total_comp / 1024:.1f} KB)")
+    print(f"Compression: {(1 - total_comp / total_raw) * 100:.0f}% smaller")
+    print(f"Assets embedded to: {target_dir}")
+    print(f"{'=' * 60}")
+
+    return 0
 
 
-def main() -> None:
-    if len(sys.argv) != 3:
-        print(f"Usage: {sys.argv[0]} <webui_dist_dir> <output_dir>", file=sys.stderr)
-        sys.exit(1)
-    dist_dir = sys.argv[1]
-    out_dir = sys.argv[2]
-    if not os.path.isdir(dist_dir):
-        print(f"Error: dist dir not found: {dist_dir}", file=sys.stderr)
-        sys.exit(1)
-    embed(dist_dir, out_dir)
+def main():
+    if len(sys.argv) < 3:
+        print("Usage: embed_web_assets.py <source-dir> <target-dir>")
+        return 1
+
+    source_dir = sys.argv[1]
+    target_dir = sys.argv[2]
+
+    if not os.path.exists(source_dir):
+        print(f"Error: Source directory '{source_dir}' does not exist")
+        return 1
+
+    os.makedirs(target_dir, exist_ok=True)
+
+    print(f"Embedding web assets from '{source_dir}' to '{target_dir}'")
+    print()
+
+    return embed_assets(source_dir, target_dir)
 
 
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    sys.exit(main())

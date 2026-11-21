@@ -104,7 +104,13 @@ struct ModelManifest {
 
 // AI configuration (SPEC §4.4.2 for external AI).
 struct AIConfig {
-    bool enabled = false;
+    // Owner decision D6 (2026-11-20): the AI framework ships ENABLED with
+    // provider "none" — the subsystem is live on every boot and the user
+    // only picks a provider in the UI. Supersedes SPEC §7's
+    // "enabled": false example default (recorded in owner-decisions.md).
+    bool enabled = true;
+    // Default provider "none" = NoAiProvider (SPEC §4.4): AI on, nothing
+    // selected yet — not "AI off".
     std::string provider = kProviderNone; // "none" | "external_ai" | "tflite_micro"
     // External AI:
     std::string base_url;
@@ -113,7 +119,12 @@ struct AIConfig {
     uint32_t upload_width = 640;
     uint32_t upload_height = 480;
     uint32_t upload_quality = 12;
-    uint32_t inference_interval_ms = 1000;
+    // SPEC §7 ai schema example default (5000 ms) — also the minimum gap
+    // between two motion-triggered inferences.
+    uint32_t inference_interval_ms = 5000;
+    // SPEC §7 ai schema: detections below this are discarded before they
+    // are recorded or published.
+    float confidence_threshold = 0.6f;
     std::vector<std::string> event_types; // which events trigger inference
     uint32_t max_retries = 3;
     bool tls_verify = true;

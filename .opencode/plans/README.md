@@ -9,50 +9,34 @@ file for the phase you are working on, then the acceptance matrix in
 
 ---
 
-## Current status (2026-11-16)
+## Current status (2026-11-20)
 
-**Phase 0 — code and hardware complete; **D2 R1 baseline MEASURED** 2026-11-15; **SD card reformatted** 2026-11-16.**
+**Phases 0–5 complete (hardware-verified, evidence in `docs/evidence/`);
+Phase 6 — AI framework — in progress.**
 
-- ✅ Done: tasks 0.1–0.4 (repo baseline, pinned toolchain + components,
-  board profile, partition table verified on both build pipelines **and in
-  the boot log on hardware**, camera + SD + Wi-Fi smoke modules),
-  task 0.4 step 18 (`docs/REFERENCE_ANALYSIS.md` entries), R1 compile check,
-  D3 answered (**10 %**).
-- ✅ **Smoke test VERIFIED on the owner's board 2026-11-15** — every §5 row in
-  `docs/HARDWARE.md`: flash/auto-reset, banner + PSRAM 8,388,608 B, OV2640
-  PID + JPEG, forced-failure `attempts=2 -> OK`, SD 1-bit mount + self-test,
-  **GPIO4 lamp OFF**, Wi-Fi off/on cycles OK, single boot, no brownout.
-  Evidence: `docs/evidence/phase0-smoke-boot-10/11-*.log`.
-- ✅ **D2 R1 baseline MEASURED** — R1 flashed unmodified, provisioned onto the
-  owner's LAN over NVS (`tools/nvs_provision`), measured over HTTP while a
-  passive serial capture recorded R1's own stats block. `docs/HARDWARE.md` §4
-  now holds 8 runs: 30.8 / 20.6 / 20.4 / 5.3 / 6.2 FPS for QVGA…SXGA at
-  quality 12 (plus VGA at q8 and q16), SD 0.48–0.51 MB/s, heap and pSRAM
-  figures, no brownout/panic/WDT. Evidence:
-  `docs/evidence/phase0-d2-r1-avi-stats-blocks.txt`,
-  `docs/evidence/phase0-d2-r1-serial-run.txt`.
-- ✅ **Storage finding RESOLVED 2026-11-16:** the card held a bootable
-  **Linux Mint** image — the "5 MB FAT volume" was its EFI partition, the
-  rest ext4 (invisible to FATFS). Owner authorized the rewrite; the new
-  standalone `tools/sd_format/` tool (flash → `format` → typed `ERASE` →
-  reflash) wrote **MBR + FAT32 across the whole card: 8,051,032,064 B
-  usable, 99 % of the CSD**. Post-format VisionCam boot 12: no coverage
-  warning, full verdict line green. Evidence:
-  `docs/evidence/phase0-sd-format.log`,
-  `docs/evidence/phase0-smoke-boot-12-postformat.log`; analysis:
-  `docs/HARDWARE.md` §4.2/§4.2.1, TEST_PLAN row 0.13. Phase 9 retention
-  sizing now has a card with room; R1's stats-block lesson from the
-  full-disk era stands (Phase 3 must check write return values).
-- ✅ **All three owner follow-ups closed 2026-11-16:** GPIO4 lamp
-  **observed under R1** (boot-window flash + status blink; R1's source
-  timeline separates SD mount `00:00:00.572` from its lamp feature
-  `00:00:01.277` — `docs/HARDWARE.md` §4, evidence
-  `phase0-d2-r1-lamp-run.log`), **D5 answered** (genuine SanDisk 8 GB, no
-  class marking), **weak-supply drill skipped by owner decision**. Phase
-  0's own phase-end stack-HWM/FPS row still needs a running capture loop —
-  **Phase 1+**.
-- Phase 0 exit gate is **green** — baseline recorded, storage resolved,
-  owner questions closed. **Start Phase 1.**
+- **Phase 0** — baseline, D2 R1 baseline measured, SD card reformatted
+  (2026-11-16), all owner follow-ups closed. Gate **green**.
+- **Phase 1** — core camera + web UI: auth, embedded React UI, frame
+  manager, ladder, network manager. Gate **green** (`docs/TEST_PLAN.md`
+  §Phase 1 exit gate table).
+- **Phase 2** — storage manager, JSONL media index, snapshots, retention.
+  Gate **green** (TEST_PLAN 2.1.x–2.5.x).
+- **Phase 3** — AVI segment writer, playback, recordings UI. Gate
+  **green** (TEST_PLAN 3.1.x–3.5.x, code-path rows).
+- **Phase 4** — motion engine + events. Gate **green** (TEST_PLAN
+  4.1.x–4.4.x).
+- **Phase 5** — timelapse projects, direct-to-AVI. Gate **green**
+  (TEST_PLAN 5.1.x–5.4.x).
+- **Phase 6 (in progress)** — provider abstraction + three providers
+  implemented; D4 answered (**selectable but unlinked**) and D6 answered
+  (**framework ON, provider = none**) on 2026-11-20; firmware builds green
+  at **84.1 % flash / 44.4 % RAM** after switching the app build to `-Os`
+  (`sdkconfig.defaults` + `sdkconfig.esp32cam`, Kconfig choice
+  `COMPILER_OPTIMIZATION_SIZE`). Remaining: AI UI pages, embed, on-device
+  validation of the D6/D4 behaviour, TEST_PLAN rows.
+
+Owner decisions **D4** and **D6** are recorded in `owner-decisions.md`
+(answer table at the bottom of that file).
 
 ---
 
@@ -115,8 +99,9 @@ Full write-up and answer table: [`owner-decisions.md`](owner-decisions.md).
 | D1 | Licence: **A clean-room** or **B adopt AGPL-3.0** | Phase 0 | ✅ **A — clean-room** (2026-11-15): no R1 code may be copied |
 | D2 | Run R1 unmodified on the board and record the baseline table | Phase 0 | ✅ **Run during Phase 0** (2026-11-15); performance claims stay `UNVERIFIED` until numbers are recorded |
 | D3 | FPS parity tolerance vs R1 baseline | Phase 0 | ✅ **10 %** (2026-11-15): VisionCam recording FPS must stay within 10 % of the R1 baseline at the same frame size, quality and card |
-| D4 | Declare on-device TFLM supported or unsupported after benchmark | Phase 6 | ⬜ pending — default: unsupported beyond the benchmarked model |
+| D4 | Declare on-device TFLM supported or unsupported after benchmark | Phase 6 | ✅ **Selectable but unlinked** (2026-11-20): all three provider choices ship in the UI; `tflite_micro` persists with `provider_ready=false` and the honest D4 message; activation returns HTTP 400 with the D4 text. `esp-tflite-micro` is NOT linked — revisit only when flash headroom is ~30 % |
 | D5 | Deployment SD card model(s) for the long-run test | Phase 9 | ✅ **genuine SanDisk 8 GB, no class marking visible** (owner 2026-11-16); reformatted MBR+FAT32 same day — Phase 9 measures real throughput |
+| D6 | AI default state and provider selection (owner directive) | Phase 6 | ✅ **Framework ON, provider = `none`** (2026-11-20): fresh boot persists `enabled=true provider=none`; the user picks `external_ai` or `tflite_micro` in the UI and configures it — no separate enable step, no firmware change to switch provider |
 
 ## Global engineering rules for every phase
 

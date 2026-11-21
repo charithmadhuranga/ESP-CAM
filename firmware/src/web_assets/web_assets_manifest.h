@@ -15,7 +15,7 @@ typedef struct {
     const char *mime;
 } WebAsset;
 
-extern const WebAsset web_assets[5];
+extern const WebAsset web_assets[4];
 extern const size_t web_assets_count;
 
 #endif

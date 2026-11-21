@@ -41,7 +41,7 @@ namespace visioncam {
 // clients + 2 stream slots = 6 (smaller than R1's 7; the ESP32's RAM and
 // the single-core capture task make a larger limit pointless — a stream
 // client consumes one slot for the whole connection).
-constexpr int kHttpMaxOpenSockets = 6;
+constexpr int kHttpMaxOpenSockets = 7;
 
 // The server task stack. Not a number of its own: tasks.h is the single
 // source of truth for every task's stack (firmware/AGENTS.md), so this can
@@ -71,6 +71,13 @@ enum class ErrCode : uint16_t {
     TimeUnsynchronised = 11,
     RateLimited = 12,
     Internal = 13,
+    // Additive 2026-11-21 (Phase 7): broker/backend unreachable. The
+    // skill's standard set names it MQTT_UNAVAILABLE; numeric 14 -> 503.
+    MqttUnavailable = 14,
+    // Additive 2026-11-21 (Phase 8): network-storage backend unreachable
+    // (test failed / upload queue full / heap gate). Numeric 15 -> 503.
+    NetworkStorageUnavailable = 15,
+    WifiUnavailable = 16,
 };
 
 // Writes an OK envelope: {ok:true, data:<payload>, error:null, request_id:N}.

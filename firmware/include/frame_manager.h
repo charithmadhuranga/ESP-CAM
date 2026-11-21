@@ -47,7 +47,15 @@
 namespace visioncam {
 
 // Fixed bounds (AGENTS rule 12 — see the header comment).
-#define VC_FRAME_SUBSCRIBERS   4   // registered consumers
+// Slot budget (2026-11-21, after the live stream landed and AI/timelapse
+// were descoped):
+//   persistent — smoke (boot test, never released), recorder, motion = 3
+//   transient  — live stream (one per open browser, released on every
+//                exit path via RAII) and snapshot capture (subscribes
+//                per capture, unsubscribes on every exit path)  = 5 spare
+// Eight slots costs ~800 B of depth-2 descriptor queues, not frame buffers.
+// The budget stays explicit so a registry-full failure can't mask a leak.
+#define VC_FRAME_SUBSCRIBERS   8   // registered consumers
 #define VC_FRAME_QUEUE_DEPTH   2   // descriptors per consumer
 #define VC_FRAME_POOL          4   // refcounted frame records
 

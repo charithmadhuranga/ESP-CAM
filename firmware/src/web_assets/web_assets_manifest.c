@@ -2,52 +2,43 @@
 
 #include "web_assets_manifest.h"
 
-extern const uint8_t web_asset_0[];
-extern const uint8_t web_asset_1[];
-extern const uint8_t web_asset_2[];
-extern const uint8_t web_asset_3[];
-extern const uint8_t web_asset_4[];
+extern const uint8_t web_asset__app_js[];
+extern const uint8_t web_asset__index_html[];
+extern const uint8_t web_asset__styles_base_css[];
+extern const uint8_t web_asset__styles_tokens_css[];
 
 const WebAsset web_assets[] = {
     {
-        .url = "/favicon.svg",
-        .data = web_asset_0,
-        .raw_size = 9522u,
-        .comp_size = 1499u,
-        .hash = "61bc9a161de58248288e6905425d7180f0624c2865007b97d763fdac12043a66",
-        .mime = "image/svg+xml",
-    },
-    {
-        .url = "/icons.svg",
-        .data = web_asset_1,
-        .raw_size = 5031u,
-        .comp_size = 2161u,
-        .hash = "b45fa506195cfcdef406ba9f0c77b36ddc1a7c224040926ec70abc2fdea7b93a",
-        .mime = "image/svg+xml",
-    },
-    {
-        .url = "/index.html",
-        .data = web_asset_2,
-        .raw_size = 458u,
-        .comp_size = 296u,
-        .hash = "f0af8805877918c1ef28f494a9ca3fa0251b1fedd0594d83be2c0d1ff4df687e",
-        .mime = "text/html",
-    },
-    {
-        .url = "/assets/index-CzZArU0K.js",
-        .data = web_asset_3,
-        .raw_size = 352500u,
-        .comp_size = 106357u,
-        .hash = "726a4d7f9ce4ef23f122cfa637dc3f46319585a69fe6adda4619f9079c350ce3",
+        .url = "/app.js",
+        .data = web_asset__app_js,
+        .raw_size = 36671u,
+        .comp_size = 9009u,
+        .hash = "00ff254f51ad4894d28754799383b344d401b59f2b74ea6c1ea708616655d84e",
         .mime = "text/javascript",
     },
     {
-        .url = "/assets/index-TYj4cBby.css",
-        .data = web_asset_4,
-        .raw_size = 11087u,
-        .comp_size = 2584u,
-        .hash = "9b25b0995257fd759c91ded650dd64e5d299574f751cd067952ab1ed8d432174",
+        .url = "/index.html",
+        .data = web_asset__index_html,
+        .raw_size = 27243u,
+        .comp_size = 5657u,
+        .hash = "1442028dedc6dd85908b97ddb6e0e5f5754810c7b4850a4fe6a141600c720bd6",
+        .mime = "text/html",
+    },
+    {
+        .url = "/styles/base.css",
+        .data = web_asset__styles_base_css,
+        .raw_size = 14278u,
+        .comp_size = 3571u,
+        .hash = "6fe8ed87e4cc5c4618a0db83dacfa15de161fe330f1f33cbd50e7eb6d5d52e49",
         .mime = "text/css",
     },
+    {
+        .url = "/styles/tokens.css",
+        .data = web_asset__styles_tokens_css,
+        .raw_size = 1054u,
+        .comp_size = 549u,
+        .hash = "2a2fd4a70e12ae1e1a496c81467ab2f4bf8f4f95120f48e613c58c904b60c330",
+        .mime = "text/css",
+    }
 };
-const size_t web_assets_count = 5u;
+const size_t web_assets_count = 4u;

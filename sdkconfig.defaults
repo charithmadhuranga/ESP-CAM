@@ -19,6 +19,20 @@ CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 # REQUIRED: PSRAM at 80 MHz depends on this symbol (see below).
 CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
 
+# --- Compiler optimization: -Os, not -Og ------------------------------------
+# IDF's Kconfig default for choice COMPILER_OPTIMIZATION is DEBUG (-Og)
+# (framework-espidf/Kconfig:409), which put the app at 92.6-92.9 % of the
+# 1.5 MB ota_0 slot — over the Phase 6 <90 % target. "Size" adds -Os
+# (Kconfig:414) and is the correct choice for a flash-bound product build;
+# debugging still works, only address-to-line correlation degrades.
+# NOTE: sdkconfig.esp32cam (untracked, regenerated) carries the resolved
+# value — if that file exists it wins over this default, so both were set
+# on 2026-11-20. Verify in .pio/build/<env>/config/sdkconfig.h that
+# CONFIG_COMPILER_OPTIMIZATION_SIZE is defined and _DEBUG is not; the
+# generated header, not this file, is the source of truth (same rule as
+# every symbol above).
+CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+
 # --- PSRAM -------------------------------------------------------------------
 # Frames live in PSRAM, so this is mandatory (SPEC 4.1.1).
 # IDF default is "n" (components/esp_psram/esp32/Kconfig.spiram:1-3).

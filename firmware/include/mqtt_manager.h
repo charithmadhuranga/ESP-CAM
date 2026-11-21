@@ -1,127 +1,92 @@
-// mqtt_manager.h — MQTT + Home Assistant integration (Phase 7 task 7.1-7.4;
-// SPEC §4.10, §4.11, §6.9).
+// mqtt_manager.h — MQTT worker + Home Assistant discovery
+// (Phase 7 tasks 7.1-7.4; SPEC §4.10, §4.11, §6.9).
 //
-// MQTT runs in its own task at LOW priority so camera/storage/motion/
-// timelapse tasks never block on broker availability (AGENTS rule 11).
-// Uses a bounded publish queue with drop/coalesce for low-priority
-// telemetry when full. Publishes retained online/offline availability
-// with Last Will.
+// A separate worker task: camera/storage/recording tasks NEVER wait on the
+// broker (AGENTS rule 11). Outbound messages go through a bounded queue
+// (drop-oldest for telemetry, QoS 1 for events) so a broker outage cannot
+// grow RAM or block anything — local recording and motion keep running
+// whether the broker is present or not (SPEC §9).
 //
-// All MQTT messages use the topic prefix visioncam/{device_id}/... and
-// never carry credentials or binary images (deliberate divergence from R1
-// which published images over MQTT). Snapshot paths are device-local
-// paths, not automatically accessible to Home Assistant.
+// Secrets (password) live in NVS only and are never returned by GET
+// (AGENTS rule 17); the response carries a boolean instead.
 
 #pragma once
 
-#include <cstddef>
+#include <atomic>
 #include <cstdint>
 #include <string>
-#include <vector>
 
 #include "esp_err.h"
 
 namespace visioncam {
 
-// ---- MQTT configuration (SPEC §4.10) ------------------------------------
-
+// --- Configuration ----------------------------------------------------------
 struct MqttConfig {
     bool enabled = false;
-    std::string host;
-    uint16_t port = 1883;
+    std::string broker_uri;        // mqtt://host:port | mqtts://host:port (empty = unconfigured)
     std::string username;
-    std::string password;        // stored in NVS, never returned by GET
-    std::string client_id;       // defaults to device_id if empty
-    std::string base_topic = "visioncam/{device_id}";
-    uint8_t qos = 0;             // 0 for telemetry, 1 for important events
-    uint16_t keepalive = 60;     // seconds
-    bool tls_enable = false;
-    std::string tls_cert;        // PEM certificate, stored in NVS
-    bool ha_discovery = false;   // Home Assistant discovery enable
+    std::string password;          // write-only; never in a GET response
+    bool tls_verify = true;        // mqtts certificate/CN verification
+    std::string base_topic = "visioncam";
+    std::string client_id;         // empty -> derived from the device id
+    bool ha_discovery = true;      // publish Home Assistant discovery configs
     std::string ha_prefix = "homeassistant";
-    uint32_t publish_interval_ms = 5000;  // telemetry publish interval
-    std::vector<std::string> event_categories;  // which events to publish
-    bool availability_retained = true;
+    uint32_t keepalive_s = 30;
+    uint32_t timeout_ms = 5000;    // connect/publish timeout
 };
 
-// ---- MQTT status ---------------------------------------------------------
-
+// --- Status ---------------------------------------------------------------
 struct MqttStatus {
     bool enabled = false;
+    // Plain bool: the manager keeps an atomic in its own translation unit
+    // and mirrors it here, so this struct stays copyable for callers.
     bool connected = false;
-    bool broker_reachable = false;
-    uint32_t connects_total = 0;
-    uint32_t disconnects_total = 0;
-    uint32_t publishes_total = 0;
-    uint32_t publishes_failed = 0;
-    uint32_t queue_dropped = 0;
-    uint32_t queue_depth = 0;
-    int32_t rssi = 0;            // last known Wi-Fi RSSI
+    std::string state;             // disabled | unconfigured | connecting |
+                                   // online | offline | error
+    uint32_t connects = 0;
+    uint32_t disconnects = 0;
+    uint32_t published = 0;
+    uint32_t dropped = 0;          // queue overflow (documented policy)
     std::string last_error;
+    bool ha_discovery_published = false;
 };
 
-// ---- Publish queue entry (bounded, documented overflow) ------------------
+// --- Public API ------------------------------------------------------------
 
-struct MqttPublishEntry {
-    std::string topic;
-    std::string payload;         // small payload only, never images
-    uint8_t qos = 0;
-    bool retain = false;
-    uint32_t priority = 0;       // higher = more important, kept on overflow
-};
+// Initialise the worker: load config from NVS, then start the task. Safe to
+// call with no broker configured (state stays "unconfigured"). Idempotent.
+esp_err_t mqttManagerInit();
 
-// ---- Public API ----------------------------------------------------------
-
-// Initialise MQTT manager. Call after event bus, network manager and
-// NVS are available. Spawns the MQTT worker task.
-esp_err_t mqttManagerInit(const MqttConfig* config);
-
-// Shut down MQTT manager — stops worker, publishes retained offline LWT.
+// Stop the worker, release the client. The app keeps running without it.
 esp_err_t mqttManagerShutdown();
 
-// Get config (copy). Password is NOT included (never returned by GET).
+// Get config (copy). The password is NOT included: callers that need to
+// know whether one is stored use mqttManagerStatus/mqttManagerPasswordSet.
 esp_err_t mqttManagerGetConfig(MqttConfig* out);
 
-// Set config (parse → validate → persist → apply → return sanitised,
-// SPEC 7 process). Partial updates overlay on current config.
+// Whether a broker password is stored (AGENTS rule 17).
+bool mqttManagerPasswordSet();
+
+// SPEC §7 update process: validate → persist → apply → return the
+// sanitized effective config. A connection change reconnects live.
 esp_err_t mqttManagerSetConfig(const MqttConfig* candidate,
                                MqttConfig* effective);
 
-// Get MQTT status (connection state, queue depth, publish stats).
+// Status snapshot.
 esp_err_t mqttManagerStatus(MqttStatus* out);
 
-// Test MQTT connection — attempts a single connect/publish/disconnect cycle.
-esp_err_t mqttManagerTestConnection();
-
-// Reconnect — force a reconnect attempt.
-esp_err_t mqttManagerReconnect();
-
-// Publish test message — publishes a test payload to the base topic.
-esp_err_t mqttManagerTestPublish();
-
-// Home Assistant discovery republish — re-sends all retained discovery
-// configs (triggered by UI action or HA birth message).
+// Republish the Home Assistant discovery configs (UI action, task 7.3 #19).
 esp_err_t mqttManagerRepublishDiscovery();
 
-// Get HA discovery status.
-esp_err_t mqttManagerHaStatus(bool* out_enabled, bool* out_connected,
-                              uint32_t* out_entities_published);
+// One-shot connection test: connects to the configured broker, reports the
+// result, then disconnects. Never blocks the caller beyond its timeout.
+esp_err_t mqttManagerTestConnection();
 
-// ---- Internal: called by event bus / other modules ----------------------
+// Publish one retained test message on the device's own topic tree
+// (POST /integrations/mqtt/test-publish). Requires a live connection.
+esp_err_t mqttManagerPublishTest();
 
-// Publish an event to the appropriate MQTT topic. Called by the event bus
-// subscriber when motion/detection/recording/snapshot/storage events occur.
-// Bounded queue with drop/coalesce for low-priority entries.
-esp_err_t mqttPublishEvent(const std::string& event_type,
-                           const std::string& source,
-                           const std::string& label,
-                           float confidence,
-                           const std::string& snapshot_id,
-                           uint32_t timestamp);
-
-// Publish telemetry (storage used/free/percentage, Wi-Fi RSSI, inference
-// time). Called periodically by the resource monitor.
-esp_err_t mqttPublishTelemetry(const std::string& key, double value,
-                               const std::string& unit);
+// Stable device identity used in topics/unique_ids (generated once, NVS).
+const char* mqttManagerDeviceId();
 
 }  // namespace visioncam

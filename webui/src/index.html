@@ -1,0 +1,264 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#101318">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="Local camera administration">
+  <title>VisionCam Pro</title>
+  <link rel="stylesheet" href="/styles/tokens.css">
+  <link rel="stylesheet" href="/styles/base.css">
+</head>
+<body>
+  <main id="login-page" class="auth-screen" hidden>
+    <section class="auth-card" aria-labelledby="login-title">
+      <div class="brand-mark" aria-hidden="true">VC</div>
+      <p class="eyebrow">LOCAL CAMERA SYSTEM</p>
+      <h1 id="login-title">VisionCam Pro</h1>
+      <p class="muted">Sign in to manage your camera and local recordings.</p>
+      <p id="login-error" class="form-error" role="alert" hidden></p>
+      <form id="login-form" class="form-stack">
+        <label>Username<input name="username" autocomplete="username" required maxlength="48"></label>
+        <label>Password<input name="password" type="password" autocomplete="current-password" required maxlength="63"></label>
+        <button id="login-btn" class="button button-primary" type="submit">Sign in</button>
+      </form>
+      <p class="auth-footnote">Private, local access · No cloud account required</p>
+    </section>
+  </main>
+
+  <main id="first-login-page" class="auth-screen" hidden>
+    <section class="auth-card" aria-labelledby="first-login-title">
+      <div class="brand-mark" aria-hidden="true">VC</div>
+      <p class="eyebrow">ACCOUNT SECURITY</p>
+      <h1 id="first-login-title">Set a new password</h1>
+      <p class="muted">Choose a unique password before continuing.</p>
+      <form id="first-login-form" class="form-stack">
+        <label>Current password<input name="current_password" type="password" autocomplete="current-password" required maxlength="63"></label>
+        <label>New password<input name="new_password" type="password" autocomplete="new-password" required minlength="10" maxlength="63"></label>
+        <label>Confirm new password<input name="confirm_password" type="password" autocomplete="new-password" required minlength="10" maxlength="63"></label>
+        <button class="button button-primary" type="submit">Update password</button>
+      </form>
+    </section>
+  </main>
+
+  <div id="app" class="app-shell" hidden>
+    <aside id="sidebar" class="sidebar">
+      <a class="brand" href="#" data-page="overview" aria-label="VisionCam Pro overview">
+        <span class="brand-mark">VC</span>
+        <span><strong>VISIONCAM</strong><small>PRO · LOCAL NVR</small></span>
+      </a>
+      <p class="nav-caption">CAMERA</p>
+      <nav class="navigation" aria-label="Main navigation">
+        <button class="nav-item active" type="button" data-page="overview" aria-current="page"><span class="nav-icon">◫</span>Overview</button>
+        <button class="nav-item" type="button" data-page="live"><span class="nav-icon">◉</span>Live view</button>
+        <button class="nav-item" type="button" data-page="snapshots"><span class="nav-icon">▧</span>Media library</button>
+        <button class="nav-item" type="button" data-page="recordings"><span class="nav-icon">▶</span>Recordings</button>
+      </nav>
+      <p class="nav-caption">DEVICE</p>
+      <nav class="navigation" aria-label="Device navigation">
+        <button class="nav-item" type="button" data-page="storage"><span class="nav-icon">▤</span>Storage</button>
+        <button class="nav-item" type="button" data-page="settings"><span class="nav-icon">⚙</span>Settings</button>
+        <button class="nav-item" type="button" data-page="integrations"><span class="nav-icon">⇄</span>Integrations</button>
+      </nav>
+      <div class="sidebar-bottom">
+        <span class="local-indicator"></span>
+        <span><strong>Local-first mode</strong><small>Media remains on device</small></span>
+      </div>
+    </aside>
+
+    <section class="workspace">
+      <header class="topbar">
+        <div class="topbar-title">
+          <button class="menu-button button button-secondary" type="button" data-command="menu" aria-label="Open navigation">☰</button>
+          <div><p id="device-name" class="eyebrow">VISIONCAM PRO</p><h1 id="page-title">Overview</h1></div>
+        </div>
+        <div class="topbar-actions">
+          <span id="device-state" class="status-chip" data-state="muted">Checking device</span>
+          <span id="mqtt-badge" class="status-chip" data-state="muted">MQTT unknown</span>
+          <button class="button button-quiet" type="button" data-command="logout">Sign out</button>
+        </div>
+      </header>
+
+      <div class="content-scroll">
+        <div id="page-overview" class="page">
+          <div class="page-heading">
+            <div><p class="eyebrow">DEVICE AT A GLANCE</p><h2>Camera overview</h2><p id="overview-detail" class="muted">Status is read directly from the device.</p></div>
+            <div class="button-row">
+              <button class="button button-secondary" type="button" data-command="capture-snapshot">Capture snapshot</button>
+              <button class="button button-primary" type="button" data-command="toggle-recording">Start / stop recording</button>
+            </div>
+          </div>
+          <div class="stat-grid">
+            <article class="stat-card"><span class="stat-icon">◉</span><p class="stat-label">Camera</p><strong id="stat-camera" class="stat-value">—</strong><small>OV2640 sensor</small></article>
+            <article class="stat-card"><span class="stat-icon">●</span><p class="stat-label">Recording</p><strong id="stat-recording" class="stat-value">—</strong><span id="recording-badge" class="status-chip" data-state="muted">Checking</span></article>
+            <article class="stat-card"><span class="stat-icon">⌁</span><p class="stat-label">Motion events</p><strong id="stat-motion" class="stat-value">—</strong><small>Since boot</small></article>
+            <article class="stat-card"><span class="stat-icon">▤</span><p class="stat-label">SD card used</p><strong id="stat-sd" class="stat-value">—</strong><small id="stat-sd-detail">—</small></article>
+          </div>
+
+          <div class="dashboard-grid">
+            <article class="panel camera-panel">
+              <div class="panel-heading"><div><p class="eyebrow">CAMERA</p><h3>Live preview</h3></div><button class="button button-small button-secondary" type="button" data-page="live">Open live view</button></div>
+              <a class="preview-link" href="#" data-page="live" aria-label="Open live camera view"><div class="preview-frame"><span class="preview-placeholder">Open live view to connect to the camera</span><span class="preview-label">MJPEG · AUTHENTICATED</span></div></a>
+            </article>
+            <article class="panel">
+              <div class="panel-heading"><div><p class="eyebrow">DEVICE STATUS</p><h3>System health</h3></div><button class="button button-small button-secondary" type="button" data-command="metrics">Diagnostics</button></div>
+              <dl class="health-list">
+                <div><dt>Network</dt><dd id="stat-wifi">—</dd></div>
+                <div><dt>Device clock</dt><dd id="stat-uptime">—</dd></div>
+                <div><dt>System health</dt><dd id="stat-health">—</dd></div>
+                <div><dt>MQTT</dt><dd id="stat-mqtt">—</dd></div>
+                <div><dt>Free heap</dt><dd id="stat-heap">—</dd></div>
+              </dl>
+            </article>
+          </div>
+          <article class="panel">
+            <div class="panel-heading"><div><p class="eyebrow">DEVICE INFORMATION</p><h3>System diagnostics</h3></div><span id="firmware-version" class="muted">Firmware</span></div>
+            <div class="table-wrap"><table><tbody id="metrics-body"><tr><td>Run diagnostics to view memory and frame counters.</td></tr></tbody></table></div>
+            <details class="task-details"><summary>Task stack watermarks</summary><div class="table-wrap"><table><thead><tr><th>Task</th><th>Stack high-water</th><th>Priority</th><th>Core</th><th>State</th></tr></thead><tbody id="tasks-body"></tbody></table></div></details>
+          </article>
+        </div>
+
+        <div id="page-live" class="page" hidden>
+          <div class="page-heading"><div><p class="eyebrow">CAMERA · STREAM</p><h2>Live view</h2><p class="muted">MJPEG stream is authenticated and stops when you leave this page.</p></div><div class="button-row"><span id="stream-state" class="status-chip" data-state="muted">Not connected</span><button class="button button-secondary" type="button" data-command="capture-frame">Capture frame</button><button class="button button-primary" type="button" data-command="capture-snapshot">Save snapshot</button></div></div>
+          <div class="live-layout">
+            <article class="panel stream-panel"><div class="stream-frame"><img id="live-stream" alt="Live camera stream"><img id="capture-preview" class="capture-preview" alt="Captured camera frame" hidden><span class="stream-watermark">VISIONCAM · LIVE</span></div></article>
+            <article class="panel"><div class="panel-heading"><div><p class="eyebrow">QUICK CONTROL</p><h3>Recording</h3></div></div><p class="muted">Recording is written to the microSD card in MJPEG AVI segments.</p><button class="button button-primary button-wide" type="button" data-command="toggle-recording">Start / stop recording</button><div class="divider"></div><p class="eyebrow">STREAM POLICY</p><p class="muted">Frames are delivered by the frame manager. Closing this page releases the stream connection.</p></article>
+          </div>
+        </div>
+
+        <div id="page-snapshots" class="page" hidden>
+          <div class="page-heading"><div><p class="eyebrow">LOCAL MEDIA</p><h2>Media library</h2><p class="muted">Browse snapshots and other indexed media stored on the device SD card.</p></div><div class="button-row"><span id="media-count" class="status-chip" data-state="muted">—</span><button class="button button-secondary" type="button" data-command="refresh-media">Refresh</button><button class="button button-primary" type="button" data-command="capture-snapshot">Capture snapshot</button></div></div>
+          <article class="panel"><div class="table-wrap"><table><thead><tr><th>Media ID</th><th>Type</th><th>Category</th><th>Size</th><th>Created</th><th>Actions</th></tr></thead><tbody id="media-body"></tbody></table></div><div class="pagination"><button id="media-prev" class="button button-small button-secondary" type="button" data-command="media-prev">Previous</button><span id="media-page-label">Page 1</span><button id="media-next" class="button button-small button-secondary" type="button" data-command="media-next">Next</button></div></article>
+        </div>
+
+        <div id="page-recordings" class="page" hidden>
+          <div class="page-heading"><div><p class="eyebrow">LOCAL MEDIA</p><h2>Recordings</h2><p class="muted">MJPEG AVI files can be replayed or downloaded from the microSD card.</p></div><div class="button-row"><button class="button button-secondary" type="button" data-command="refresh-recordings">Refresh</button><button class="button button-primary" type="button" data-command="toggle-recording">Start / stop</button></div></div>
+          <article class="panel"><div class="table-wrap"><table><thead><tr><th>Recording ID</th><th>Category</th><th>Size</th><th>Duration</th><th>Started</th><th>Actions</th></tr></thead><tbody id="recordings-body"></tbody></table></div><div class="pagination"><button id="recording-prev" class="button button-small button-secondary" type="button" data-command="recording-prev">Previous</button><span id="recording-page-label">Page 1</span><button id="recording-next" class="button button-small button-secondary" type="button" data-command="recording-next">Next</button></div></article>
+        </div>
+
+        <div id="page-storage" class="page" hidden>
+          <div class="page-heading"><div><p class="eyebrow">MICROSD · MEDIA INDEX</p><h2>Storage management</h2><p id="storage-free" class="muted">—</p></div><div class="button-row"><button class="button button-secondary" type="button" data-command="rebuild-index">Rebuild index</button></div></div>
+          <article class="panel storage-summary"><p class="eyebrow">CARD CAPACITY</p><strong id="storage-summary" class="large-value">—</strong></article>
+          <article class="panel"><div class="panel-heading"><div><p class="eyebrow">RETENTION</p><h3>Automatic cleanup policy</h3></div><span id="retention-status" class="muted">—</span></div>
+            <form id="retention-form" class="form-grid">
+              <label class="check-label"><input name="enabled" type="checkbox"> Enable retention</label>
+              <label>Maximum card usage (%)<input name="max_used_percent" type="number" min="0" max="100"></label>
+              <label>Manual media (days)<input name="retention_days_manual" type="number" min="1" max="3650"></label>
+              <label>Motion media (days)<input name="retention_days_motion" type="number" min="1" max="3650"></label>
+              <label>Detection media (days)<input name="retention_days_detection" type="number" min="1" max="3650"></label>
+              <label>Timelapse media (days)<input name="retention_days_timelapse" type="number" min="1" max="3650"></label>
+              <div class="form-actions"><button class="button button-primary" type="submit">Save policy</button><button class="button button-secondary" type="button" data-command="retention-preview">Preview cleanup</button><button class="button button-danger" type="button" data-command="retention-run">Run cleanup</button></div>
+            </form><pre id="retention-preview" class="preview-output" aria-live="polite"></pre>
+          </article>
+          <article class="panel"><div class="panel-heading"><div><p class="eyebrow">UPLOAD QUEUE</p><h3>Network storage queue</h3></div><span id="upload-queue" class="muted">—</span></div></article>
+          <article class="panel"><div class="panel-heading"><div><p class="eyebrow">INDEXED FILES</p><h3>Media on card</h3></div><span id="storage-page-label" class="muted">Page 1</span></div><div class="table-wrap"><table><thead><tr><th>Media ID</th><th>Type</th><th>Category</th><th>Size</th><th>Created</th><th>Actions</th></tr></thead><tbody id="storage-media-body"></tbody></table></div><div class="pagination"><button id="storage-media-prev" class="button button-small button-secondary" type="button" data-command="storage-media-prev">Previous</button><button id="storage-media-next" class="button button-small button-secondary" type="button" data-command="storage-media-next">Next</button></div></article>
+        </div>
+
+        <div id="page-settings" class="page" hidden>
+          <div class="page-heading"><div><p class="eyebrow">DEVICE CONFIGURATION</p><h2>Settings</h2><p class="muted">Changes are validated and saved by the camera firmware.</p></div><button class="button button-secondary" type="button" data-command="refresh-settings">Reload settings</button></div>
+          <article class="panel"><div class="panel-heading"><div><p class="eyebrow">NETWORK · WI-FI</p><h3>Connect camera to Wi-Fi</h3></div><span id="wifi-setup-status" class="status-chip" data-state="muted">—</span></div>
+            <p id="wifi-setup-note" class="muted">—</p>
+            <form id="wifi-form" class="form-grid">
+              <label>2.4 GHz network name (SSID)<input name="ssid" autocomplete="off" required maxlength="32"></label>
+              <label>Wi-Fi password <span class="muted">(write-only)</span><input name="password" type="password" autocomplete="new-password" maxlength="63"></label>
+              <div class="form-actions"><button class="button button-primary" type="submit">Test and save Wi-Fi</button></div>
+            </form>
+            <p class="muted small-note">Join the camera access point and open <strong>http://192.168.4.1</strong>. The setup AP stays available until you restart after a successful connection.</p>
+          </article>
+          <article class="panel"><div class="panel-heading"><div><p class="eyebrow">CAMERA</p><h3>Image settings</h3></div><button class="button button-small button-secondary" type="button" data-command="capture-frame">Test capture</button></div>
+            <form id="camera-form" class="form-grid">
+              <label>Frame size<select name="framesize"><option value="6">QVGA · 320 × 240</option><option value="8">CIF · 400 × 296</option><option value="10">VGA · 640 × 480</option><option value="11">SVGA · 800 × 600</option><option value="12">XGA · 1024 × 768</option><option value="13">HD · 1280 × 720</option><option value="14">SXGA · 1280 × 1024</option><option value="15">UXGA · 1600 × 1200</option></select></label>
+              <label>JPEG quality <span id="quality-value" class="inline-value">12</span><input name="quality" type="range" min="0" max="63" value="12"></label>
+              <div class="form-actions"><button class="button button-primary" type="submit">Save camera settings</button></div>
+            </form>
+          </article>
+          <article class="panel"><div class="panel-heading"><div><p class="eyebrow">RECORDING</p><h3>Segment policy</h3></div></div>
+            <form id="recording-form" class="form-grid">
+              <label class="check-label"><input name="enabled" type="checkbox"> Enable recording</label>
+              <label>Capture rate (FPS)<input name="capture_fps" type="number" min="1" max="60"></label>
+              <label>Segment duration (seconds)<input name="segment_duration_s" type="number" min="1" max="3600"></label>
+              <div class="form-actions"><button class="button button-primary" type="submit">Save recording settings</button></div>
+            </form>
+          </article>
+          <article class="panel"><div class="panel-heading"><div><p class="eyebrow">MOTION</p><h3>Detection settings</h3></div><span id="motion-live-status" class="muted">—</span></div>
+            <form id="motion-form" class="form-grid">
+              <label class="check-label"><input name="enabled" type="checkbox"> Enable motion detection</label>
+              <label>Idle sample rate (Hz)<input name="sample_rate_idle_hz" type="number" min="1" max="100"></label>
+              <label>Recording sample rate (Hz)<input name="sample_rate_rec_hz" type="number" min="1" max="100"></label>
+              <label>Pixel threshold<input name="threshold" type="number" min="0" max="255"></label>
+              <label>Changed area (%)<input name="min_changed_ratio" type="number" min="0" max="100"></label>
+              <label>Cooldown (ms)<input name="cooldown_ms" type="number" min="0" max="60000"></label>
+              <label>Minimum frames<input name="min_frames" type="number" min="1" max="100"></label>
+              <label>Settle frames<input name="settle_frames" type="number" min="1" max="50"></label>
+              <label class="check-label"><input name="record_on_motion" type="checkbox"> Record on motion</label>
+              <label class="check-label"><input name="snapshot_on_motion" type="checkbox"> Snapshot on motion</label>
+              <label class="check-label"><input name="mqtt_notify" type="checkbox"> Notify over MQTT</label>
+              <div class="form-actions"><button class="button button-primary" type="submit">Save motion settings</button></div>
+            </form>
+          </article>
+          <article class="panel"><div class="panel-heading"><div><p class="eyebrow">ACCOUNT</p><h3>Change password</h3></div></div>
+            <form id="password-form" class="form-grid">
+              <label>Current password<input name="current_password" type="password" autocomplete="current-password" required maxlength="63"></label>
+              <label>New username <span class="muted">(optional)</span><input name="new_username" autocomplete="username" maxlength="48"></label>
+              <label>New password<input name="new_password" type="password" autocomplete="new-password" minlength="10" required maxlength="63"></label>
+              <label>Confirm new password<input name="confirm_password" type="password" autocomplete="new-password" minlength="10" required maxlength="63"></label>
+              <div class="form-actions"><button class="button button-primary" type="submit">Update credentials</button></div>
+            </form>
+          </article>
+          <article class="panel danger-panel"><div><p class="eyebrow">SYSTEM</p><h3>Restart device</h3><p class="muted">The web interface and active streams will be unavailable while the camera reboots.</p></div><button class="button button-danger" type="button" data-command="restart">Restart camera</button></article>
+        </div>
+
+        <div id="page-integrations" class="page" hidden>
+          <div class="page-heading"><div><p class="eyebrow">OPTIONAL SERVICES</p><h2>Integrations</h2><p class="muted">Local recording continues if an external service is offline.</p></div><button class="button button-secondary" type="button" data-command="refresh-integrations">Reload status</button></div>
+          <article class="panel"><div class="panel-heading"><div><p class="eyebrow">MQTT 3.1.1</p><h3>Broker connection</h3></div><span id="mqtt-live-status" class="status-chip" data-state="muted">—</span></div>
+            <form id="mqtt-form" class="form-grid">
+              <label class="check-label"><input name="enabled" type="checkbox"> Enable MQTT</label>
+              <label>Broker URI<input name="broker_uri" type="url" placeholder="mqtt://broker.local:1883" maxlength="191"></label>
+              <label>Username<input name="username" autocomplete="username" maxlength="95"></label>
+              <label>Password <span class="muted">(write-only)</span><input name="password" type="password" autocomplete="new-password" maxlength="95" placeholder="Leave blank to keep stored value"></label>
+              <label>Base topic<input name="base_topic" maxlength="95"></label>
+              <label>Client ID <span class="muted">(managed by firmware)</span><input id="mqtt-client-id" type="text" readonly value="Assigned by firmware"></label>
+              <label>Keepalive (seconds)<input name="keepalive_s" type="number" min="10" max="300"></label>
+              <label>Connection timeout (ms)<input name="timeout_ms" type="number" min="1000" max="60000"></label>
+              <label>Home Assistant prefix<input name="ha_prefix" maxlength="63"></label>
+              <label class="check-label"><input name="tls_verify" type="checkbox"> Verify TLS certificate</label>
+              <label class="check-label"><input name="ha_discovery" type="checkbox"> Enable Home Assistant discovery</label>
+              <div class="form-actions"><button class="button button-primary" type="submit">Save MQTT settings</button><button class="button button-secondary" type="button" data-command="mqtt-test">Test broker</button><button class="button button-secondary" type="button" data-command="mqtt-reconnect">Reconnect</button><button class="button button-secondary" type="button" data-command="mqtt-publish">Publish test</button></div>
+            </form>
+            <div class="integration-status"><span>Home Assistant</span><span id="ha-live-status">—</span><button class="button button-small button-secondary" type="button" data-command="ha-republish">Republish discovery</button></div>
+            <p id="mqtt-connection-detail" class="muted small-note">Connection and publish counters appear when the device responds.</p>
+          </article>
+          <article class="panel"><div class="panel-heading"><div><p class="eyebrow">HTTP UPLOAD</p><h3>Network storage</h3></div><span id="network-live-status" class="status-chip" data-state="muted">—</span></div>
+            <form id="network-form" class="form-grid">
+              <label class="check-label"><input name="enabled" type="checkbox"> Enable network storage</label>
+              <label>Backend<select name="backend_type"><option value="http">HTTP</option><option value="https">HTTPS</option></select></label>
+              <label>Server URL<input name="server_url" type="url" placeholder="https://storage.example/upload" maxlength="191"></label>
+              <label>Destination path<input name="destination_path" maxlength="95"></label>
+              <label>Upload policy<input name="upload_policy" maxlength="31"></label>
+              <label>Auth token <span class="muted">(write-only)</span><input name="auth_token" type="password" autocomplete="new-password" maxlength="127"></label>
+              <label>Retry count<input name="retry_count" type="number" min="0" max="10"></label>
+              <label>Retry interval (ms)<input name="retry_interval_ms" type="number" min="1000" max="60000"></label>
+              <label>Queue limit<input name="upload_queue_limit" type="number" min="1" max="128"></label>
+              <label class="check-label"><input name="tls_verify" type="checkbox"> Verify TLS certificate</label>
+              <label class="check-label"><input name="delete_after_upload" type="checkbox"> Delete local copy after upload <span class="warning-text">(not recommended)</span></label>
+              <div class="form-actions"><button class="button button-primary" type="submit">Save upload settings</button><button class="button button-secondary" type="button" data-command="network-test">Test server</button></div>
+            </form>
+            <p id="network-queue-status" class="integration-status">—</p>
+            <p id="network-stat-detail" class="muted small-note">Upload totals and the latest failure are reported by firmware.</p>
+            <p class="muted small-note">Completed files only. Local SD remains authoritative by default. FTP and WebDAV are not supported.</p>
+          </article>
+        </div>
+      </div>
+
+      <footer class="footer"><span id="footer-firmware">VisionCam Pro</span><span>Authenticated local interface</span><span class="footer-right">No cloud dependency</span></footer>
+    </section>
+  </div>
+
+  <dialog id="media-dialog" class="modal"><div class="modal-heading"><div><p class="eyebrow">SNAPSHOT</p><h2 id="media-preview-id">Preview</h2></div><button class="button button-small button-secondary" type="button" data-command="close-dialog">Close</button></div><img id="media-preview" class="modal-image" alt="Selected snapshot"></dialog>
+  <dialog id="playback-dialog" class="modal"><div class="modal-heading"><div><p class="eyebrow">MJPEG PLAYBACK</p><h2 id="playback-title">Recording</h2></div><button class="button button-small button-secondary" type="button" data-command="close-dialog">Close</button></div><div class="playback-frame"><img id="playback-image" alt="Recording playback"></div></dialog>
+  <dialog id="details-dialog" class="modal"><div class="modal-heading"><div><p class="eyebrow">MEDIA METADATA</p><h2>Details</h2></div><button class="button button-small button-secondary" type="button" data-command="close-dialog">Close</button></div><pre id="details-output" class="preview-output"></pre></dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

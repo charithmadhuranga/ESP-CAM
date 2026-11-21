@@ -1,49 +1,25 @@
 // tflite_micro_provider.cpp — TFLite Micro on-device AI provider (Phase 6;
-// SPEC §4.4.1; owner decision D4 pending).
+// SPEC §4.4.1; owner decision D4 — ANSWERED 2026-11-20: "selectable but
+// unlinked").
 //
-// This is a clean-room implementation of the TFLite Micro provider for
-// VisionCam Pro. It follows R1's usage pattern: classify *after* motion
-// events to decide whether to keep an event, not per-frame classification.
-//
-// NOTE: The actual TensorFlow Lite Micro library is NOT linked into this
-// build (it is not available as a managed component and adding it requires
-// a separate owner decision). The TfliteMicroProvider class is implemented
-// with proper structure and returns ESP_ERR_NOT_SUPPORTED for all
-// TFLM-specific operations until the library is linked. This gives the
-// owner a clear path to enable TFLM when they add the library:
-//
-//   1. Add TFLM as a managed component (e.g. espressif/esp-tflmicro)
-//   2. Uncomment the #include <tensorflow/lite/micro/micro_interpreter.h>
-//      line below and implement the interpreter methods
-//   3. Implement the model validation (magic number, schema, operators)
-//   4. Implement the inference loop (allocate tensors, copy input, invoke,
-//      read output)
-//
-// All model files live under /models/{staging,active,backup}/
-// (SPEC §4.8 directory layout). Model manifests are JSON files with the
-// schema from SPEC §4.4.1.
+// The TensorFlow Lite Micro library is NOT linked into this build. The
+// provider choice ships in the UI and persists, but begin()/infer() and
+// model activation return ESP_ERR_NOT_SUPPORTED with the honest D4
+// message (see tflite_micro_provider.h for the revisit condition).
 
 #include "tflite_micro_provider.h"
 
 #include <cstdio>
 #include <cstring>
-#include <ctime>
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 
-#include "nvs_flash.h"
-#include "nvs.h"
-
+#include "event_bus.h"
 #include "storage_manager.h"
-
-// TODO: When TFLM library is linked, uncomment:
-// #include <tensorflow/lite/micro/micro_interpreter.h>
-// #include <tensorflow/lite/micro/all_ops_resolver.h>
-// #include <tensorflow/lite/micro/micro_mutable_op_resolver.h>
-// #include <tensorflow/lite/schema/schema_generated.h>
+#include "wall_clock.h"
 
 namespace visioncam {
 
@@ -64,6 +40,9 @@ constexpr uint32_t kTFLModelMaxBytes = 2 * 1024 * 1024;
 // Model manifest file name.
 constexpr char kManifestFileName[] = "manifest.json";
 
+// JPEG decode buffer for 1:8 scale RGB888
+static constexpr size_t kJpegDecodeBufferSize = 32 * 1024;
+
 // ---- TfliteMicroProvider implementation -----------------------------------
 
 esp_err_t TfliteMicroProvider::begin() {
@@ -80,23 +59,37 @@ esp_err_t TfliteMicroProvider::begin() {
 
 bool TfliteMicroProvider::isReady() const { return ready_; }
 
-esp_err_t TfliteMicroProvider::infer(const FrameView& /*frame*/,
-                                     InferenceResult* out) {
-    out->detections.clear();
-    return ESP_ERR_NOT_SUPPORTED;
+void TfliteMicroProvider::stop() { 
+    ready_ = false;
+    if (interpreter_) {
+        // Interpreter cleanup would go here when TFLM is linked
+    }
 }
 
-void TfliteMicroProvider::stop() { ready_ = false; }
+esp_err_t TfliteMicroProvider::setConfig(const AIConfig& config) {
+    tensor_arena_bytes_ = config.tensor_arena_bytes;
+    return ESP_OK;
+}
 
-const char* TfliteMicroProvider::providerId() const {
-    return kProviderTflite;
+esp_err_t TfliteMicroProvider::infer(const FrameView& frame,
+                                     InferenceResult* out) {
+    if (!ready_) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (frame.data == nullptr || frame.len == 0 || out == nullptr) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    
+    out->model_id = active_model_id_;
+    out->inference_ms = 0;
+    out->detections.clear();
+    return ESP_ERR_NOT_SUPPORTED;
 }
 
 // ---- Model management ------------------------------------------------------
 
 esp_err_t TfliteMicroProvider::modelUploadStage(const char* model_id,
-                                                const uint8_t* data,
-                                                size_t len) {
+                                                const uint8_t* data, size_t len) {
     if (model_id == nullptr || data == nullptr || len == 0)
         return ESP_ERR_INVALID_ARG;
     if (len > kTFLModelMaxBytes)
@@ -154,15 +147,14 @@ esp_err_t TfliteMicroProvider::modelValidate(const char* model_id,
         return ESP_ERR_INVALID_ARG;
     }
 
-    // TODO: Parse full flatbuffer schema, validate operators,
-    //       input/output tensors, quantization, arena requirement.
-    //       Requires the TFLM library headers.
+    // TODO: Parse full flatbuffer schema using TFLM's Model::Verify()
+    // For now, just check magic and basic structure
 
     // Populate manifest with what we can determine:
     manifest->model_id = model_id;
     manifest->format = "tflite_micro";
     manifest->file = path;
-    manifest->required_tensor_arena_bytes = 0; // unknown without TFLM lib
+    manifest->required_tensor_arena_bytes = tensor_arena_bytes_;
 
     ESP_LOGI(TAG, "TFLM model %s: valid magic, size=%u bytes",
              model_id, static_cast<unsigned int>(fsize));
@@ -205,6 +197,17 @@ esp_err_t TfliteMicroProvider::modelActivate(const char* model_id) {
     esp_err_t err = storageRenameFile(staging_path, active_path);
     if (err != ESP_OK) return err;
 
+    // Reinitialize interpreter with new model
+    err = initializeInterpreter(active_path);
+    if (err != ESP_OK) {
+        // Rollback on failure
+        storageRenameFile(backup_path, active_path);
+        return err;
+    }
+
+    active_model_id_ = model_id;
+    ready_ = true;
+
     ESP_LOGI(TAG, "TFLM model %s: activated", model_id);
     return ESP_OK;
 }
@@ -229,6 +232,15 @@ esp_err_t TfliteMicroProvider::modelRollback(const char* model_id) {
     esp_err_t err = storageRenameFile(backup_path, active_path);
     if (err != ESP_OK) return err;
 
+    // Reinitialize interpreter
+    err = initializeInterpreter(active_path);
+    if (err != ESP_OK) {
+        // Try to restore the previous active model
+        storageRenameFile(active_path, backup_path);
+        return err;
+    }
+
+    active_model_id_ = model_id;
     ESP_LOGI(TAG, "TFLM model %s: rolled back from backup", model_id);
     return ESP_OK;
 }
@@ -252,7 +264,34 @@ esp_err_t TfliteMicroProvider::modelDelete(const char* model_id) {
         return ESP_ERR_INVALID_SIZE;
     storageRemoveFile(path);
 
+    if (active_model_id_ == model_id) {
+        active_model_id_.clear();
+        ready_ = false;
+        // interpreter_.reset(); // Would reset interpreter when TFLM is linked
+    }
+
     return ESP_OK;
+}
+
+// ---- Private methods (stubs) ------------------------------------------------------
+
+esp_err_t TfliteMicroProvider::initializeInterpreter(const char* /*model_path*/) {
+    ESP_LOGW(TAG, "TFLM: interpreter initialization not implemented (D4 pending)");
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+uint8_t* TfliteMicroProvider::getInputTensor() {
+    return nullptr;
+}
+
+esp_err_t TfliteMicroProvider::decodeJpegToTensor(const uint8_t* /*jpeg_data*/, 
+                                                  size_t /*jpeg_len*/,
+                                                  uint8_t* /*output_tensor*/) {
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
+void TfliteMicroProvider::parseOutputTensors(InferenceResult* /*out*/) {
+    // Model-specific output parsing would go here when TFLM is linked
 }
 
 }  // namespace visioncam

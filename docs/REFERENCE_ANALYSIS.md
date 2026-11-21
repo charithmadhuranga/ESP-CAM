@@ -661,6 +661,31 @@ playback timing, timelapse, upload, WebDAV, HA discovery, and every
   `tools/nvs_provision` now has a confirmation-gated `vcunset` for
   re-testing the migration. SNTP sync line itself: `UNVERIFIED`.
 
+## Wi-Fi setup AP provisioning — 2026-11-21
+
+- **Studied:** SPEC §1A.8 maps R1 `setupAssist.cpp` to setup/networking but
+  explicitly limits the evidence to filenames and README. The README describes
+  joining the first-run AP, selecting a router, and entering its passphrase.
+  No R1 implementation was copied or translated; owner decision D1 remains
+  clean-room.
+- **Decision:** **adapt** the first-run AP concept to VisionCam's existing
+  authenticated UI and ESP-IDF network manager. With no saved SSID, the
+  manager runs AP+STA; `POST /wifi/config` tests the candidate association,
+  stages credentials only after GOT_IP, then closes the AP and automatically
+  reboots. The reboot applies the staged credentials to NVS before camera
+  startup.
+- **Reason:** a saved-but-unverified SSID could otherwise strand a first-boot
+  camera outside both the setup AP and the owner's LAN. The bounded 15 s
+  association   attempt and stage-after-GOT_IP preserve the setup path on
+  wrong passwords or unavailable networks.
+- **Security/resource notes:** endpoint requires session + CSRF; Wi-Fi
+  credentials are never echoed or logged; request and parser buffers are
+  bounded. Network driver initialization remains before camera bring-up;
+  provisioning does not stop or restart the radio.
+- **Hardware validation:** firmware build and API/browser tests are required;
+  association success/failure on the owner's router remains `UNVERIFIED`
+  until exercised on hardware.
+
 ## Deliberate divergences from R1 — do not "fix" these back
 
 | Area | R1 | VisionCam |

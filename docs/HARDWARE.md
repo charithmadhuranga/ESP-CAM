@@ -389,3 +389,45 @@ before debugging firmware.** Record the exact card label here when read — D5.
 - Use a stable 5 V supply sized for Wi-Fi TX peaks **and** camera operation.
 - Brownout is the usual cause of boot loops on this board (R1 README).
 - Do not power additional peripherals from GPIO pins.
+
+## 7. VisionCam first-run Wi-Fi setup
+
+When no Wi-Fi SSID has been saved, VisionCam starts a WPA2 setup access point:
+
+- SSID: `VisionCam-XXXXXX` (suffix is derived from the board MAC)
+- Passphrase: `visioncam`
+- Setup page: `http://192.168.4.1`
+
+Join the camera AP from a phone or PC, sign into VisionCam, then open
+**Settings → Connect camera to Wi-Fi**. Enter the 2.4 GHz network name and
+password. The firmware tries to obtain an IP before staging the credentials.
+If the join fails, the setup AP remains available and the candidate is not
+stored. After a successful join, use **Restart camera** in Settings. On the
+next boot the firmware saves the staged credentials to NVS before camera
+initialization, then connects as a station to the configured Wi-Fi network.
+The firmware now closes the setup AP and restarts automatically after sending
+the successful setup response.
+
+The Wi-Fi password is write-only and is not included in API responses or
+serial logs. First-login still requires changing the default device password.
+The web-UI provisioning flow has not yet been exercised on the physical board.
+
+**2026-11-21 setup-AP check:** the board had saved Wi-Fi credentials, so it
+initially booted in station mode without advertising the setup AP. After
+clearing only the saved Wi-Fi credential keys, the flashed firmware logged
+the AP at `192.168.4.1`, and a workstation Wi-Fi scan detected the
+`VisionCam-XXXXXX` network. The workstation was not joined to the AP.
+**2026-11-21 serial provisioning check:** the active workstation Wi-Fi profile
+was written to NVS over UART using a temporary provisioner built with the
+firmware's exact partition layout. The normal firmware then loaded the saved
+credentials and reported `GOT_IP 10.151.183.4` (RSSI -55 dBm). The workstation
+was on the same `/24`, but an HTTP request to the camera timed out; access
+from this phone hotspot may be isolated between clients and is not verified.
+The credential value was not printed or recorded.
+
+**2026-11-21 AP shutdown update:** firmware now switches to station-only mode
+after a successful `/wifi/config` response, then restarts to commit the staged
+credentials. A later configured-boot check reported `GOT_IP 10.151.183.4`
+(RSSI -51 dBm), and the workstation scan did not show the setup SSID. The
+successful setup-endpoint-to-AP-shutdown transition has not yet been exercised
+on hardware.

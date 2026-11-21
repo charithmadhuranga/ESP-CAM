@@ -74,13 +74,39 @@ decide whether to keep an event), not per-frame classification.
 
 20. Endpoints §6.8: ai status, providers, models list/upload/validate/
     activate/deactivate/rollback, ai events, ai config get/put.
+    - **Added by D6 (2026-11-20):** `GET/PUT /ai/config` carry
+      `confidence_threshold` (fixed-point in JSON) and `auth_token_set`
+      — the token itself is never echoed (AGENTS rule 17). Provider
+      switching through `PUT {"provider": ...}` applies live, no reboot.
 21. **AI Detection** page per `AI.png`: Provider card (TFLite Micro /
     External / Disabled pills, active model, compatibility, Upload model,
     Rollback), Detection card (confidence threshold, detection interval,
     classes), External AI server card (endpoint, status, Test connection),
     Recent detections, Metrics (inference time, tensor arena).
+    - **D6:** the pills are the *only* way a user selects a provider —
+      `none` (Disabled), `external_ai`, `tflite_micro`. Selecting
+      `tflite_micro` shows the D4 *Unavailable* state, not an error.
 22. Settings › AI Models per `SettingsAIModels.png`.
 23. Overview "AI events today" card; Live View `AI Detection ON/OFF` pill.
+
+### 6.5 D6 wiring (owner directive, 2026-11-20)
+
+24. `aiManagerInit()` runs on **every boot** (no storage gate); a fresh
+    device persists `enabled=true, provider=none` to NVS on first boot.
+25. Motion-triggered inference: the AI task subscribes to the event bus
+    (`MotionStarted`/`MotionEnded` → task notify only, per
+    `event_bus.h` contract), acquires a frame lease, **copies** the JPEG
+    into a bounded 256 KB buffer and releases the lease before any
+    provider I/O (SPEC §4.1.1 rule 9). Rate-limited by
+    `inference_interval_ms`; `provider=none` idles without taking frames.
+26. Confidence filter applied in `aiManagerInferFrame` — sub-threshold
+    detections are never recorded or published (SPEC §7 `ai.confidence_threshold`).
+27. Model upload streams to `*.tflite.part` via `storageAppendFile` and
+    renames into place only when complete; IDs validated against
+    `[A-Za-z0-9_-]{1,48}` before becoming a path segment.
+28. Frame registry sized for the new consumer (`VC_FRAME_SUBSCRIBERS` 4→6:
+    smoke, recorder, motion, timelapse, ai persistent + snapshot
+    transient).
 
 ## Memory / timing / hardware notes
 
@@ -101,14 +127,19 @@ decide whether to keep an event), not per-frame classification.
       (measured).
 - [ ] External AI timeout/retry works; outage does not stop local recording.
 - [ ] Detection events normalise to one schema from every provider.
-- [ ] At least one deliberately selected and benchmarked model runs within
-      measured limits, **or** on-device AI is clearly marked unsupported for
-      that model (owner decision **D4**).
+- [x] On-device AI declared unsupported for this build — **D4 answered
+      2026-11-20**: selectable in the UI, runtime not linked, honest
+      `provider_ready=false` + HTTP 400 on activation.
+- [ ] **D6:** fresh boot shows `enabled=true, provider=none` persisted;
+      switching `none → external → tflite_micro` over HTTP works without
+      reboot; a >1 KB model upload round-trips byte-exact; motion triggers
+      an inference attempt while `provider=none` takes no frames.
 
 ## Exit gate
 
-Invalid model rejected; benchmarked model runs or TFLM declared unsupported;
-external AI failure leaves the core camera untouched.
+Invalid model rejected; benchmarked model runs or TFLM declared unsupported
+(**D4: answered — unsupported, selectable**); external AI failure leaves
+the core camera untouched.
 
 ## Docs updated
 

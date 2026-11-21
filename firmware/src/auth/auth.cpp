@@ -388,7 +388,13 @@ esp_err_t authCreateSession(const char* /*username*/, const char* /*password*/,
     std::memcpy(slot->token_hash, hash, sizeof(hash));
     slot->created_at_ms = nowMs();
     slot->last_used_ms = nowMs();
-    slot->complete = authAnyCompleteSession();
+    // A session is "complete" once credentials have been configured
+    // (i.e. the first-login password change has been done). Checking
+    // s_creds.configured instead of authAnyCompleteSession() avoids the
+    // bug where authCompleteFirstLogin() revokes all sessions, leaving none
+    // marked complete, so every subsequent login also required a change.
+    loadCreds();
+    slot->complete = s_creds.configured;
     *session_id = slot->id;
     *password_change_required = !slot->complete;
     ESP_LOGI(TAG, "session created id=%llu complete=%d",

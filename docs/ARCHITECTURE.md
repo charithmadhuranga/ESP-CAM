@@ -66,7 +66,7 @@ R1 divergence in `docs/REFERENCE_ANALYSIS.md`.
 | TFLite Micro provider | 6 | model staging/validate/activate/rollback under /models/; returns ESP_ERR_NOT_SUPPORTED until TFLM library linked (owner decision D4) |
 | External AI provider | 6 | HTTP POST /api/v1/infer multipart/form-data; base URL, auth token, timeout, TLS verify; bounded queue, heap gate |
 | MQTT / Home Assistant | 7 | fail-soft, stable `visioncam/{device_id}` IDs |
-| network storage | 8 | upload after segment close; local files preserved |
+| network storage | 8 | upload after segment close; local files preserved; heap-gated TLS; AP-mode fallback |
 | hardening | 9 | 24 h mixed workload, degraded-mode drills |
 
 ## 4. Resource measurements (fill at the end of every phase)
@@ -83,6 +83,8 @@ Never estimate — paste real numbers or write `UNVERIFIED`.
 | 4 | 2,955,416 | 2,955,416 | 47,104 | `httpd` 7,264 B / `vc_motion` UNVERIFIED / `vc_capture` 3,712 B | UNVERIFIED — motion FPS needs capture loop | 2026-11-19 (phase4 build) |
 | 5 | 2,955,416 | 2,955,416 | 47,104 | `httpd` 7,264 B / `vc_timelapse` UNVERIFIED / `vc_capture` 3,712 B | UNVERIFIED — timelapse FPS needs capture loop | 2026-11-19 (phase5 build) |
 | 6 | 2,955,416 | 2,955,416 | 47,104 | `httpd` 7,264 B / `vc_ai` UNVERIFIED / `vc_capture` 3,712 B | UNVERIFIED — AI FPS needs capture loop | 2026-11-19 (phase6 build) |
+| 7 | 3,535,512 (after MQTT worker + HA discovery) | 3,535,512 | 3,014,656 | `vc_mqtt` 6,468 B / `vc_capture` 3,712 B | UNVERIFIED | 2026-11-21 (phase7 build) |
+| 8 | 102,252 used / 327,680 total (31.2% RAM) | 3,535,512 | 3,014,656 | `vc_netstore` 3,444 B / `httpd` 7,264 B / `vc_capture` 3,712 B | UNVERIFIED | 2026-11-21 (phase8 build) |
 
 **Smoke-run measurements (2026-11-17, board attached, evidence in
 `docs/evidence/`):**

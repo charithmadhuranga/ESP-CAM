@@ -8,7 +8,89 @@ tagged once Phase 9 release criteria pass.
 
 ### Added
 
-- **Phase 1 task 1.1.1 — core services (2026-11-17).** New
+- **Wi-Fi first-run provisioning (2026-11-21).** A device with no stored
+  network credentials now exposes its setup web UI at `192.168.4.1` over
+  `VisionCam-XXXXXX` (AP password `visioncam`). Authenticated users can
+  submit 2.4 GHz network credentials in Settings; the firmware attempts to
+  obtain an IP before staging them in retained memory. After a successful
+  join, the setup AP closes and firmware automatically restarts; the reboot
+  commits credentials to NVS before camera startup. A failed join leaves the
+  setup AP available. Passwords are never returned or logged.
+
+- **Embedded web UI refresh (2026-11-21).** Reworked the standalone UI into
+  a responsive dark NVR console using local-only HTML/CSS/JavaScript, without
+  runtime frameworks, remote assets, or credential storage. Added an
+  authenticated API client with same-origin cookies, double-submit CSRF,
+  bounded request concurrency, error-envelope handling, and controls for all
+  currently registered firmware HTTP endpoints: auth, device diagnostics,
+  camera/stream, media, recording, storage/retention, motion, MQTT/HA, and
+  network storage. AI and timelapse controls are intentionally not shown
+  because those routes are currently excluded from the firmware build.
+  Final generated assets: **79,246 B raw / 18,786 B gzip**.
+
+- **Phase 8 task 8.1 — network storage backend (2026-11-21).** New
+  `firmware/include/http_upload_storage_backend.h` +
+  `firmware/src/integrations/http_upload_storage_backend.cpp`:
+  `IStorageBackend` implementation over HTTP upload (SPEC 4.9) — completed
+  files only, never frames. Bounded upload queue (`upload_queue_limit`,
+  max 128, drop-oldest overflow), exponential backoff (base × 2^attempts,
+  cap 300 s), heap gate (free heap ≥ 64 KB and largest block ≥ 16 KB before
+  TLS), delete-after-upload opt-in (default off), auth token write-only
+  (never returned by GET). Publish `NetworkStorageUploadFailed` on terminal
+  failure. Worker task `vc_netstore` at prio 2, stack 4096 B.
+  Build impact: RAM +300 B, flash +4 KB.
+
+- **Phase 8 task 8.2 — network storage API endpoints (2026-11-21).** Four
+  new auth+CSRF endpoints (SPEC 6.9):
+  `GET|PUT /integrations/network-storage`, `POST /integrations/network-storage/test`,
+  `GET /integrations/network-storage/queue`. GET returns config with
+  `auth_token_configured` boolean (token value never echoed). PUT performs
+  partial overlay with validation (scheme `http://`/`https://`, retry
+  bounds, queue limit 1..128). Test performs a real GET reachability probe
+  (200 `{"reachable":true}` or 503 `code:15`).
+
+- **AP mode fallback (2026-11-21).** When no Wi-Fi credentials are
+  configured, the device starts a SoftAP (`VisionCam-XXXXXX` from the last
+  3 bytes of the station MAC, WPA2 passphrase `visioncam`, IP 192.168.4.1)
+  so it is directly reachable for initial setup. `WifiState::Ap` added,
+  `ap_mode` added to `WifiStatus`. Camera, recording and UI all work
+  locally regardless of network state.
+
+- **Auth fix — password-change loop (2026-11-21).** `authCreateSession()`
+  now derives `session.complete` from `s_creds.configured` instead of
+  `authAnyCompleteSession()`. Previously `authCompleteFirstLogin()`
+  revoked all sessions, leaving none marked `complete`, so every subsequent
+  login demanded a password change again. Now first-login change completes
+  once and subsequent logins report `password_change_required: false`.
+
+- **Web UI overhaul (2026-11-20).** Full page overhaul by the web UI
+  subagent: seven page states on every page, lazy-loaded route chunks
+  (`react.lazy`), responsive breakpoints at 768 px, design-system
+  components (Card, Button, Field, StatCard, StatusPill, ConfirmDialog,
+  PageStates), no CDN/remote fonts/images. Bundle: 331 KB JS / 105 KB
+  gzip.
+
+### Fixed
+
+- **Setup AP health status (2026-11-21).** The health endpoint now treats
+  the working provisioning AP as healthy when the camera is initialized,
+  rather than reporting the device as degraded until it joins a router.
+
+- **Auth: `complete-first-login` loop.** Login after a first-boot password
+  change kept demanding another change; fixed by checking
+  `s_creds.configured` when marking a session complete (see Added above).
+
+- **CSRF cookie: comma-joined `Set-Cookie` (2026-11-21).** `httpd_resp_set_hdr()`
+  APPENDS (httpd_txrx.c:195-198), it does not replace. The old code comma-joined
+  session + CSRF cookies into one header; curl/browsers then stored only the
+  session cookie and every state-changing request failed CSRF (403). Now two
+  separate `Set-Cookie` headers; CSRF cookie is JS-readable (double-submit,
+  not HttpOnly).
+
+### Changed
+
+- **RAM/flash after Phase 8 + web UI:** RAM 102,252 B (31.2 %), flash
+  1,365,899 B (86.8 %). Both within targets (RAM < 50 %, flash < 90 %).
   `firmware/src/core/` + headers: `coreInit()` boot order (RTC ring log
   first, so a crash later in the boot cannot destroy the evidence), typed
   bounded **event bus** (depth 16, drop-oldest, dispatcher task), **RTC RAM

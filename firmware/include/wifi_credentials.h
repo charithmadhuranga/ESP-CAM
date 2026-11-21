@@ -9,9 +9,7 @@
 //     namespace, GET returns `*_configured` booleans instead).
 //
 // Storage (SPEC 7: NVS authoritative, versioned, explicit migration):
-//   namespace "visioncam", keys wifi_ssid / wifi_pass   — ours, written by
-//                                                          task 1.2's config
-//                                                          endpoints later
+// namespace "visioncam", keys wifi_ssid / wifi_pass   — our active config
 //   namespace "ESP-CAM_MJPEG", keys ST_SSID / ST_Pass   — the Phase 0
 //                                                          provisioning path
 //                                                          (tools/nvs_provision,
@@ -49,5 +47,14 @@ esp_err_t wifiCredentialsLoad(char* ssid, size_t ssid_cap,
                               char* pass, size_t pass_cap,
                               size_t& ssid_len, size_t& pass_len,
                               bool& found);
+
+// Persists a validated network configuration. Empty passphrase is allowed
+// for open networks; WPA passphrases must be 8..63 bytes.
+esp_err_t wifiCredentialsSave(const char* ssid, const char* pass);
+
+// Stages a verified network for the next software reboot. The caller must
+// reboot before losing power; application to NVS happens before camera init.
+esp_err_t wifiCredentialsStageForBoot(const char* ssid, const char* pass);
+esp_err_t wifiCredentialsApplyStaged(bool& applied);
 
 }  // namespace visioncam

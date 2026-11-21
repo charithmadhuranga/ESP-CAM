@@ -36,6 +36,11 @@
 
 #include "storage_backend.h"
 
+// Forward declaration: the HTTP upload backend lives in integrations/.
+namespace visioncam {
+class HttpUploadStorageBackend;
+}
+
 namespace visioncam {
 
 // Snapshot source (SPEC 4.5).
@@ -184,6 +189,18 @@ esp_err_t storageResolvePath(const char* media_id, char* out_path,
 esp_err_t storageWriteFile(const char* path, const uint8_t* data,
                            size_t len);
 
+// Append bytes to a file via the storage backend (creates it if absent).
+// Used for streamed uploads (model staging) and JSONL index lines.
+// Path must be under /sdcard.
+esp_err_t storageAppendFile(const char* path, const uint8_t* data,
+                            size_t len);
+
+// List a directory (bounded). Returns up to max_entries entries; a missing
+// directory returns ESP_OK with *out_count = 0 (callers treat an empty
+// directory as an empty list, not an error). Path must be under /sdcard.
+esp_err_t storageListDir(const char* dir, DirEntry* entries,
+                         size_t max_entries, size_t* out_count);
+
 // Read bytes from a file via the storage backend. Path must be under /sdcard.
 esp_err_t storageReadFile(const char* path, uint8_t* data, size_t len,
                           size_t* out_len);
@@ -207,6 +224,12 @@ bool storageManagerAvailable();
 
 // Mount point (e.g. "/sdcard").
 const char* storageMountPoint();
+
+// Set the optional network-storage (HTTP upload) backend. Called from
+// main.cpp after storageManagerInit(); the web layer reads it via
+// storageGetNetstoreBackend(). Null means "no network storage configured".
+esp_err_t storageSetNetstoreBackend(HttpUploadStorageBackend* backend);
+HttpUploadStorageBackend* storageGetNetstoreBackend();
 
 // Boot-time self-test of the JSONL index parsing (validation rejects torn,
 // garbled, and ID-less records). Runs once at init; result is logged, never

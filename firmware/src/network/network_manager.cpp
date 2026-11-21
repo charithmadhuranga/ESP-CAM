@@ -26,6 +26,7 @@
 #include "network_manager.h"
 
 #include <atomic>
+#include <cstdio>
 #include <cstring>
 
 #include "esp_event.h"
@@ -37,6 +38,7 @@
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "lwip/ip_addr.h"
 
 #include "event_bus.h"
 #include "events.h"
@@ -53,9 +55,13 @@ const char* TAG = "vc_net";
 std::atomic<WifiState>   s_state{WifiState::Off};
 std::atomic<bool>        s_radio_up{false};
 std::atomic<bool>        s_configured{false};
+std::atomic<bool>        s_ap_mode{false};       // true when running SoftAP
 std::atomic<bool>        s_time_synced{false};
 std::atomic<bool>        s_sntp_started{false};
 std::atomic<bool>        s_init_done{false};
+std::atomic<bool>        s_provisioning{false};
+std::atomic<bool>        s_provision_pending{false};
+std::atomic<bool>        s_network_task_started{false};
 
 std::atomic<uint32_t>    s_connects{0};
 std::atomic<uint32_t>    s_disconnects{0};
@@ -107,9 +113,62 @@ esp_err_t sntpStartOnce() {
     return esp_netif_sntp_start();
 }
 
-// --- event handlers (default event loop task) ------------------------------
+// --- AP mode (fallback when no credentials are configured) ------------------
+// Starts a SoftAP so the device is directly reachable for initial setup.
+// SSID is "VisionCam-XXXXXX" from the last 3 bytes of the station MAC so
+// multiple devices on the same bench don't collide. WPA2-PSK with the
+// documented setup passphrase; do not print the passphrase to logs.
+esp_err_t apStart() {
+    esp_netif_t* ap = esp_netif_create_default_wifi_ap();
+    if (ap == nullptr) return ESP_FAIL;
+
+    // Set AP IP to 192.168.4.1 (classic SoftAP address).
+    esp_netif_ip_info_t ip_info{};
+    IP4_ADDR(&ip_info.ip, 192, 168, 4, 1);
+    IP4_ADDR(&ip_info.gw, 192, 168, 4, 1);
+    IP4_ADDR(&ip_info.netmask, 255, 255, 255, 0);
+    esp_netif_set_ip_info(ap, &ip_info);
+
+    // DHCP server for AP clients.
+    esp_netif_dhcps_start(ap);
+
+    // Build SSID from MAC last 3 bytes.
+    uint8_t mac[6] = {};
+    esp_wifi_get_mac(WIFI_IF_STA, mac);
+    char ssid[33] = {};
+    std::snprintf(ssid, sizeof(ssid), "VisionCam-%02X%02X%02X",
+                  mac[3], mac[4], mac[5]);
+
+    wifi_config_t ap_cfg = {};
+    std::strncpy(reinterpret_cast<char*>(ap_cfg.ap.ssid), ssid,
+                 sizeof(ap_cfg.ap.ssid) - 1);
+    std::strncpy(reinterpret_cast<char*>(ap_cfg.ap.password),
+                 "visioncam", sizeof(ap_cfg.ap.password) - 1);
+    ap_cfg.ap.authmode = WIFI_AUTH_WPA_WPA2_PSK;
+    ap_cfg.ap.max_connection = 4;
+    ap_cfg.ap.channel = 1;
+
+    esp_err_t err = esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
+    if (err != ESP_OK) return err;
+
+    err = esp_wifi_start();
+    if (err != ESP_OK) return err;
+
+    s_radio_up.store(true);
+    s_ap_mode.store(true);
+    setState(WifiState::Ap);
+
+    ESP_LOGI(TAG, "AP mode: ssid=%s ip=192.168.4.1", ssid);
+    VC_RING_INFO("wifi", "AP mode ssid=%s ip=192.168.4.1", ssid);
+    return ESP_OK;
+}
+
 
 void onStarted() {
+    if (!s_configured.load() && !s_provisioning.load()) {
+        setState(WifiState::Ap);
+        return;
+    }
     setState(WifiState::Connecting);
     s_reconnect_at.store(0);
     // First attempt immediately: the event loop calls connect for us, so
@@ -153,7 +212,14 @@ void onGotIp(const ip_event_got_ip_t* got) {
 
 void onDisconnected(uint8_t reason) {
     s_disconnects.fetch_add(1);
-    setState(WifiState::Disconnected);
+    if (s_provisioning.load()) {
+        s_reconnect_at.store(0);
+        setState(WifiState::Ap);
+    } else if (s_ap_mode.load() && !s_configured.load()) {
+        setState(WifiState::Ap);
+    } else {
+        setState(WifiState::Disconnected);
+    }
 
     eventBusPublish(EventType::WifiDisconnected, reason);
     VC_RING_WARN("wifi", "disconnected reason=%u",
@@ -161,6 +227,11 @@ void onDisconnected(uint8_t reason) {
     ESP_LOGW(TAG, "disconnected (reason %u, disconnects=%u)",
              static_cast<unsigned>(reason),
              static_cast<unsigned>(s_disconnects.load()));
+
+    if (s_provisioning.load() ||
+        (s_ap_mode.load() && !s_configured.load())) {
+        return;
+    }
 
     // Exponential backoff + jitter, rescheduled by the supervisor task
     // after each failed attempt (attempt counter resets on GOT_IP).
@@ -235,6 +306,19 @@ void networkTask(void* /*arg*/) {
     }
 }
 
+void startNetworkTask() {
+    bool expected = false;
+    if (!s_network_task_started.compare_exchange_strong(expected, true)) return;
+    const BaseType_t ok = xTaskCreate(networkTask, "vc_netrecon",
+                                      VC_STACK_NETWORK, nullptr,
+                                      VC_PRIO_NETWORK, nullptr);
+    if (ok != pdPASS) {
+        s_network_task_started.store(false);
+        ESP_LOGE(TAG, "network task create failed — reconnects disabled");
+        VC_RING_ERROR("wifi", "netrecon task create failed — reconnects off");
+    }
+}
+
 }  // namespace
 
 const char* wifiStateName(WifiState state) {
@@ -243,6 +327,7 @@ const char* wifiStateName(WifiState state) {
     case WifiState::Connecting:    return "Connecting";
     case WifiState::Connected:     return "Connected";
     case WifiState::Disconnected:  return "Disconnected";
+    case WifiState::Ap:            return "AP";
     }
     return "Unknown";
 }
@@ -254,8 +339,16 @@ esp_err_t networkManagerInit() {
     char pass[64] = {0};
     size_t ssid_len = 0, pass_len = 0;
     bool found = false;
-    esp_err_t err = wifiCredentialsLoad(ssid, sizeof(ssid), pass, sizeof(pass),
-                                        ssid_len, pass_len, found);
+    bool staged_applied = false;
+    esp_err_t err = wifiCredentialsApplyStaged(staged_applied);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "pending Wi-Fi setup could not be committed: %s",
+                 esp_err_to_name(err));
+    } else if (staged_applied) {
+        ESP_LOGI(TAG, "verified Wi-Fi setup applied before camera initialization");
+    }
+    err = wifiCredentialsLoad(ssid, sizeof(ssid), pass, sizeof(pass),
+                              ssid_len, pass_len, found);
     if (err != ESP_OK) {
         // A real NVS fault — the caller decides how degraded to run.
         ESP_LOGE(TAG, "credential load failed: %s", esp_err_to_name(err));
@@ -272,12 +365,39 @@ esp_err_t networkManagerInit() {
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return err;
 
     if (!found) {
-        // Local-first operating mode (SPEC 9): lwIP is up (needed by the
-        // web server) but the radio stays off — nothing to connect to.
-        setState(WifiState::Off);
-        ESP_LOGI(TAG, "not configured — lwIP up, radio stays Off "
-                      "(local-only mode)");
-        VC_RING_INFO("wifi", "not configured — lwIP up, radio off");
+        // No credentials: fall back to SoftAP mode so the device is directly
+        // reachable for initial setup (SPEC 9 degraded operation — the
+        // camera, recording and UI all work locally regardless).
+        esp_netif_init();
+        esp_event_loop_create_default();
+
+        wifi_init_config_t init_cfg = WIFI_INIT_CONFIG_DEFAULT();
+        err = esp_wifi_init(&init_cfg);
+        if (err != ESP_OK) return err;
+
+        esp_netif_t* sta = esp_netif_create_default_wifi_sta();
+        if (sta == nullptr) return ESP_FAIL;
+        esp_netif_set_hostname(sta, "visioncam");
+
+        esp_event_handler_instance_t unused;
+        err = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                                  &onWifiEvent, nullptr, &unused);
+        if (err != ESP_OK) return err;
+        err = esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                                  &onWifiEvent, nullptr, &unused);
+        if (err != ESP_OK) return err;
+        err = esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_LOST_IP,
+                                                  &onWifiEvent, nullptr, &unused);
+        if (err != ESP_OK) return err;
+
+        err = esp_wifi_set_mode(WIFI_MODE_APSTA);
+        if (err != ESP_OK) return err;
+        s_ap_mode.store(true);
+        err = apStart();
+        if (err != ESP_OK) return err;
+
+        ESP_LOGI(TAG, "no credentials — setup AP active at 192.168.4.1");
+        VC_RING_INFO("wifi", "no credentials — setup AP active");
         return ESP_OK;
     }
     // Lengths only — NEVER the values (AGENTS rule 17).
@@ -327,20 +447,104 @@ esp_err_t networkManagerInit() {
     if (perr != ESP_OK) ESP_LOGW(TAG, "set_ps failed: %s", esp_err_to_name(perr));
 
     // Single reconnect owner (see the task comment above).
-    const BaseType_t ok = xTaskCreate(networkTask, "vc_netrecon",
-                                      VC_STACK_NETWORK, nullptr,
-                                      VC_PRIO_NETWORK, nullptr);
-    if (ok != pdPASS) {
-        // Without the task the FIRST connection still happens (onStarted
-        // connects); only recovery is lost. That is a degraded, not a
-        // dead, network — log it and continue.
-        ESP_LOGE(TAG, "network task create failed — reconnects disabled");
-        VC_RING_ERROR("wifi", "netrecon task create failed — reconnects off");
-    }
+    startNetworkTask();
 
     VC_RING_INFO("wifi", "radio starting (ssid %u B)",
                  static_cast<unsigned>(ssid_len));
     ESP_LOGI(TAG, "radio starting in STA mode (first connect from event handler)");
+    return ESP_OK;
+}
+
+esp_err_t networkManagerProvision(const char* ssid, const char* pass) {
+    if (ssid == nullptr || pass == nullptr) return ESP_ERR_INVALID_ARG;
+    const size_t ssid_len = std::strlen(ssid);
+    const size_t pass_len = std::strlen(pass);
+    if (ssid_len == 0 || ssid_len > 32 ||
+        (pass_len != 0 && (pass_len < 8 || pass_len > 63))) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (!s_ap_mode.load() || s_configured.load() ||
+        s_provision_pending.load() || !s_radio_up.load()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    bool expected = false;
+    if (!s_provisioning.compare_exchange_strong(expected, true)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    wifi_config_t sta_cfg = {};
+    std::memcpy(sta_cfg.sta.ssid, ssid, ssid_len);
+    std::memcpy(sta_cfg.sta.password, pass, pass_len);
+    s_reconnect_at.store(0);
+    esp_err_t err = esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
+    std::memset(&sta_cfg, 0, sizeof(sta_cfg));
+    if (err != ESP_OK) {
+        s_provisioning.store(false);
+        setState(WifiState::Ap);
+        return err;
+    }
+
+    setState(WifiState::Connecting);
+    err = esp_wifi_connect();
+    if (err != ESP_OK) {
+        s_provisioning.store(false);
+        setState(WifiState::Ap);
+        return err;
+    }
+
+    constexpr uint32_t kConnectTimeoutMs = 15000;
+    constexpr uint32_t kPollIntervalMs = 100;
+    for (uint32_t elapsed = 0; elapsed < kConnectTimeoutMs;
+         elapsed += kPollIntervalMs) {
+        const WifiState state = s_state.load();
+        if (state == WifiState::Connected) break;
+        if (state == WifiState::Ap) break;
+        vTaskDelay(pdMS_TO_TICKS(kPollIntervalMs));
+    }
+
+    if (s_state.load() != WifiState::Connected) {
+        s_reconnect_at.store(0);
+        wifi_config_t empty_cfg = {};
+        const esp_err_t clear_err = esp_wifi_set_config(WIFI_IF_STA, &empty_cfg);
+        s_provisioning.store(false);
+        setState(WifiState::Ap);
+        return clear_err == ESP_OK ? ESP_ERR_TIMEOUT : clear_err;
+    }
+
+    err = wifiCredentialsStageForBoot(ssid, pass);
+    if (err != ESP_OK) {
+        s_reconnect_at.store(0);
+        esp_wifi_disconnect();
+        wifi_config_t empty_cfg = {};
+        const esp_err_t clear_err = esp_wifi_set_config(WIFI_IF_STA, &empty_cfg);
+        s_provisioning.store(false);
+        setState(WifiState::Ap);
+        return clear_err == ESP_OK ? err : clear_err;
+    }
+
+    s_provision_pending.store(true);
+    s_provisioning.store(false);
+    s_ap_mode.store(true);
+    setState(WifiState::Connected);
+    return ESP_OK;
+}
+
+esp_err_t networkManagerStopSetupAp() {
+    if (!s_provision_pending.load() ||
+        s_state.load() != WifiState::Connected ||
+        !s_ap_mode.load() || !s_radio_up.load()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    const esp_err_t err = esp_wifi_set_mode(WIFI_MODE_STA);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "could not stop setup AP: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    s_ap_mode.store(false);
+    ESP_LOGI(TAG, "setup AP stopped after station obtained an IP");
+    VC_RING_INFO("wifi", "setup AP stopped after station obtained an IP");
     return ESP_OK;
 }
 
@@ -364,6 +568,8 @@ WifiStatus networkManagerStatus() {
     st.state = s_state.load();
     st.configured = s_configured.load();
     st.radio_up = s_radio_up.load();
+    st.ap_mode = s_ap_mode.load();
+    st.provision_pending = s_provision_pending.load();
     st.time_synced = s_time_synced.load();
     st.connects = s_connects.load();
     st.disconnects = s_disconnects.load();

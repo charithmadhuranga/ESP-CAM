@@ -4,6 +4,7 @@
 
 #include <cstring>
 
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "nvs.h"
@@ -27,6 +28,42 @@ constexpr char kKeyLegacyPass[] = "ST_Pass";
 
 constexpr size_t kSsidMax = 32;   // ESP32 Wi-Fi driver maximum
 constexpr size_t kPassMax = 63;   // WPA passphrase maximum (64 with NUL)
+constexpr uint32_t kPendingMagic = 0x56435746;  // "VCWF"
+
+struct PendingCredentials {
+    uint32_t magic;
+    uint8_t ssid_len;
+    uint8_t pass_len;
+    char ssid[33];
+    char pass[64];
+    uint32_t checksum;
+};
+
+RTC_NOINIT_ATTR PendingCredentials s_pending;
+
+uint32_t pendingChecksum(const PendingCredentials& pending) {
+    uint32_t hash = 2166136261u;
+    const auto mix = [&hash](uint8_t value) {
+        hash = (hash ^ value) * 16777619u;
+    };
+    mix(pending.ssid_len);
+    mix(pending.pass_len);
+    for (size_t i = 0; i < pending.ssid_len; ++i) {
+        mix(static_cast<uint8_t>(pending.ssid[i]));
+    }
+    for (size_t i = 0; i < pending.pass_len; ++i) {
+        mix(static_cast<uint8_t>(pending.pass[i]));
+    }
+    return hash;
+}
+
+bool validCredentials(const char* ssid, const char* pass) {
+    if (ssid == nullptr || pass == nullptr) return false;
+    const size_t ssid_len = std::strlen(ssid);
+    const size_t pass_len = std::strlen(pass);
+    return ssid_len != 0 && ssid_len <= kSsidMax &&
+           (pass_len == 0 || (pass_len >= 8 && pass_len <= kPassMax));
+}
 
 // Reads a string key into a fixed buffer. Never allocates.
 // Returns ESP_OK and writes the value, or ESP_ERR_NVS_NOT_FOUND. NOTE the
@@ -125,6 +162,62 @@ esp_err_t wifiCredentialsLoad(char* ssid, size_t ssid_cap,
 
     found = true;
     migrateToVisioncam(ssid, pass);
+    return ESP_OK;
+}
+
+esp_err_t wifiCredentialsSave(const char* ssid, const char* pass) {
+    if (!validCredentials(ssid, pass)) return ESP_ERR_INVALID_ARG;
+    const size_t ssid_len = std::strlen(ssid);
+    const size_t pass_len = std::strlen(pass);
+
+    nvs_handle_t h;
+    esp_err_t err = nvs_open(kNsVisioncam, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    err = nvs_set_str(h, kKeySsid, ssid);
+    if (err == ESP_OK) err = nvs_set_str(h, kKeyPass, pass);
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Wi-Fi credentials saved (ssid %u B, pass %u B)",
+                 static_cast<unsigned>(ssid_len),
+                 static_cast<unsigned>(pass_len));
+    }
+    return err;
+}
+
+esp_err_t wifiCredentialsStageForBoot(const char* ssid, const char* pass) {
+    if (!validCredentials(ssid, pass)) return ESP_ERR_INVALID_ARG;
+    std::memset(&s_pending, 0, sizeof(s_pending));
+    s_pending.ssid_len = static_cast<uint8_t>(std::strlen(ssid));
+    s_pending.pass_len = static_cast<uint8_t>(std::strlen(pass));
+    std::memcpy(s_pending.ssid, ssid, s_pending.ssid_len);
+    std::memcpy(s_pending.pass, pass, s_pending.pass_len);
+    s_pending.checksum = pendingChecksum(s_pending);
+    __sync_synchronize();
+    s_pending.magic = kPendingMagic;
+    return ESP_OK;
+}
+
+esp_err_t wifiCredentialsApplyStaged(bool& applied) {
+    applied = false;
+    if (s_pending.magic != kPendingMagic) return ESP_OK;
+    const bool valid =
+        s_pending.ssid_len > 0 && s_pending.ssid_len <= kSsidMax &&
+        (s_pending.pass_len == 0 ||
+         (s_pending.pass_len >= 8 && s_pending.pass_len <= kPassMax)) &&
+        s_pending.ssid[s_pending.ssid_len] == '\0' &&
+        s_pending.pass[s_pending.pass_len] == '\0' &&
+        s_pending.checksum == pendingChecksum(s_pending);
+    if (!valid) {
+        std::memset(&s_pending, 0, sizeof(s_pending));
+        return ESP_ERR_INVALID_CRC;
+    }
+
+    const esp_err_t err = wifiCredentialsSave(s_pending.ssid, s_pending.pass);
+    if (err != ESP_OK) return err;
+    std::memset(&s_pending, 0, sizeof(s_pending));
+    applied = true;
     return ESP_OK;
 }
 

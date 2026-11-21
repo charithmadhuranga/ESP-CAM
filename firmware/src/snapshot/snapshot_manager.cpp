@@ -104,9 +104,19 @@ esp_err_t SnapshotManager::doCapture(SnapshotSource source,
     ESP_LOGD(TAG, "doCapture: subscribed as sub=%u", static_cast<unsigned>(cap_sub));
     // Give the capture task a tick to deliver a frame to the new queue.
     vTaskDelay(pdMS_TO_TICKS(10));
-    bool acquired = frameAcquire(cap_sub, lease, 30000 /* timeout_ms */);
+    // Retry frame acquisition: during boot step 15 (SPEC 9.1 ladder test),
+    // the camera is intentionally held dead for ~18 seconds. Retry instead
+    // of failing immediately so the snapshot succeeds once the camera
+    // recovers.
+    bool acquired = false;
+    for (int attempt = 0; attempt < 3 && !acquired; attempt++) {
+        if (attempt > 0) {
+            vTaskDelay(pdMS_TO_TICKS(2000));  // wait 2s between retries
+        }
+        acquired = frameAcquire(cap_sub, lease, 5000 /* timeout_ms */);
+    }
     if (!acquired) {
-        ESP_LOGE(TAG, "doCapture: frame acquire failed (sub=%u)",
+        ESP_LOGE(TAG, "doCapture: frame acquire failed after 3 attempts (sub=%u)",
                  static_cast<unsigned>(cap_sub));
         frameManagerUnsubscribe(cap_sub);
         return ESP_FAIL;

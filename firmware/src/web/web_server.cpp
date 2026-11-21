@@ -25,10 +25,14 @@
 
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_system.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include "auth.h"
 #include "camera_manager.h"
 #include "camera_recovery.h"
+#include "frame_manager.h"   // live stream: leases only — AGENTS rule 9
 #include "network_manager.h"
 #include "resource_monitor.h"
 #include "ring_log.h"
@@ -39,8 +43,10 @@
 #include "recording_manager.h"
 #include "playback.h"
 #include "motion_manager.h"
-#include "timelapse_manager.h"
-#include "ai_manager.h"
+// #include "timelapse_manager.h"  (descoped with Phase 5/6 — see CMakeLists.txt)
+// #include "ai_manager.h"  (descoped with Phase 5/6 — see CMakeLists.txt)
+#include "mqtt_manager.h"   // Phase 7: /integrations/mqtt + HA discovery
+#include "http_upload_storage_backend.h"   // Phase 8: /integrations/network-storage
 
 namespace visioncam {
 
@@ -170,6 +176,145 @@ bool jsonScalar(const char* body, const char* key, char* out, size_t out_cap) {
     return true;
 }
 
+void skipJsonWhitespace(const char*& cursor, const char* end) {
+    while (cursor < end &&
+           (*cursor == ' ' || *cursor == '\n' ||
+            *cursor == '\r' || *cursor == '\t')) {
+        ++cursor;
+    }
+}
+
+bool appendUtf8(uint32_t codepoint, char* out, size_t cap, size_t& length) {
+    uint8_t bytes[4] = {};
+    size_t count = 0;
+    if (codepoint == 0 || codepoint < 0x20 ||
+        (codepoint >= 0xD800 && codepoint <= 0xDFFF) ||
+        codepoint > 0x10FFFF) return false;
+    if (codepoint <= 0x7F) {
+        bytes[0] = static_cast<uint8_t>(codepoint);
+        count = 1;
+    } else if (codepoint <= 0x7FF) {
+        bytes[0] = static_cast<uint8_t>(0xC0 | (codepoint >> 6));
+        bytes[1] = static_cast<uint8_t>(0x80 | (codepoint & 0x3F));
+        count = 2;
+    } else if (codepoint <= 0xFFFF) {
+        bytes[0] = static_cast<uint8_t>(0xE0 | (codepoint >> 12));
+        bytes[1] = static_cast<uint8_t>(0x80 | ((codepoint >> 6) & 0x3F));
+        bytes[2] = static_cast<uint8_t>(0x80 | (codepoint & 0x3F));
+        count = 3;
+    } else {
+        bytes[0] = static_cast<uint8_t>(0xF0 | (codepoint >> 18));
+        bytes[1] = static_cast<uint8_t>(0x80 | ((codepoint >> 12) & 0x3F));
+        bytes[2] = static_cast<uint8_t>(0x80 | ((codepoint >> 6) & 0x3F));
+        bytes[3] = static_cast<uint8_t>(0x80 | (codepoint & 0x3F));
+        count = 4;
+    }
+    if (length + count >= cap) return false;
+    std::memcpy(out + length, bytes, count);
+    length += count;
+    return true;
+}
+
+bool parseJsonString(const char*& cursor, const char* end, char* out,
+                     size_t cap, size_t& length) {
+    if (cursor >= end || *cursor++ != '"') return false;
+    length = 0;
+    while (cursor < end) {
+        const uint8_t ch = static_cast<uint8_t>(*cursor++);
+        if (ch == '"') {
+            if (length >= cap) return false;
+            out[length] = '\0';
+            return true;
+        }
+        if (ch < 0x20) return false;
+        if (ch != '\\') {
+            if (length + 1 >= cap) return false;
+            out[length++] = static_cast<char>(ch);
+            continue;
+        }
+        if (cursor >= end) return false;
+        const char escaped = *cursor++;
+        if (escaped == '"' || escaped == '\\' || escaped == '/') {
+            if (length + 1 >= cap) return false;
+            out[length++] = escaped;
+            continue;
+        }
+        if (escaped != 'u' || end - cursor < 4) return false;
+        uint32_t codepoint = 0;
+        for (int i = 0; i < 4; ++i) {
+            const char digit = *cursor++;
+            codepoint <<= 4;
+            if (digit >= '0' && digit <= '9') codepoint |= digit - '0';
+            else if (digit >= 'a' && digit <= 'f') codepoint |= digit - 'a' + 10;
+            else if (digit >= 'A' && digit <= 'F') codepoint |= digit - 'A' + 10;
+            else return false;
+        }
+        if (codepoint >= 0xD800 && codepoint <= 0xDBFF) {
+            if (end - cursor < 6 || cursor[0] != '\\' || cursor[1] != 'u') return false;
+            cursor += 2;
+            uint32_t low = 0;
+            for (int i = 0; i < 4; ++i) {
+                const char digit = *cursor++;
+                low <<= 4;
+                if (digit >= '0' && digit <= '9') low |= digit - '0';
+                else if (digit >= 'a' && digit <= 'f') low |= digit - 'a' + 10;
+                else if (digit >= 'A' && digit <= 'F') low |= digit - 'A' + 10;
+                else return false;
+            }
+            if (low < 0xDC00 || low > 0xDFFF) return false;
+            codepoint = 0x10000 + ((codepoint - 0xD800) << 10) + (low - 0xDC00);
+        } else if (codepoint >= 0xDC00 && codepoint <= 0xDFFF) {
+            return false;
+        }
+        if (!appendUtf8(codepoint, out, cap, length)) return false;
+    }
+    return false;
+}
+
+bool parseWifiConfigJson(const char* body, size_t body_len,
+                         char* ssid, size_t ssid_cap,
+                         char* pass, size_t pass_cap) {
+    const char* cursor = body;
+    const char* end = body + body_len;
+    bool have_ssid = false;
+    bool have_pass = false;
+    skipJsonWhitespace(cursor, end);
+    if (cursor >= end || *cursor++ != '{') return false;
+    for (;;) {
+        char key[16] = {};
+        size_t key_len = 0;
+        size_t value_len = 0;
+        skipJsonWhitespace(cursor, end);
+        if (!parseJsonString(cursor, end, key, sizeof(key), key_len)) return false;
+        skipJsonWhitespace(cursor, end);
+        if (cursor >= end || *cursor++ != ':') return false;
+        skipJsonWhitespace(cursor, end);
+
+        const bool is_ssid = std::strcmp(key, "ssid") == 0;
+        const bool is_pass = std::strcmp(key, "password") == 0;
+        if ((!is_ssid && !is_pass) ||
+            (is_ssid && have_ssid) || (is_pass && have_pass)) return false;
+        const size_t value_cap = is_ssid ? ssid_cap : pass_cap;
+        char* value_out = is_ssid ? ssid : pass;
+        if (!parseJsonString(cursor, end, value_out, value_cap, value_len)) return false;
+        if (is_ssid) have_ssid = true;
+        else have_pass = true;
+
+        skipJsonWhitespace(cursor, end);
+        if (cursor >= end) return false;
+        if (*cursor == '}') {
+            ++cursor;
+            break;
+        }
+        if (*cursor++ != ',') return false;
+    }
+    skipJsonWhitespace(cursor, end);
+    return cursor == end && have_ssid && have_pass &&
+           ssid[0] != '\0' &&
+           (pass[0] == '\0' ||
+            (std::strlen(pass) >= 8 && std::strlen(pass) <= 63));
+}
+
 // Strict unsigned parse: the WHOLE string must be decimal digits (rejects
 // "", "12abc", "-3", overflows). Returns false on any garbage so a typo
 // can never be silently coerced to 0 (which is a valid policy value —
@@ -183,6 +328,42 @@ bool parseU32Strict(const char* s, uint32_t& out) {
         if (v > 0xFFFFFFFFull) return false;
     }
     out = static_cast<uint32_t>(v);
+    return true;
+}
+
+// Strict float parser for JSON scalars such as confidence_threshold
+// ("0.6"). Syntax only — the caller applies the range check and reports
+// the domain-specific message. Rejects trailing junk and empty strings;
+// the caller's range comparison also rejects NaN and infinities.
+bool parseFloatStrict(const char* s, float& out) {
+    if (s == nullptr || *s == '\0') return false;
+    char* end = nullptr;
+    const float v = std::strtof(s, &end);
+    if (end == s || end == nullptr || *end != '\0') return false;
+    out = v;
+    return true;
+}
+
+// Model IDs become a filesystem path segment
+// (/sdcard/models/<dir>/<id>.tflite) AND are echoed back in JSON, so only
+// [A-Za-z0-9_-], 1..48 chars is accepted. This rejects traversal ("../",
+// absolute paths), quotes and control chars — defence in depth alongside
+// storagePathIsUnderSd (AGENTS rule 15 / SPEC §6.0).
+bool parseModelId(const char* in, char* out, size_t cap) {
+    if (in == nullptr || out == nullptr || cap < 2) return false;
+    size_t n = 0;
+    for (const char* p = in; *p != '\0'; ++p) {
+        const char c = *p;
+        const bool ok = (c >= 'a' && c <= 'z') ||
+                        (c >= 'A' && c <= 'Z') ||
+                        (c >= '0' && c <= '9') ||
+                        c == '_' || c == '-';
+        if (!ok) return false;
+        if (++n >= cap) return false;
+    }
+    if (n == 0) return false;
+    std::memcpy(out, in, n);
+    out[n] = '\0';
     return true;
 }
 
@@ -227,31 +408,56 @@ static esp_err_t assetHandler(httpd_req_t* req) {
             char len_buf[16];
             std::snprintf(len_buf, sizeof(len_buf), "%u",
                           static_cast<unsigned>(web_assets[i].comp_size));
-            httpd_resp_set_hdr(req, "Content-Length", len_buf);
-            return httpd_resp_send(req,
-                                   reinterpret_cast<const char*>(
-                                       web_assets[i].data),
-                                   web_assets[i].comp_size);
+                        // Send gzip data in chunks (avoids null-byte truncation)
+                   const uint8_t* data = web_assets[i].data;
+            size_t remaining = web_assets[i].comp_size;
+            size_t offset = 0;
+            while (remaining > 0) {
+                size_t chunk = std::min<size_t>(remaining, 1024);
+                if (httpd_resp_send_chunk(req,
+                                          reinterpret_cast<const char*>(data + offset),
+                                          chunk) != ESP_OK) {
+                    return ESP_FAIL;
+                }
+                offset += chunk;
+                remaining -= chunk;
+            }
+            httpd_resp_send_chunk(req, NULL, 0);
+            return ESP_OK;
         }
     }
     // Not found — serve index.html as SPA fallback (client-side routing).
     // The manifest contains "/index.html", not "/", so look it up by its
     // real URL. If even that is absent, 404.
-    const char* index_url = "/index.html";
-    for (size_t i = 0; i < web_assets_count; ++i) {
-        if (std::strcmp(index_url, web_assets[i].url) == 0) {
+    const char* index_urls[2] = {"/index.html", "/"};
+    for (size_t u = 0; u < 2; ++u) {
+        const char* index_url = index_urls[u];
+        for (size_t i = 0; i < web_assets_count; ++i) {
+            if (std::strcmp(index_url, web_assets[i].url) == 0) {
             httpd_resp_set_type(req, "text/html");
             httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
             httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
             char len_buf[16];
             std::snprintf(len_buf, sizeof(len_buf), "%u",
                           static_cast<unsigned>(web_assets[i].comp_size));
-            httpd_resp_set_hdr(req, "Content-Length", len_buf);
-            return httpd_resp_send(req,
-                                   reinterpret_cast<const char*>(
-                                       web_assets[i].data),
-                                   web_assets[i].comp_size);
+                        // Send gzip data in chunks (avoids null-byte truncation)
+                   const uint8_t* data = web_assets[i].data;
+            size_t remaining = web_assets[i].comp_size;
+            size_t offset = 0;
+            while (remaining > 0) {
+                size_t chunk = std::min<size_t>(remaining, 1024);
+                if (httpd_resp_send_chunk(req,
+                                          reinterpret_cast<const char*>(data + offset),
+                                          chunk) != ESP_OK) {
+                    return ESP_FAIL;
+                }
+                offset += chunk;
+                remaining -= chunk;
+            }
+            httpd_resp_send_chunk(req, NULL, 0);
+            return ESP_OK;
         }
+    }
     }
     return httpd_resp_set_status(req, "404 Not Found") == ESP_OK
                ? httpd_resp_send(req, "Not found", 9)
@@ -382,7 +588,10 @@ esp_err_t httpReplyError(httpd_req_t* req, uint32_t request_id, ErrCode code,
     case ErrCode::SdNotMounted:
     case ErrCode::StreamSlotLimit:
     case ErrCode::PlaybackBusy:
-    case ErrCode::TimeUnsynchronised: status = "503 Service Unavailable"; break;
+    case ErrCode::TimeUnsynchronised:
+    case ErrCode::MqttUnavailable:
+    case ErrCode::NetworkStorageUnavailable:
+    case ErrCode::WifiUnavailable:             status = "503 Service Unavailable"; break;
     case ErrCode::SdFull:             status = "507 Insufficient Storage"; break;
     case ErrCode::SdWriteFailed:
     case ErrCode::Internal:           status = "500 Internal Server Error"; break;
@@ -400,7 +609,7 @@ esp_err_t httpReplyBytes(httpd_req_t* req, const char* content_type,
     char len_buf[16];
     std::snprintf(len_buf, sizeof(len_buf), "%u",
                   static_cast<unsigned>(len));
-    httpd_resp_set_hdr(req, "Content-Length", len_buf);
+                // Send gzip data in chunks (avoids null-byte truncation)
     return httpd_resp_send(req, reinterpret_cast<const char*>(data), len);
 }
 
@@ -471,14 +680,23 @@ static esp_err_t authLoginHandler(httpd_req_t* req) {
     char token_b64[64] = {};
     vc_b64e(static_cast<const uint8_t*>(token), tlen, token_b64,
             sizeof(token_b64));
-    // Combine both cookies into one Set-Cookie header because
-    // httpd_resp_set_hdr() replaces rather than appends.
-    char set_cookie[512] = {};
-    std::snprintf(set_cookie, sizeof(set_cookie),
-                  "%s=%s; Path=/; HttpOnly; SameSite=Lax, %s=%s; Path=/; "
-                  "HttpOnly; SameSite=Lax",
-                  kSessionCookie, token_b64, kCsrfCookie, csrf_b64);
-    httpd_resp_set_hdr(req, "Set-Cookie", set_cookie);
+    // TWO separate Set-Cookie headers — RFC 6265 allows one cookie per
+    // header, and httpd_resp_set_hdr() APPENDS to the response header list
+    // (httpd_txrx.c:195-198), so calling it twice emits both. The old code
+    // comma-joined them into a single header on the wrong assumption that
+    // set_hdr replaces; curl and browsers then stored only the first cookie
+    // (the session) and never saw visioncam_csrf, so every state-changing
+    // request failed CSRF (reproduced 2026-11-21).
+    char set_cookie_session[192] = {};
+    std::snprintf(set_cookie_session, sizeof(set_cookie_session),
+                  "%s=%s; Path=/; HttpOnly; SameSite=Lax",
+                  kSessionCookie, token_b64);
+    char set_cookie_csrf[192] = {};
+    std::snprintf(set_cookie_csrf, sizeof(set_cookie_csrf),
+                  "%s=%s; Path=/; SameSite=Lax",
+                  kCsrfCookie, csrf_b64);   // JS-readable on purpose
+    httpd_resp_set_hdr(req, "Set-Cookie", set_cookie_session);
+    httpd_resp_set_hdr(req, "Set-Cookie", set_cookie_csrf);
     return httpReplyOk(req, rid,
                        change_required
                            ? "{\"password_change_required\":true}"
@@ -490,10 +708,12 @@ static esp_err_t authLogoutHandler(httpd_req_t* req) {
     uint32_t rid = httpNextRequestId();
     (void)requireAuth(req);
     authRevokeAllSessions();
+    // Two headers, one cookie each (see login handler — RFC 6265).
     httpd_resp_set_hdr(req, "Set-Cookie",
                        "visioncam_session=; Path=/; HttpOnly; SameSite=Lax; "
-                       "Max-Age=0, visioncam_csrf=; Path=/; HttpOnly; "
-                       "SameSite=Lax; Max-Age=0");
+                       "Max-Age=0");
+    httpd_resp_set_hdr(req, "Set-Cookie",
+                       "visioncam_csrf=; Path=/; SameSite=Lax; Max-Age=0");
     return httpReplyOk(req, rid, "{\"ok\":true}");
 }
 
@@ -558,6 +778,83 @@ static esp_err_t authChangePasswordHandler(httpd_req_t* req) {
     return httpReplyOk(req, rid, "{}");
 }
 
+// --- POST /wifi/config ------------------------------------------------------
+// A setup-AP-only endpoint. Credentials are tested before NVS is updated,
+// so a typo cannot replace a working configuration or strand setup access.
+static esp_err_t wifiConfigPostHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    if (requireCsrf(req) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::CsrfInvalid,
+                              "CSRF token missing or invalid");
+    }
+
+    const WifiStatus status = networkManagerStatus();
+    if (!status.ap_mode || status.configured || status.provision_pending) {
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "Wi-Fi setup is only available in setup AP mode");
+    }
+
+    char body[256] = {};
+    size_t body_len = 0;
+    if (readJsonBody(req, body, sizeof(body), body_len) != ESP_OK) {
+        std::memset(body, 0, sizeof(body));
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "invalid Wi-Fi configuration body");
+    }
+
+    char ssid[33] = {};
+    char pass[64] = {};
+    const bool valid = parseWifiConfigJson(body, body_len, ssid, sizeof(ssid),
+                                           pass, sizeof(pass));
+    std::memset(body, 0, sizeof(body));
+
+    if (!valid) {
+        std::memset(ssid, 0, sizeof(ssid));
+        std::memset(pass, 0, sizeof(pass));
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "SSID must be 1..32 bytes; password must be empty or 8..63 bytes");
+    }
+
+    const esp_err_t err = networkManagerProvision(ssid, pass);
+    std::memset(ssid, 0, sizeof(ssid));
+    std::memset(pass, 0, sizeof(pass));
+    if (err == ESP_ERR_TIMEOUT) {
+        return httpReplyError(req, rid, ErrCode::WifiUnavailable,
+                              "Could not join that Wi-Fi network; check its password and use a 2.4 GHz network");
+    }
+    if (err == ESP_ERR_INVALID_ARG) {
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "invalid Wi-Fi credentials");
+    }
+    if (err == ESP_ERR_INVALID_STATE) {
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "Wi-Fi setup is already in progress or unavailable");
+    }
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Wi-Fi provisioning failed: %s", esp_err_to_name(err));
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "could not save Wi-Fi configuration");
+    }
+
+    const esp_err_t response_err = httpReplyOk(
+        req, rid,
+        "{\"configured\":false,\"provision_pending\":true,"
+        "\"connected\":true,\"ap_mode\":false,\"restarting\":true,"
+        "\"schema_version\":1}");
+    const esp_err_t ap_err = networkManagerStopSetupAp();
+    if (ap_err != ESP_OK) {
+        ESP_LOGE(TAG, "Wi-Fi connected but setup AP shutdown failed: %s",
+                 esp_err_to_name(ap_err));
+    } else {
+        ESP_LOGI(TAG, "verified Wi-Fi setup; restarting to commit credentials");
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_restart();
+    return response_err;
+}
+
 // --- GET /device -------------------------------------------------------------
 static esp_err_t deviceHandler(httpd_req_t* req) {
     uint32_t rid = httpNextRequestId();
@@ -585,13 +882,17 @@ static esp_err_t statusHandler(httpd_req_t* req) {
     // ran long.
     const int n = std::snprintf(payload, sizeof(payload),
                        "{\"wifi\":{\"state\":\"%s\",\"configured\":%s,"
+                       "\"ap_mode\":%s,\"provision_pending\":%s,"
                        "\"radio_up\":%s,\"rssi\":%d,\"connects\":%u,"
                        "\"disconnects\":%u},\"camera\":{\"initialised\":%s,"
                        "\"framesize\":%d},\"time_synced\":%s,"
                        "\"heap_free_bytes\":%u,\"largest_block_bytes\":%u,"
+                       "\"storage\":{\"mounted\":%s,\"media_count\":%u},"
                        "\"schema_version\":1}",
                        wifiStateName(ws.state),
                        ws.configured ? "true" : "false",
+                       ws.ap_mode ? "true" : "false",
+                       ws.provision_pending ? "true" : "false",
                        ws.radio_up ? "true" : "false", ws.rssi,
                        static_cast<unsigned int>(ws.connects),
                        static_cast<unsigned int>(ws.disconnects),
@@ -599,7 +900,15 @@ static esp_err_t statusHandler(httpd_req_t* req) {
                        static_cast<int>(cameraManagerFramesize()),
                        ws.time_synced ? "true" : "false",
                        static_cast<unsigned int>(rs.free_heap),
-                       static_cast<unsigned int>(rs.largest_block));
+                       static_cast<unsigned int>(rs.largest_block),
+                       storageManagerAvailable() ? "true" : "false",
+                       []{
+                           visioncam::StorageStatus ss{};
+                           if (storageManagerAvailable() &&
+                               visioncam::storageGetStatus(&ss) == ESP_OK)
+                               return static_cast<unsigned int>(ss.media_count);
+                           return 0u;
+                       }());
     if (n < 0 || static_cast<size_t>(n) >= sizeof(payload)) {
         return httpReplyError(req, rid, ErrCode::Internal,
                               "status payload overflow");
@@ -614,7 +923,8 @@ static esp_err_t healthHandler(httpd_req_t* req) {
     const WifiStatus ws = networkManagerStatus();
     const bool healthy = cameraManagerInitialised() &&
                          (ws.state == WifiState::Connected ||
-                          ws.state == WifiState::Off);
+                          ws.state == WifiState::Off ||
+                          ws.state == WifiState::Ap);
     char payload[200] = {};
     std::snprintf(payload, sizeof(payload),
                   "{\"healthy\":%s,\"camera_initialised\":%s,"
@@ -857,8 +1167,11 @@ static esp_err_t cameraCaptureHandler(httpd_req_t* req) {
     // is owned by main/recovery; when it is stopped, frameAcquire simply
     // times out and we answer "no frame available".
     // Acquire a frame lease from the frame manager (sole fb owner, rule 9).
+    // Subscriber 0 is the smoke-test subscription registered at boot — it
+    // stays subscribed for the device's lifetime, so it is always available
+    // once the capture task is running.
     FrameLease lease;
-    if (!frameAcquire(0, lease, /*timeout_ms=*/2000)) {
+    if (!frameAcquire(0, lease, /*timeout_ms=*/5000)) {
         return httpReplyError(req, rid, ErrCode::Internal,
                               "no frame available");
     }
@@ -1879,622 +2192,147 @@ static esp_err_t motionStatusHandler(httpd_req_t* req) {
                   static_cast<unsigned int>(st.analyze_time_ms_last));
     return httpReplyOk(req, rid, payload);
 }
+// --- GET /camera/stream ----------------------------------------------
+// Live MJPEG for the Live View page (mockup Live.png). Registered here;
+// the endpoint simply never existed before — /camera/capture (a single
+// frame) was the only way to see the camera, which is why the Phase 1
+// "live view" claim could not actually be reproduced in a browser.
+//
+// Contract:
+//   - auth required (SPEC §6.3): a stream is still media.
+//   - the handler never touches esp_camera_fb_* — it takes leases from the
+//     frame manager, copies nothing, and releases the lease on EVERY exit
+//     path (AGENTS rule 9). A slow client loses frames (the consumer queue
+//     is depth-2 drop-oldest by design) instead of stalling capture.
+//   - bounded: kMaxLiveStreams concurrent streams, an idle timeout when
+//     the camera produces nothing, and an overall session cap so a
+//     forgotten browser tab cannot hold a socket/subscriber forever.
+//   - the subscription is per connection and is always released (RAII).
+constexpr int kMaxLiveStreams = 2;
+constexpr uint32_t kLiveStreamIdleMs = 10000;   // no frame -> close
+constexpr uint32_t kLiveStreamMaxMs = 30u * 60u * 1000u;  // 30 min cap
+// Hard ceiling for one frame copy (AGENTS rule 13: fixed, never sized from
+// user input). A frame larger than this is dropped, never truncated.
+constexpr size_t kLiveStreamFrameCap = 256 * 1024;
 
-// --- GET /ai/status --- (Phase 6 task 6.4)
-static esp_err_t aiStatusHandler(httpd_req_t* req) {
+// Concurrent live streams (bounded — a stream owns a socket AND a frame
+// subscriber slot; the httpd task is single, so more streams only starve
+// the APIs).
+static std::atomic<int> g_live_streams{0};
+
+// RAII frame-manager subscription for a live stream. The registry is
+// bounded (VC_FRAME_SUBSCRIBERS) and the handler must give the slot back
+// on every exit path — a leak would starve the snapshot capture.
+struct LiveSubGuard {
+    FrameSubscriberId sub = 0;
+    bool ok = false;
+    esp_err_t acquire() {
+        const esp_err_t err = frameManagerSubscribe(&sub, "livestream");
+        ok = (err == ESP_OK);
+        return err;
+    }
+    ~LiveSubGuard() {
+        if (ok) frameManagerUnsubscribe(sub);
+    }
+};
+
+// Owns the per-connection frame copy. frame_manager.h is explicit: a
+// consumer that cannot hold a lease across blocking I/O copies the frame
+// with frameLeaseCopyTo() and releases the lease IMMEDIATELY. Sending
+// lease.data after frameRelease() would be a use-after-free (the record
+// goes back to the pool/buffers) — the copy is what makes a slow stream
+// safe for capture (rule 9). Freed on every exit path; never larger than
+// kLiveStreamFrameCap; oversized frames are dropped, never truncated.
+struct LiveStreamBuffer {
+    uint8_t* data = nullptr;
+    size_t cap = 0;
+    bool growTo(size_t need) {
+        if (need <= cap) return true;
+        if (need > kLiveStreamFrameCap) return false;
+        uint8_t* p = static_cast<uint8_t*>(
+            heap_caps_malloc(need, MALLOC_CAP_DEFAULT));
+        if (p == nullptr) return false;
+        heap_caps_free(data);
+        data = p;
+        cap = need;
+        return true;
+    }
+    ~LiveStreamBuffer() { heap_caps_free(data); }
+};
+
+static esp_err_t cameraStreamHandler(httpd_req_t* req) {
     uint32_t rid = httpNextRequestId();
     if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
-    AIStatus st{};
-    if (visioncam::aiManagerStatus(&st) != ESP_OK) {
+    if (!cameraManagerInitialised()) {
         return httpReplyError(req, rid, ErrCode::Internal,
-                              "AI status failed");
+                              "camera not initialised");
     }
-    char payload[256] = {};
-    std::snprintf(payload, sizeof(payload),
-                  "{\"enabled\":%s,\"provider\":\"%s\",\"provider_ready\":%s,"
-                  "\"inferences_total\":%u,\"inferences_ok\":%u,"
-                  "\"inferences_failed\":%u,\"detections_total\":%u,"
-                  "\"last_inference_duration_ms\":%u,\"last_error\":\"%s\","
-                  "\"schema_version\":1}",
-                  st.enabled ? "true" : "false",
-                  st.provider.c_str(),
-                  st.provider_ready ? "true" : "false",
-                  static_cast<unsigned int>(st.inferences_total),
-                  static_cast<unsigned int>(st.inferences_ok),
-                  static_cast<unsigned int>(st.inferences_failed),
-                  static_cast<unsigned int>(st.detections_total),
-                  static_cast<unsigned int>(st.last_inference_duration_ms),
-                  st.last_error.c_str());
-    return httpReplyOk(req, rid, payload);
+    // Bounded concurrency: beyond this the socket stays free for the
+    // settings/media APIs. Reported with the envelope code, not a hang.
+    if (g_live_streams.fetch_add(1) >= kMaxLiveStreams) {
+        g_live_streams.fetch_sub(1);
+        return httpReplyError(req, rid, ErrCode::StreamSlotLimit,
+                              "too many live streams");
+    }
+    struct StreamCountGuard {
+        ~StreamCountGuard() { g_live_streams.fetch_sub(1); }
+    } count_guard;
+
+    LiveSubGuard sub_guard;
+    if (sub_guard.acquire() != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "stream slot unavailable");
+    }
+
+    httpd_resp_set_type(req, "multipart/x-mixed-replace");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+    httpd_resp_set_hdr(req, "Content-Type",
+                       "multipart/x-mixed-replace; boundary=--vcframe");
+
+    const uint32_t started =
+        static_cast<uint32_t>(esp_timer_get_time() / 1000);
+    LiveStreamBuffer buf;
+    for (;;) {
+        const uint32_t now =
+            static_cast<uint32_t>(esp_timer_get_time() / 1000);
+        if (now - started > kLiveStreamMaxMs) break;
+
+        FrameLease lease{};
+        // Idle timeout: if no frame arrives the camera is not producing
+        // (down, failed, recovering) — close instead of holding both the
+        // socket and the subscriber slot indefinitely.
+        if (!frameAcquire(sub_guard.sub, lease, kLiveStreamIdleMs)) break;
+
+        // Copy out of the lease, release, THEN send: the send is blocking
+        // socket I/O and the lease must never be held across it.
+        const size_t len = lease.len;
+        const bool size_ok = (len > 0 && buf.growTo(len));
+        if (size_ok) frameLeaseCopyTo(lease, buf.data, buf.cap);
+        frameRelease(lease);
+        if (!size_ok) continue;   // oversized/empty: dropped, not sent
+
+        char hdr[128] = {};
+        const int hlen = std::snprintf(hdr, sizeof(hdr),
+                                       "--vcframe\r\n"
+                                       "Content-Type: image/jpeg\r\n"
+                                       "Content-Length: %u\r\n\r\n",
+                                       static_cast<unsigned>(len));
+        if (hlen <= 0) continue;
+        if (httpd_resp_send_chunk(req, hdr, hlen) != ESP_OK) break;
+        if (httpd_resp_send_chunk(req,
+                                  reinterpret_cast<const char*>(buf.data),
+                                  len) != ESP_OK) break;
+    }
+    // Normal end of a chunked multipart response; the return code is
+    // irrelevant because the client is gone by definition.
+    httpd_resp_send_chunk(req, nullptr, 0);
+    ESP_LOGI(TAG, "live stream ended after %u ms",
+             static_cast<unsigned>(
+                 static_cast<uint32_t>(esp_timer_get_time() / 1000) -
+                 started));
+    return ESP_OK;
 }
 
-// --- GET /ai/providers --- (Phase 6 task 6.4)
-static esp_err_t aiProvidersHandler(httpd_req_t* req) {
-    uint32_t rid = httpNextRequestId();
-    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
-    char ids[256] = {};
-    size_t count = 0;
-    if (visioncam::aiManagerListProviders(ids, sizeof(ids), &count) != ESP_OK) {
-        return httpReplyError(req, rid, ErrCode::Internal,
-                              "provider list failed");
-    }
-    char payload[300] = {};
-    std::snprintf(payload, sizeof(payload),
-                  "{\"providers\":%s,\"schema_version\":1}", ids);
-    return httpReplyOk(req, rid, payload);
-}
-
-// --- GET /ai/config --- (Phase 6 task 6.4)
-static esp_err_t aiConfigGetHandler(httpd_req_t* req) {
-    uint32_t rid = httpNextRequestId();
-    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
-    AIConfig cfg{};
-    if (visioncam::aiManagerGetConfig(&cfg) != ESP_OK) {
-        return httpReplyError(req, rid, ErrCode::Internal,
-                              "AI config read failed");
-    }
-    char payload[512] = {};
-    std::snprintf(payload, sizeof(payload),
-                  "{\"enabled\":%s,\"provider\":\"%s\","
-                  "\"timeout_ms\":%u,\"inference_interval_ms\":%u,"
-                  "\"upload_width\":%u,\"upload_height\":%u,"
-                  "\"upload_quality\":%u,\"max_upload_bytes\":%u,"
-                  "\"tls_verify\":%s,\"active_model_id\":\"%s\","
-                  "\"schema_version\":1}",
-                  cfg.enabled ? "true" : "false",
-                  cfg.provider.c_str(),
-                  static_cast<unsigned int>(cfg.timeout_ms),
-                  static_cast<unsigned int>(cfg.inference_interval_ms),
-                  static_cast<unsigned int>(cfg.upload_width),
-                  static_cast<unsigned int>(cfg.upload_height),
-                  static_cast<unsigned int>(cfg.upload_quality),
-                  static_cast<unsigned int>(cfg.max_upload_bytes),
-                  cfg.tls_verify ? "true" : "false",
-                  cfg.active_model_id.c_str());
-    return httpReplyOk(req, rid, payload);
-}
-
-// --- PUT /ai/config --- (Phase 6 task 6.4; SPEC 7 update process)
-static esp_err_t aiConfigPutHandler(httpd_req_t* req) {
-    uint32_t rid = httpNextRequestId();
-    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
-    if (requireCsrf(req) != ESP_OK) {
-        return httpReplyError(req, rid, ErrCode::CsrfInvalid,
-                              "CSRF token missing or invalid");
-    }
-    char body[256] = {};
-    size_t blen = 0;
-    if (readJsonBody(req, body, sizeof(body), blen) != ESP_OK) {
-        return httpReplyError(req, rid, ErrCode::ValidationFailed,
-                              "invalid JSON body");
-    }
-    AIConfig cur{};
-    if (visioncam::aiManagerGetConfig(&cur) != ESP_OK) {
-        return httpReplyError(req, rid, ErrCode::Internal,
-                              "AI config read failed");
-    }
-    AIConfig cand = cur;
-    char val[64] = {};
-    bool any = false;
-    if (jsonScalar(body, "\"enabled\"", val, sizeof(val))) {
-        cand.enabled = (std::strcmp(val, "true") == 0 ||
-                        std::strcmp(val, "1") == 0);
-        any = true;
-    }
-    val[0] = '\0';
-    if (jsonScalar(body, "\"provider\"", val, sizeof(val))) {
-        cand.provider = val;
-        any = true;
-    }
-    val[0] = '\0';
-    if (jsonScalar(body, "\"base_url\"", val, sizeof(val))) {
-        cand.base_url = val;
-        any = true;
-    }
-    val[0] = '\0';
-    if (jsonScalar(body, "\"auth_token\"", val, sizeof(val))) {
-        cand.auth_token = val;
-        any = true;
-    }
-    val[0] = '\0';
-    if (jsonScalar(body, "\"timeout_ms\"", val, sizeof(val))) {
-        uint32_t v = 0;
-        if (!parseU32Strict(val, v) || v > 60000) {
-            return httpReplyError(req, rid, ErrCode::ValidationFailed,
-                                  "timeout_ms must be 0..60000");
-        }
-        cand.timeout_ms = v;
-        any = true;
-    }
-    val[0] = '\0';
-    if (jsonScalar(body, "\"inference_interval_ms\"", val, sizeof(val))) {
-        uint32_t v = 0;
-        if (!parseU32Strict(val, v) || v > 3600000) {
-            return httpReplyError(req, rid, ErrCode::ValidationFailed,
-                                  "inference_interval_ms must be 0..3600000");
-        }
-        cand.inference_interval_ms = v;
-        any = true;
-    }
-    if (!any) {
-        return httpReplyError(req, rid, ErrCode::ValidationFailed,
-                              "no AI fields in body");
-    }
-    AIConfig effective{};
-    if (visioncam::aiManagerSetConfig(&cand, &effective) != ESP_OK) {
-        return httpReplyError(req, rid, ErrCode::Internal,
-                              "AI config write failed");
-    }
-    char payload[512] = {};
-    std::snprintf(payload, sizeof(payload),
-                  "{\"enabled\":%s,\"provider\":\"%s\","
-                  "\"timeout_ms\":%u,\"inference_interval_ms\":%u,"
-                  "\"upload_width\":%u,\"upload_height\":%u,"
-                  "\"upload_quality\":%u,\"max_upload_bytes\":%u,"
-                  "\"tls_verify\":%s,\"active_model_id\":\"%s\","
-                  "\"schema_version\":1}",
-                  effective.enabled ? "true" : "false",
-                  effective.provider.c_str(),
-                  static_cast<unsigned int>(effective.timeout_ms),
-                  static_cast<unsigned int>(effective.inference_interval_ms),
-                  static_cast<unsigned int>(effective.upload_width),
-                  static_cast<unsigned int>(effective.upload_height),
-                  static_cast<unsigned int>(effective.upload_quality),
-                  static_cast<unsigned int>(effective.max_upload_bytes),
-                  effective.tls_verify ? "true" : "false",
-                  effective.active_model_id.c_str());
-    return httpReplyOk(req, rid, payload);
-}
-
-// --- GET /ai/models --- (Phase 6 task 6.4)
-static esp_err_t aiModelsHandler(httpd_req_t* req) {
-    uint32_t rid = httpNextRequestId();
-    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
-    // Model list — not yet implemented (model manifest loading pending)
-    return httpReplyOk(req, rid, "{\"models\":[],\"schema_version\":1}");
-}
-
-// --- GET /ai/events --- (Phase 6 task 6.4)
-static esp_err_t aiEventsHandler(httpd_req_t* req) {
-    uint32_t rid = httpNextRequestId();
-    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
-    uint32_t offset = 0, limit = 12;
-    char qs[128] = {};
-    size_t qs_size = sizeof(qs);
-    if (httpd_req_get_url_query_str(req, qs, qs_size) == ESP_OK) {
-        char val[16] = {};
-        if (httpd_query_key_value(qs, "offset", val, sizeof(val)) == ESP_OK)
-            offset = static_cast<uint32_t>(std::atoi(val));
-        val[0] = '\0';
-        if (httpd_query_key_value(qs, "limit", val, sizeof(val)) == ESP_OK)
-            limit = static_cast<uint32_t>(std::atoi(val));
-    }
-    if (limit > 100) limit = 100;
-    AIDetectionEvent events[12] = {};
-    size_t count = 0;
-    bool has_more = false;
-    if (visioncam::aiManagerListEvents(offset, limit, events, 12,
-                                       &count, &has_more) != ESP_OK) {
-        return httpReplyError(req, rid, ErrCode::Internal,
-                              "AI events list failed");
-    }
-    // Build JSON response
-    void* payload_raw = std::malloc(2048);
-    HeapFree payload_guard{payload_raw};
-    if (payload_raw == nullptr)
-        return httpReplyError(req, rid, ErrCode::Internal, "no memory");
-    auto* payload = static_cast<char*>(payload_raw);
-    const size_t cap = 2048;
-    int n = std::snprintf(payload, cap,
-                          "{\"has_more\":%s,\"count\":%u,\"offset\":%u,"
-                          "\"limit\":%u,\"items\":[",
-                          has_more ? "true" : "false",
-                          static_cast<unsigned int>(count),
-                          static_cast<unsigned int>(offset),
-                          static_cast<unsigned int>(limit));
-    for (size_t i = 0; i < count; ++i) {
-        const int m = std::snprintf(
-            payload + n, cap - static_cast<size_t>(n),
-            "%s{\"event_id\":\"%s\",\"source\":\"%s\",\"class_id\":%d,"
-            "\"label\":\"%s\",\"confidence\":%.2f,"
-            "\"bbox\":[%f,%f,%f,%f],\"timestamp\":%u,"
-            "\"snapshot_id\":\"%s\",\"notification_status\":\"%s\"}",
-            (i == 0) ? "" : ",",
-            events[i].event_id,
-            events[i].source,
-            events[i].class_id,
-            events[i].label.c_str(),
-            events[i].confidence,
-            events[i].bbox[0], events[i].bbox[1],
-            events[i].bbox[2], events[i].bbox[3],
-            static_cast<unsigned int>(events[i].timestamp),
-            events[i].snapshot_id,
-            events[i].notification_status);
-        if (m < 0 || static_cast<size_t>(n + m) >= cap)
-            return httpReplyError(req, rid, ErrCode::Internal,
-                                  "AI events payload overflow");
-        n += m;
-    }
-    const int tail = std::snprintf(payload + n, cap - static_cast<size_t>(n),
-                                   "]}");
-    if (tail < 0 || static_cast<size_t>(n + tail) >= cap)
-        return httpReplyError(req, rid, ErrCode::Internal,
-                              "AI events payload overflow");
-    return httpReplyOk(req, rid, payload);
-}
-
-// --- POST /ai/models/upload --- (Phase 6 task 6.3)
-// Streamed model upload to staging file. Never buffers whole model in RAM.
-// Uses httpd_req_recv loop with bounded chunks.
-static esp_err_t aiModelUploadHandler(httpd_req_t* req) {
-    uint32_t rid = httpNextRequestId();
-    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
-    if (requireCsrf(req) != ESP_OK) {
-        return httpReplyError(req, rid, ErrCode::CsrfInvalid,
-                              "CSRF token missing or invalid");
-    }
-    char qs[128] = {};
-    size_t qs_size = sizeof(qs);
-    if (httpd_req_get_url_query_str(req, qs, qs_size) != ESP_OK)
-        qs[0] = '\0';
-    char model_id[64] = {};
-    httpd_query_key_value(qs, "id", model_id, sizeof(model_id));
-    if (model_id[0] == '\0') {
-        return httpReplyError(req, rid, ErrCode::ValidationFailed,
-                              "model id required");
-    }
-
-    // Stream request body to staging file in bounded chunks:
-    char staging_path[128] = {};
-    int n = std::snprintf(staging_path, sizeof(staging_path),
-                          "/sdcard/models/staging/%s.tflite", model_id);
-    if (n < 0 || static_cast<size_t>(n) >= sizeof(staging_path)) {
-        return httpReplyError(req, rid, ErrCode::ValidationFailed,
-                              "model id too long");
-    }
-
-    // Remove any existing staged file with same id:
-    storageRemoveFile(staging_path);
-
-    size_t total_received = 0;
-    char recv_buf[1024] = {}; // bounded chunk, never whole model
-    int remaining = req->content_len;
-    esp_err_t err = ESP_OK;
-    while (remaining > 0) {
-        int recv = httpd_req_recv(req, recv_buf, sizeof(recv_buf));
-        if (recv <= 0) break;
-        total_received += recv;
-        if (total_received > 2 * 1024 * 1024) {
-            // Hard cap: 2 MB max
-            storageRemoveFile(staging_path);
-            return httpReplyError(req, rid, ErrCode::ValidationFailed,
-                                  "model too large (>2 MB)");
-        }
-        esp_err_t err = storageWriteFile(staging_path,
-                                         reinterpret_cast<const uint8_t*>(recv_buf),
-                                         recv);
-        if (err != ESP_OK) {
-            storageRemoveFile(staging_path);
-            return httpReplyError(req, rid, ErrCode::SdWriteFailed,
-                                  "model upload write failed");
-        }
-        remaining -= recv;
-    }
-
-    // Stage via TfliteMicroProvider:
-    void* file_buf = std::malloc(total_received);
-    if (file_buf == nullptr) {
-        storageRemoveFile(staging_path);
-        return httpReplyError(req, rid, ErrCode::Internal, "no memory");
-    }
-    size_t got = 0;
-    esp_err_t rerr = storageReadFile(staging_path,
-                                     reinterpret_cast<uint8_t*>(file_buf),
-                                     total_received, &got);
-    if (rerr != ESP_OK || got == 0) {
-        std::free(file_buf);
-        storageRemoveFile(staging_path);
-        return httpReplyError(req, rid, ErrCode::Internal,
-                              "model upload read failed");
-    }
-    err = visioncam::aiManagerUploadModel(model_id,
-                                          reinterpret_cast<uint8_t*>(file_buf),
-                                          got);
-    std::free(file_buf);
-    if (err != ESP_OK) {
-        storageRemoveFile(staging_path);
-        return httpReplyError(req, rid, ErrCode::Internal,
-                              "model upload stage failed");
-    }
-
-    char payload[128] = {};
-    std::snprintf(payload, sizeof(payload),
-                  "{\"model_id\":\"%s\",\"staged\":true,\"size_bytes\":%u}",
-                  model_id, static_cast<unsigned int>(got));
-    return httpReplyOk(req, rid, payload);
-}
-
-// --- POST /ai/models/{id}/validate --- (Phase 6 task 6.3)
-static esp_err_t aiModelValidateHandler(httpd_req_t* req) {
-    uint32_t rid = httpNextRequestId();
-    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
-    if (requireCsrf(req) != ESP_OK) {
-        return httpReplyError(req, rid, ErrCode::CsrfInvalid,
-                              "CSRF token missing or invalid");
-    }
-    char qs[128] = {};
-    size_t qs_size = sizeof(qs);
-    if (httpd_req_get_url_query_str(req, qs, qs_size) != ESP_OK)
-        qs[0] = '\0';
-    char model_id[64] = {};
-    httpd_query_key_value(qs, "id", model_id, sizeof(model_id));
-    if (model_id[0] == '\0') {
-        return httpReplyError(req, rid, ErrCode::ValidationFailed,
-                              "model id required");
-    }
-
-    esp_err_t err = visioncam::aiManagerValidateModel(model_id);
-    if (err != ESP_OK) {
-        return httpReplyError(req, rid, ErrCode::ValidationFailed,
-                              "model validation failed");
-    }
-
-    char payload[128] = {};
-    std::snprintf(payload, sizeof(payload),
-                  "{\"model_id\":\"%s\",\"valid\":true,\"schema_version\":1}",
-                  model_id);
-    return httpReplyOk(req, rid, payload);
-}
-
-// --- POST /ai/models/{id}/activate --- (Phase 6 task 6.3)
-static esp_err_t aiModelActivateHandler(httpd_req_t* req) {
-    uint32_t rid = httpNextRequestId();
-    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
-    if (requireCsrf(req) != ESP_OK) {
-        return httpReplyError(req, rid, ErrCode::CsrfInvalid,
-                              "CSRF token missing or invalid");
-    }
-    char qs[128] = {};
-    size_t qs_size = sizeof(qs);
-    if (httpd_req_get_url_query_str(req, qs, qs_size) != ESP_OK)
-        qs[0] = '\0';
-    char model_id[64] = {};
-    httpd_query_key_value(qs, "id", model_id, sizeof(model_id));
-    if (model_id[0] == '\0') {
-        return httpReplyError(req, rid, ErrCode::ValidationFailed,
-                              "model id required");
-    }
-
-    esp_err_t err = visioncam::aiManagerActivateModel(model_id);
-    if (err == ESP_ERR_NOT_FOUND)
-        return httpReplyError(req, rid, ErrCode::NotFound,
-                              "model not found");
-    if (err != ESP_OK)
-        return httpReplyError(req, rid, ErrCode::Internal,
-                              "model activation failed");
-
-    // Switch provider to tflite_micro if not already:
-    visioncam::aiManagerSelectProvider(kProviderTflite);
-
-    char payload[128] = {};
-    std::snprintf(payload, sizeof(payload),
-                  "{\"model_id\":\"%s\",\"activated\":true}", model_id);
-    return httpReplyOk(req, rid, payload);
-}
-
-// --- POST /ai/models/deactivate --- (Phase 6 task 6.3)
-static esp_err_t aiModelDeactivateHandler(httpd_req_t* req) {
-    uint32_t rid = httpNextRequestId();
-    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
-    if (requireCsrf(req) != ESP_OK) {
-        return httpReplyError(req, rid, ErrCode::CsrfInvalid,
-                              "CSRF token missing or invalid");
-    }
-
-    esp_err_t err = visioncam::aiManagerDeactivateAI();
-    if (err != ESP_OK)
-        return httpReplyError(req, rid, ErrCode::Internal,
-                              "AI deactivation failed");
-
-    return httpReplyOk(req, rid, "{\"deactivated\":true}");
-}
-
-// --- POST /ai/models/rollback --- (Phase 6 task 6.3)
-static esp_err_t aiModelRollbackHandler(httpd_req_t* req) {
-    uint32_t rid = httpNextRequestId();
-    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
-    if (requireCsrf(req) != ESP_OK) {
-        return httpReplyError(req, rid, ErrCode::CsrfInvalid,
-                              "CSRF token missing or invalid");
-    }
-
-    esp_err_t err = visioncam::aiManagerRollbackModel();
-    if (err == ESP_ERR_INVALID_STATE)
-        return httpReplyError(req, rid, ErrCode::ValidationFailed,
-                              "no active model to roll back");
-    if (err != ESP_OK)
-        return httpReplyError(req, rid, ErrCode::Internal,
-                              "model rollback failed");
-
-    return httpReplyOk(req, rid, "{\"rolled_back\":true}");
-}
-
-// --- POST /snapshot --- (plan 02 task 2.3)
-// Dispatches on ?action=create|start|stop|generate|preview|download|delete
-static esp_err_t timelapseProjectsHandler(httpd_req_t* req) {
-    uint32_t rid = httpNextRequestId();
-    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
-    char qs[128] = {};
-    size_t qs_size = sizeof(qs);
-    if (httpd_req_get_url_query_str(req, qs, qs_size) != ESP_OK)
-        qs[0] = '\0';
-    char action[16] = {};
-    httpd_query_key_value(qs, "action", action, sizeof(action));
-
-    if (std::strcmp(action, "create") == 0 ||
-        (action[0] == '\0' && req->method == HTTP_POST)) {
-        if (req->method != HTTP_POST)
-            return httpReplyError(req, rid, ErrCode::ValidationFailed,
-                                  "POST required");
-        if (requireCsrf(req) != ESP_OK)
-            return httpReplyError(req, rid, ErrCode::CsrfInvalid,
-                                  "CSRF token missing or invalid");
-        char body[256] = {};
-        size_t blen = 0;
-        if (readJsonBody(req, body, sizeof(body), blen) != ESP_OK)
-            return httpReplyError(req, rid, ErrCode::ValidationFailed,
-                                  "invalid JSON body");
-        TimelapseConfig cfg{};
-        char val[16] = {};
-        if (jsonScalar(body, "\"name\"", val, sizeof(val)))
-            std::strncpy(cfg.name, val, sizeof(cfg.name) - 1);
-        if (jsonScalar(body, "\"interval_s\"", val, sizeof(val)))
-            parseU32Strict(val, cfg.interval_s);
-        if (jsonScalar(body, "\"duration_min\"", val, sizeof(val)))
-            parseU32Strict(val, cfg.duration_min);
-        if (jsonScalar(body, "\"quality\"", val, sizeof(val)))
-            parseU32Strict(val, cfg.quality);
-        if (jsonScalar(body, "\"playback_fps\"", val, sizeof(val)))
-            parseU32Strict(val, cfg.playback_fps);
-        if (jsonScalar(body, "\"mode_direct_to_avi\"", val, sizeof(val)))
-            cfg.mode_direct_to_avi = (std::strcmp(val, "true") == 0);
-        char proj_id[24] = {};
-        esp_err_t err = visioncam::timelapseManagerCreateProject(
-            &cfg, proj_id, sizeof(proj_id));
-        if (err != ESP_OK)
-            return httpReplyError(req, rid, ErrCode::Internal,
-                                  "project create failed");
-        char payload[80] = {};
-        std::snprintf(payload, sizeof(payload),
-                      "{\"project_id\":\"%s\",\"created\":true}", proj_id);
-        return httpReplyOk(req, rid, payload);
-    }
-
-    if (std::strcmp(action, "list") == 0 || action[0] == '\0') {
-        if (req->method != HTTP_GET)
-            return httpReplyError(req, rid, ErrCode::ValidationFailed,
-                                  "GET required");
-        uint32_t offset = 0, limit = 12;
-        char val[16] = {};
-        if (httpd_query_key_value(qs, "offset", val, sizeof(val)) == ESP_OK)
-            offset = static_cast<uint32_t>(std::atoi(val));
-        val[0] = '\0';
-        if (httpd_query_key_value(qs, "limit", val, sizeof(val)) == ESP_OK)
-            limit = static_cast<uint32_t>(std::atoi(val));
-        if (limit > 100) limit = 100;
-
-        TimelapseProject projs[12] = {};
-        size_t count = 0;
-        bool has_more = false;
-        if (visioncam::timelapseManagerListProjects(offset, limit, projs, 12,
-                                                    &count, &has_more) !=
-            ESP_OK) {
-            return httpReplyError(req, rid, ErrCode::Internal,
-                                  "project list failed");
-        }
-        void* payload_raw = std::malloc(4096);
-        HeapFree payload_guard{payload_raw};
-        if (payload_raw == nullptr)
-            return httpReplyError(req, rid, ErrCode::Internal, "no memory");
-        auto* payload = static_cast<char*>(payload_raw);
-        const size_t cap = 4096;
-        int n = std::snprintf(payload, cap,
-                              "{\"has_more\":%s,\"count\":%u,\"offset\":%u,"
-                              "\"limit\":%u,\"items\":[",
-                              has_more ? "true" : "false",
-                              static_cast<unsigned int>(count),
-                              static_cast<unsigned int>(offset),
-                              static_cast<unsigned int>(limit));
-        for (size_t i = 0; i < count; ++i) {
-            const int m = std::snprintf(
-                payload + n, cap - static_cast<size_t>(n),
-                "%s{\"project_id\":\"%s\",\"name\":\"%s\",\"state\":%u,"
-                "\"interval_s\":%u,\"progress_pct\":%u,\"frame_count\":%u,"
-                "\"size_bytes\":%u,\"error_code\":\"%s\"}",
-                (i == 0) ? "" : ",",
-                projs[i].project_id,
-                projs[i].name,
-                static_cast<unsigned int>(projs[i].state),
-                static_cast<unsigned int>(projs[i].interval_s),
-                static_cast<unsigned int>(projs[i].progress_pct),
-                static_cast<unsigned int>(projs[i].frame_count),
-                static_cast<unsigned int>(projs[i].size_bytes),
-                projs[i].error_code);
-            if (m < 0 || static_cast<size_t>(n + m) >= cap)
-                return httpReplyError(req, rid, ErrCode::Internal,
-                                      "project list payload overflow");
-            n += m;
-        }
-        const int tail = std::snprintf(payload + n, cap - static_cast<size_t>(n),
-                                       "]}");
-        if (tail < 0 || static_cast<size_t>(n + tail) >= cap)
-            return httpReplyError(req, rid, ErrCode::Internal,
-                                  "project list payload overflow");
-        return httpReplyOk(req, rid, payload);
-    }
-
-    if (std::strcmp(action, "start") == 0 ||
-        std::strcmp(action, "stop") == 0) {
-        if (req->method != HTTP_POST)
-            return httpReplyError(req, rid, ErrCode::ValidationFailed,
-                                  "POST required");
-        if (requireCsrf(req) != ESP_OK)
-            return httpReplyError(req, rid, ErrCode::CsrfInvalid,
-                                  "CSRF token missing or invalid");
-        char proj_id[32] = {};
-        httpd_query_key_value(qs, "id", proj_id, sizeof(proj_id));
-        if (proj_id[0] == '\0')
-            return httpReplyError(req, rid, ErrCode::ValidationFailed,
-                                  "project id required");
-        esp_err_t err;
-        if (std::strcmp(action, "start") == 0)
-            err = visioncam::timelapseManagerStartProject(proj_id);
-        else
-            err = visioncam::timelapseManagerStopProject(proj_id);
-        if (err == ESP_ERR_NOT_FOUND)
-            return httpReplyError(req, rid, ErrCode::NotFound,
-                                  "project not found");
-        if (err == ESP_ERR_INVALID_STATE)
-            return httpReplyError(req, rid, ErrCode::ValidationFailed,
-                                  "project already in requested state");
-        if (err != ESP_OK)
-            return httpReplyError(req, rid, ErrCode::Internal,
-                                  "project action failed");
-        char payload[128] = {};
-        std::snprintf(payload, sizeof(payload),
-                      "{\"project_id\":\"%s\",\"action\":\"%s\",\"ok\":true}",
-                      proj_id, action);
-        return httpReplyOk(req, rid, payload);
-    }
-
-    if (std::strcmp(action, "delete") == 0) {
-        if (req->method != HTTP_DELETE)
-            return httpReplyError(req, rid, ErrCode::ValidationFailed,
-                                  "DELETE required");
-        if (requireCsrf(req) != ESP_OK)
-            return httpReplyError(req, rid, ErrCode::CsrfInvalid,
-                                  "CSRF token missing or invalid");
-        char proj_id[32] = {};
-        httpd_query_key_value(qs, "id", proj_id, sizeof(proj_id));
-        if (proj_id[0] == '\0')
-            return httpReplyError(req, rid, ErrCode::ValidationFailed,
-                                  "project id required");
-        esp_err_t err = visioncam::timelapseManagerDeleteProject(proj_id);
-        if (err == ESP_ERR_NOT_FOUND)
-            return httpReplyError(req, rid, ErrCode::NotFound,
-                                  "project not found");
-        if (err == ESP_ERR_INVALID_STATE)
-            return httpReplyError(req, rid, ErrCode::ValidationFailed,
-                                  "project is capturing, stop first");
-        if (err != ESP_OK)
-            return httpReplyError(req, rid, ErrCode::Internal,
-                                  "project delete failed");
-        return httpReplyOk(req, rid, "{\"deleted\":true}");
-    }
-
-    return httpReplyError(req, rid, ErrCode::ValidationFailed,
-                          "unknown action");
-}
 // --- POST /snapshot --- (plan 02 task 2.3)
 // Capture a manual snapshot and save it to SD. Requires auth + CSRF.
 static esp_err_t snapshotCaptureHandler(httpd_req_t* req) {
@@ -2644,6 +2482,480 @@ esp_err_t webServerStop() {
 
 bool webServerRunning() { return s_server != nullptr; }
 
+// --- GET /integrations/mqtt --- (SPEC 6.9; Phase 7 task 7.4)
+// Config + live status. The password is NEVER echoed (AGENTS rule 17):
+// the response carries password_set instead.
+static esp_err_t mqttIntegrationGetHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+
+    MqttConfig cfg{};
+    visioncam::mqttManagerGetConfig(&cfg);
+    MqttStatus st{};
+    visioncam::mqttManagerStatus(&st);
+
+    char payload[768] = {};
+    std::snprintf(payload, sizeof(payload),
+                  "{\"enabled\":%s,"
+                  "\"broker_uri\":\"%s\",\"username\":\"%s\","
+                  "\"password_set\":%s,\"tls_verify\":%s,"
+                  "\"base_topic\":\"%s\",\"client_id\":\"%s\","
+                  "\"ha_discovery\":%s,\"ha_prefix\":\"%s\","
+                  "\"keepalive_s\":%u,\"timeout_ms\":%u,"
+                  "\"status\":{\"connected\":%s,\"state\":\"%s\","
+                  "\"connects\":%u,\"disconnects\":%u,"
+                  "\"published\":%u,\"dropped\":%u,"
+                  "\"last_error\":\"%s\",\"ha_discovery_published\":%s},"
+                  "\"schema_version\":1}",
+                  cfg.enabled ? "true" : "false",
+                  cfg.broker_uri.c_str(), cfg.username.c_str(),
+                  visioncam::mqttManagerPasswordSet() ? "true" : "false",
+                  cfg.tls_verify ? "true" : "false",
+                  cfg.base_topic.c_str(), cfg.client_id.c_str(),
+                  cfg.ha_discovery ? "true" : "false",
+                  cfg.ha_prefix.c_str(),
+                  static_cast<unsigned>(cfg.keepalive_s),
+                  static_cast<unsigned>(cfg.timeout_ms),
+                  st.connected ? "true" : "false", st.state.c_str(),
+                  static_cast<unsigned>(st.connects),
+                  static_cast<unsigned>(st.disconnects),
+                  static_cast<unsigned>(st.published),
+                  static_cast<unsigned>(st.dropped),
+                  st.last_error.c_str(),
+                  st.ha_discovery_published ? "true" : "false");
+    return httpReplyOk(req, rid, payload);
+}
+
+// --- PUT /integrations/mqtt --- (SPEC 6.9; SPEC 7 update process)
+// Partial overlay: only keys present in the body change. Password is
+// write-only — sending "" keeps the stored one.
+static esp_err_t mqttIntegrationPutHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    if (requireCsrf(req) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::CsrfInvalid,
+                              "CSRF token missing or invalid");
+    }
+    char body[512] = {};
+    size_t blen = 0;
+    if (readJsonBody(req, body, sizeof(body), blen) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "invalid JSON body");
+    }
+
+    MqttConfig cur{};
+    visioncam::mqttManagerGetConfig(&cur);   // password stripped
+    MqttConfig cand = cur;
+    // The GET copy never carries the password, so re-read it via status:
+    // mqttManagerSetConfig treats an empty password as "keep stored".
+    char val[192] = {};
+
+    if (jsonScalar(body, "\"enabled\"", val, sizeof(val))) {
+        cand.enabled = (std::strcmp(val, "true") == 0 ||
+                        std::strcmp(val, "1") == 0);
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"broker_uri\"", val, sizeof(val))) {
+        cand.broker_uri = val;
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"username\"", val, sizeof(val))) {
+        cand.username = val;
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"password\"", val, sizeof(val))) {
+        cand.password = val;   // write-only; "" = keep stored
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"tls_verify\"", val, sizeof(val))) {
+        cand.tls_verify = (std::strcmp(val, "true") == 0 ||
+                           std::strcmp(val, "1") == 0);
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"base_topic\"", val, sizeof(val))) {
+        cand.base_topic = val;
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"ha_discovery\"", val, sizeof(val))) {
+        cand.ha_discovery = (std::strcmp(val, "true") == 0 ||
+                             std::strcmp(val, "1") == 0);
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"ha_prefix\"", val, sizeof(val))) {
+        cand.ha_prefix = val;
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"keepalive_s\"", val, sizeof(val))) {
+        uint32_t v = 0;
+        if (!parseU32Strict(val, v) || v < 10 || v > 300) {
+            return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                  "keepalive_s must be 10..300");
+        }
+        cand.keepalive_s = v;
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"timeout_ms\"", val, sizeof(val))) {
+        uint32_t v = 0;
+        if (!parseU32Strict(val, v) || v < 1000 || v > 60000) {
+            return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                  "timeout_ms must be 1000..60000");
+        }
+        cand.timeout_ms = v;
+    }
+
+    MqttConfig effective{};
+    const esp_err_t err = visioncam::mqttManagerSetConfig(&cand, &effective);
+    if (err == ESP_ERR_INVALID_ARG) {
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "invalid MQTT config (check broker_uri scheme: "
+                              "mqtt:// or mqtts://, and enable needs a URI)");
+    }
+    if (err != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "MQTT config persist failed");
+    }
+    char payload[640] = {};
+    std::snprintf(payload, sizeof(payload),
+                  "{\"enabled\":%s,\"broker_uri\":\"%s\","
+                  "\"username\":\"%s\",\"password_set\":%s,"
+                  "\"tls_verify\":%s,\"base_topic\":\"%s\","
+                  "\"ha_discovery\":%s,\"ha_prefix\":\"%s\","
+                  "\"keepalive_s\":%u,\"timeout_ms\":%u,"
+                  "\"schema_version\":1}",
+                  effective.enabled ? "true" : "false",
+                  effective.broker_uri.c_str(), effective.username.c_str(),
+                  visioncam::mqttManagerPasswordSet() ? "true" : "false",
+                  effective.tls_verify ? "true" : "false",
+                  effective.base_topic.c_str(),
+                  effective.ha_discovery ? "true" : "false",
+                  effective.ha_prefix.c_str(),
+                  static_cast<unsigned>(effective.keepalive_s),
+                  static_cast<unsigned>(effective.timeout_ms));
+    return httpReplyOk(req, rid, payload);
+}
+
+// --- POST /integrations/mqtt/test --- (SPEC 6.9)
+static esp_err_t mqttIntegrationTestHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    if (requireCsrf(req) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::CsrfInvalid,
+                              "CSRF token missing or invalid");
+    }
+    const esp_err_t err = visioncam::mqttManagerTestConnection();
+    if (err == ESP_ERR_INVALID_STATE) {
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "no broker configured");
+    }
+    if (err == ESP_ERR_TIMEOUT) {
+        return httpReplyError(req, rid, ErrCode::MqttUnavailable,
+                              "broker not reachable within timeout");
+    }
+    if (err != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "connection test failed");
+    }
+    return httpReplyOk(req, rid, "{\"connected\":true}");
+}
+
+// --- POST /integrations/mqtt/reconnect --- (SPEC 6.9)
+static esp_err_t mqttIntegrationReconnectHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    if (requireCsrf(req) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::CsrfInvalid,
+                              "CSRF token missing or invalid");
+    }
+    // Re-running the test tears down and rebuilds the client, which is
+    // exactly a forced reconnect (the worker resumes its own loop after).
+    const esp_err_t err = visioncam::mqttManagerTestConnection();
+    if (err == ESP_ERR_INVALID_STATE) {
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "no broker configured");
+    }
+    return httpReplyOk(req, rid,
+                       err == ESP_OK ? "{\"reconnected\":true}"
+                                     : "{\"reconnected\":false,"
+                                       "\"note\":\"broker not reachable\"}");
+}
+
+// --- POST /integrations/mqtt/test-publish --- (SPEC 6.9)
+// Publishes one retained test message on the device's own topic tree and
+// reports the queue outcome. No secrets, no image data.
+static esp_err_t mqttIntegrationTestPublishHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    if (requireCsrf(req) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::CsrfInvalid,
+                              "CSRF token missing or invalid");
+    }
+    MqttStatus st{};
+    visioncam::mqttManagerStatus(&st);
+    if (!st.connected) {
+        return httpReplyError(req, rid, ErrCode::MqttUnavailable,
+                              "not connected to broker");
+    }
+    if (visioncam::mqttManagerPublishTest() != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "test publish failed");
+    }
+    return httpReplyOk(req, rid, "{\"published\":true}");
+}
+
+// --- POST /integrations/home-assistant/discovery --- (SPEC 6.9)
+static esp_err_t haDiscoveryRepublishHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    if (requireCsrf(req) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::CsrfInvalid,
+                              "CSRF token missing or invalid");
+    }
+    const esp_err_t err = visioncam::mqttManagerRepublishDiscovery();
+    if (err == ESP_ERR_INVALID_STATE) {
+        return httpReplyError(req, rid, ErrCode::MqttUnavailable,
+                              "MQTT not connected or discovery disabled");
+    }
+    if (err != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "discovery republish failed");
+    }
+    return httpReplyOk(req, rid, "{\"republished\":true}");
+}
+
+// --- GET /integrations/home-assistant/status --- (SPEC 6.9)
+static esp_err_t haDiscoveryStatusHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    MqttConfig cfg{};
+    visioncam::mqttManagerGetConfig(&cfg);
+    MqttStatus st{};
+    visioncam::mqttManagerStatus(&st);
+    char payload[320] = {};
+    std::snprintf(payload, sizeof(payload),
+                  "{\"enabled\":%s,\"connected\":%s,"
+                  "\"discovery_published\":%s,\"discovery_prefix\":\"%s\","
+                  "\"state\":\"%s\",\"schema_version\":1}",
+                  cfg.ha_discovery ? "true" : "false",
+                  st.connected ? "true" : "false",
+                  st.ha_discovery_published ? "true" : "false",
+                  cfg.ha_prefix.c_str(), st.state.c_str());
+    return httpReplyOk(req, rid, payload);
+}
+
+// --- GET /integrations/network-storage --- (SPEC 6.9; Phase 8 task 8.2)
+// Returns config (secrets stripped) + live status.
+static esp_err_t netStorageGetHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+
+    auto* ns = visioncam::storageGetNetstoreBackend();
+    NetworkStorageConfig cfg{};
+    NetworkStorageStatus st{};
+    if (ns != nullptr) {
+        ns->getConfig(&cfg);
+        ns->getStatus(&st);
+    }
+    char payload[2048] = {};
+    std::snprintf(payload, sizeof(payload),
+                  "{\"enabled\":%s,\"configured\":%s,\"available\":%s,"
+                  "\"backend_type\":\"%s\",\"server_url\":\"%s\","
+                  "\"destination_path\":\"%s\",\"upload_policy\":\"%s\","
+                  "\"auth_token_configured\":%s,\"tls_verify\":%s,"
+                  "\"retry_count\":%u,\"retry_interval_ms\":%u,"
+                  "\"upload_queue_limit\":%u,\"delete_after_upload\":%s,"
+                  "\"queue_depth\":%u,\"queue_max_seen\":%u,"
+                  "\"uploads_total\":%u,\"uploads_ok\":%u,\"uploads_failed\":%u,"
+                  "\"queue_dropped\":%u,\"last_error\":\"%s\",\"state\":\"%s\","
+                  "\"schema_version\":1}",
+                  cfg.enabled ? "true" : "false",
+                  cfg.server_url[0] != '\0' ? "true" : "false",
+                  st.available ? "true" : "false",
+                  cfg.backend_type, cfg.server_url, cfg.destination_path,
+                  cfg.upload_policy,
+                  cfg.auth_token_configured ? "true" : "false",
+                  cfg.tls_verify ? "true" : "false",
+                  static_cast<unsigned>(cfg.retry_count),
+                  static_cast<unsigned>(cfg.retry_interval_ms),
+                  static_cast<unsigned>(cfg.upload_queue_limit),
+                  cfg.delete_after_upload ? "true" : "false",
+                  static_cast<unsigned>(st.queue_depth),
+                  static_cast<unsigned>(st.queue_max_seen),
+                  static_cast<unsigned>(st.uploads_total),
+                  static_cast<unsigned>(st.uploads_ok),
+                  static_cast<unsigned>(st.uploads_failed),
+                  static_cast<unsigned>(st.queue_dropped),
+                  st.last_error, st.state);
+    return httpReplyOk(req, rid, payload);
+}
+
+// --- PUT /integrations/network-storage --- (SPEC 6.9; SPEC 7 update process)
+// Partial overlay: only fields present in the body change. Auth token is
+// write-only — sending "" keeps the stored value; GET never returns it.
+static esp_err_t netStoragePutHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    if (requireCsrf(req) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::CsrfInvalid,
+                              "CSRF token missing or invalid");
+    }
+    auto* ns = visioncam::storageGetNetstoreBackend();
+    if (ns == nullptr) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "network storage backend not initialised");
+    }
+    NetworkStorageConfig cur{};
+    ns->getConfig(&cur);
+    NetworkStorageConfig cand = cur;
+    char body[512] = {};
+    size_t blen = 0;
+    if (readJsonBody(req, body, sizeof(body), blen) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "invalid JSON body");
+    }
+    char val[256] = {};
+
+    if (jsonScalar(body, "\"enabled\"", val, sizeof(val))) {
+        cand.enabled = (std::strcmp(val, "true") == 0 ||
+                        std::strcmp(val, "1") == 0);
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"backend_type\"", val, sizeof(val))) {
+        std::strncpy(cand.backend_type, val, sizeof(cand.backend_type) - 1);
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"server_url\"", val, sizeof(val))) {
+        std::strncpy(cand.server_url, val, sizeof(cand.server_url) - 1);
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"destination_path\"", val, sizeof(val))) {
+        std::strncpy(cand.destination_path, val,
+                     sizeof(cand.destination_path) - 1);
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"auth_token\"", val, sizeof(val))) {
+        std::strncpy(cand.auth_token, val, sizeof(cand.auth_token) - 1);
+        // Non-empty token marks it as configured.
+        if (val[0] != '\0') cand.auth_token_configured = true;
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"upload_policy\"", val, sizeof(val))) {
+        std::strncpy(cand.upload_policy, val, sizeof(cand.upload_policy) - 1);
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"retry_count\"", val, sizeof(val))) {
+        uint32_t v = 0;
+        if (!parseU32Strict(val, v) || v > 10) {
+            return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                  "retry_count must be 0..10");
+        }
+        cand.retry_count = v;
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"retry_interval_ms\"", val, sizeof(val))) {
+        uint32_t v = 0;
+        if (!parseU32Strict(val, v) || v < 1000 || v > 60000) {
+            return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                  "retry_interval_ms must be 1000..60000");
+        }
+        cand.retry_interval_ms = v;
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"tls_verify\"", val, sizeof(val))) {
+        cand.tls_verify = (std::strcmp(val, "true") == 0 ||
+                           std::strcmp(val, "1") == 0);
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"upload_queue_limit\"", val, sizeof(val))) {
+        uint32_t v = 0;
+        if (!parseU32Strict(val, v) || v > 128) {
+            return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                                  "upload_queue_limit must be 1..128");
+        }
+        cand.upload_queue_limit = v;
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"delete_after_upload\"", val, sizeof(val))) {
+        cand.delete_after_upload =
+            (std::strcmp(val, "true") == 0 || std::strcmp(val, "1") == 0);
+    }
+
+    NetworkStorageConfig effective{};
+    const esp_err_t err = ns->setConfig(cand, &effective);
+    if (err == ESP_ERR_INVALID_ARG) {
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "invalid network-storage config");
+    }
+    if (err != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "network-storage config persist failed");
+    }
+    char payload[1024] = {};
+    std::snprintf(payload, sizeof(payload),
+                  "{\"enabled\":%s,\"backend_type\":\"%s\",\"server_url\":\"%s\","
+                  "\"destination_path\":\"%s\",\"upload_policy\":\"%s\","
+                  "\"auth_token_configured\":%s,\"tls_verify\":%s,"
+                  "\"retry_count\":%u,\"retry_interval_ms\":%u,"
+                  "\"upload_queue_limit\":%u,\"delete_after_upload\":%s,"
+                  "\"schema_version\":1}",
+                  effective.enabled ? "true" : "false",
+                  effective.backend_type, effective.server_url,
+                  effective.destination_path, effective.upload_policy,
+                  effective.auth_token_configured ? "true" : "false",
+                  effective.tls_verify ? "true" : "false",
+                  static_cast<unsigned>(effective.retry_count),
+                  static_cast<unsigned>(effective.retry_interval_ms),
+                  static_cast<unsigned>(effective.upload_queue_limit),
+                  effective.delete_after_upload ? "true" : "false");
+    return httpReplyOk(req, rid, payload);
+}
+
+// --- POST /integrations/network-storage/test --- (SPEC 6.9)
+// Reachability probe: a real GET to the configured server (not a saved
+// setting). Reports the actual HTTP status.
+static esp_err_t netStorageTestHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    if (requireCsrf(req) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::CsrfInvalid,
+                              "CSRF token missing or invalid");
+    }
+    auto* ns = visioncam::storageGetNetstoreBackend();
+    if (ns == nullptr) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "network storage backend not initialised");
+    }
+    const esp_err_t err = ns->testConnection();
+    if (err != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::NetworkStorageUnavailable,
+                              "backend unreachable or heap gate closed");
+    }
+    return httpReplyOk(req, rid, "{\"reachable\":true}");
+}
+
+// --- GET /integrations/network-storage/queue --- (SPEC 6.9)
+// Upload queue status: depth, high-water, dropped counts.
+static esp_err_t netStorageQueueHandler(httpd_req_t* req) {
+    uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    auto* ns = visioncam::storageGetNetstoreBackend();
+    NetworkStorageStatus st{};
+    if (ns != nullptr) ns->getStatus(&st);
+    char payload[320] = {};
+    std::snprintf(payload, sizeof(payload),
+                  "{\"queue_depth\":%u,\"queue_max_seen\":%u,"
+                  "\"uploads_total\":%u,\"uploads_ok\":%u,"
+                  "\"uploads_failed\":%u,\"queue_dropped\":%u,"
+                  "\"state\":\"%s\",\"schema_version\":1}",
+                  static_cast<unsigned>(st.queue_depth),
+                  static_cast<unsigned>(st.queue_max_seen),
+                  static_cast<unsigned>(st.uploads_total),
+                  static_cast<unsigned>(st.uploads_ok),
+                  static_cast<unsigned>(st.uploads_failed),
+                  static_cast<unsigned>(st.queue_dropped),
+                  st.state);
+    return httpReplyOk(req, rid, payload);
+}
+
 // --- route table ------------------------------------------------------------
 static const httpd_uri_t s_routes[] = {
     // Auth
@@ -2653,6 +2965,8 @@ static const httpd_uri_t s_routes[] = {
     {"/auth/complete-first-login", HTTP_POST, authCompleteFirstLoginHandler,
      nullptr},
     {"/auth/change-password", HTTP_POST, authChangePasswordHandler, nullptr},
+    // Wi-Fi provisioning, available only while the device is in setup AP mode.
+    {"/wifi/config", HTTP_POST, wifiConfigPostHandler, nullptr},
     // Device / status
     {"/device", HTTP_GET, deviceHandler, nullptr},
     {"/status", HTTP_GET, statusHandler, nullptr},
@@ -2664,7 +2978,8 @@ static const httpd_uri_t s_routes[] = {
     {"/camera/settings", HTTP_GET, cameraSettingsGetHandler, nullptr},
     {"/camera/settings", HTTP_PUT, cameraSettingsPutHandler, nullptr},
     {"/camera/capture", HTTP_POST, cameraCaptureHandler, nullptr},
-    // Snapshot (plan 02 task 2.3)
+    // Live MJPEG view (Phase 1 exit gate: authenticated live stream).
+    {"/camera/stream", HTTP_GET, cameraStreamHandler, nullptr},    // Snapshot (plan 02 task 2.3)
     {"/snapshot", HTTP_POST, snapshotCaptureHandler, nullptr},
     {"/snapshot", HTTP_GET, snapshotImageHandler, nullptr},
     // Storage
@@ -2684,22 +2999,30 @@ static const httpd_uri_t s_routes[] = {
     {"/motion/config", HTTP_GET, motionConfigGetHandler, nullptr},
     {"/motion/config", HTTP_PUT, motionConfigPutHandler, nullptr},
     {"/motion/status", HTTP_GET, motionStatusHandler, nullptr},
-    // Timelapse (Phase 5)
-    {"/timelapse/projects", HTTP_GET, timelapseProjectsHandler, nullptr},
-    {"/timelapse/projects", HTTP_POST, timelapseProjectsHandler, nullptr},
-    {"/timelapse/projects", HTTP_DELETE, timelapseProjectsHandler, nullptr},
-    // AI (Phase 6)
-    {"/ai/status", HTTP_GET, aiStatusHandler, nullptr},
-    {"/ai/providers", HTTP_GET, aiProvidersHandler, nullptr},
-    {"/ai/config", HTTP_GET, aiConfigGetHandler, nullptr},
-    {"/ai/config", HTTP_PUT, aiConfigPutHandler, nullptr},
-    {"/ai/models", HTTP_GET, aiModelsHandler, nullptr},
-    {"/ai/events", HTTP_GET, aiEventsHandler, nullptr},
-    {"/ai/models/upload", HTTP_POST, aiModelUploadHandler, nullptr},
-    {"/ai/models/validate", HTTP_POST, aiModelValidateHandler, nullptr},
-    {"/ai/models/activate", HTTP_POST, aiModelActivateHandler, nullptr},
-    {"/ai/models/deactivate", HTTP_POST, aiModelDeactivateHandler, nullptr},
-    {"/ai/models/rollback", HTTP_POST, aiModelRollbackHandler, nullptr},
+    // Integrations (Phase 7, SPEC 6.9)
+    {"/integrations/mqtt", HTTP_GET, mqttIntegrationGetHandler, nullptr},
+    {"/integrations/mqtt", HTTP_PUT, mqttIntegrationPutHandler, nullptr},
+    {"/integrations/mqtt/test", HTTP_POST, mqttIntegrationTestHandler,
+     nullptr},
+    {"/integrations/mqtt/reconnect", HTTP_POST,
+     mqttIntegrationReconnectHandler, nullptr},
+    {"/integrations/mqtt/test-publish", HTTP_POST,
+     mqttIntegrationTestPublishHandler, nullptr},
+    {"/integrations/home-assistant/discovery", HTTP_POST,
+     haDiscoveryRepublishHandler, nullptr},
+    {"/integrations/home-assistant/status", HTTP_GET,
+     haDiscoveryStatusHandler, nullptr},
+    // Integrations (Phase 8, SPEC 6.9)
+    {"/integrations/network-storage", HTTP_GET, netStorageGetHandler,
+     nullptr},
+    {"/integrations/network-storage", HTTP_PUT, netStoragePutHandler,
+     nullptr},
+    {"/integrations/network-storage/test", HTTP_POST,
+     netStorageTestHandler, nullptr},
+    {"/integrations/network-storage/queue", HTTP_GET,
+     netStorageQueueHandler, nullptr},
+    // Timelapse (Phase 5) — descoped, routes intentionally absent
+    // AI (Phase 6) — descoped, routes intentionally absent
     // Catch-all static asset server (SPA fallback for unknown routes).
     // Specific API routes are registered above and match first.
     {"/*", HTTP_GET, assetHandler, nullptr},

@@ -479,6 +479,15 @@ esp_err_t recordingManagerShutdown() {
         vTaskDelete(g_writer_task);
         g_writer_task = nullptr;
     }
+    // Unsubscribe from the frame manager so the subscriber slot is
+    // released instead of leaking across start/stop cycles. Without this
+    // every init/shutdown pair consumes one of the VC_FRAME_SUBSCRIBERS
+    // slots until the registry is full and new subscribers (snapshot,
+    // live stream) can no longer register.
+    if (g_sub_id != 0) {
+        frameManagerUnsubscribe(g_sub_id);
+        g_sub_id = 0;
+    }
     if (g_cur_file != nullptr) {
         std::fclose(g_cur_file);
         g_cur_file = nullptr;

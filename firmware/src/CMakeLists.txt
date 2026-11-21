@@ -48,15 +48,24 @@ idf_component_register(
         "recording/recording_manager.cpp"
         "recording/playback.cpp"
         "motion/motion_manager.cpp"
-        "timelapse/timelapse_manager.cpp"
-        "ai/ai_manager.cpp"
-        "ai/tflite_micro_provider.cpp"
-        "ai/external_ai_provider.cpp"
-        "web_assets/web_asset_0.c"
-        "web_assets/web_asset_1.c"
-        "web_assets/web_asset_2.c"
-        "web_assets/web_asset_3.c"
-        "web_assets/web_asset_4.c"
+        "core/device_identity.cpp"
+        "mqtt/mqtt_manager.cpp"
+        "integrations/http_upload_storage_backend.cpp"
+        # --- TEMPORARILY DESCOPED (owner directive 2026-11-20) -------------
+        # Phase 5 (timelapse) and Phase 6 (AI framework) are excluded from
+        # this build: their sources stay in the tree for re-enabling, but the
+        # objects, their frame-manager subscriptions and their /ai/*
+        # /timelapse/* routes are not compiled. To re-enable: uncomment the
+        # four lines below, the init blocks + includes in main.cpp, the route
+        # entries in web/web_server.cpp and the nav entries in the web UI.
+        # "timelapse/timelapse_manager.cpp"
+        # "ai/ai_manager.cpp"
+        # "ai/tflite_micro_provider.cpp"
+        # "ai/external_ai_provider.cpp"
+        "web_assets/web_asset__app_js.c"
+        "web_assets/web_asset__index_html.c"
+        "web_assets/web_asset__styles_base_css.c"
+        "web_assets/web_asset__styles_tokens_css.c"
         "web_assets/web_assets_manifest.c"
     INCLUDE_DIRS
         "../include"
@@ -65,9 +74,14 @@ idf_component_register(
         "motion"
         "timelapse"
         "ai"
+        "mqtt"
+        "integrations"
     PRIV_REQUIRES
         esp_psram
         espressif__esp32-camera
+        # espressif__mqtt: Phase 7 MQTT worker + HA discovery
+        # (registry path espressif/mqtt, pinned in idf_component.yml)
+        espressif__mqtt
         espressif__esp_jpeg
         fatfs
         sdmmc

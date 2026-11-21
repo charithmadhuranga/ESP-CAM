@@ -33,11 +33,15 @@
 #include "sd_bringup.h"
 #include "sd_storage_backend.h"
 #include "storage_manager.h"
+#include "http_upload_storage_backend.h"   // Phase 8: network storage backend
 #include "snapshot_manager.h"
 #include "recording_manager.h"
 #include "motion_manager.h"
-#include "timelapse_manager.h"
-#include "ai_manager.h"
+#include "mqtt_manager.h"     // Phase 7: integrations worker (fail-soft)
+// timelapse_manager.h / ai_manager.h are intentionally NOT included:
+// Phase 5 (timelapse) and Phase 6 (AI framework) are temporarily descoped
+// (owner directive 2026-11-20) — see firmware/src/CMakeLists.txt for the
+// source exclusion and how to re-enable.
 #include "web_server.h"
 #include "wifi_bringup.h"
 
@@ -130,10 +134,8 @@ extern "C" void app_main(void) {
     // byte-identical panics, phase1-core-boot-03.log, when Wi-Fi was
     // started while the camera streamed).
     //
-    // With no credentials the manager leaves the driver completely
-    // untouched and Wi-FiState::Off is the operating mode — local-first
-    // (SPEC 9). The Phase 0 SoftAP then still drives the radio below for
-    // the TX-load probe.
+    // With no credentials the manager starts the setup SoftAP before camera
+    // bring-up; the same interface hosts the local web UI and Wi-Fi setup.
     const esp_err_t netErr = visioncam::networkManagerInit();
     if (netErr != ESP_OK) {
         ESP_LOGE(TAG, "NETWORK init failed: %s — continuing without Wi-Fi",
@@ -305,6 +307,19 @@ extern "C" void app_main(void) {
         ESP_LOGW(TAG, "storage manager skipped — SD not mounted");
     }
 
+    // --- network storage backend (Phase 8 task 8.1) -----------------------
+    // Optional HTTP upload backend for completed files. Never blocks
+    // camera/storage; fail-soft if NVS read fails (local-only operation).
+    static visioncam::HttpUploadStorageBackend netstore_backend;
+    const esp_err_t nsErr = netstore_backend.begin();
+    if (nsErr != ESP_OK) {
+        ESP_LOGW(TAG, "netstorage backend init FAILED: %s",
+                 esp_err_to_name(nsErr));
+    } else {
+        // Expose to the web layer via the storage manager's accessor pattern.
+        visioncam::storageSetNetstoreBackend(&netstore_backend);
+    }
+
     // --- snapshot manager (plan 02 task 2.3) ----------------------------------
     // Captures frames via the frame manager and writes snapshots to SD
     // through the storage manager. Needs storage to be available.
@@ -350,43 +365,35 @@ extern "C" void app_main(void) {
         ESP_LOGW(TAG, "motion manager skipped — storage unavailable");
     }
 
-    // --- timelapse manager (Phase 5 task 5.1-5.4) --------------------------
-    // Scheduled JPEG capture into per-project AVI. Needs frame manager,
-    // storage and motion manager (for coexistence checks).
-    if (sdErr == ESP_OK && visioncam::storageManagerAvailable()) {
-        visioncam::TimelapseConfig tc{};
-        const esp_err_t tlErr = visioncam::timelapseManagerInit();
-        if (tlErr != ESP_OK) {
-            ESP_LOGE(TAG, "timelapse manager init FAILED: %s",
-                     esp_err_to_name(tlErr));
-        } else {
-            ESP_LOGI(TAG, "timelapse manager OK");
-        }
-    } else {
-        ESP_LOGW(TAG, "timelapse manager skipped — storage unavailable");
-    }
+    // --- timelapse + AI managers: TEMPORARILY DESCOPED (owner directive
+    // 2026-11-20) ---------------------------------------------------------
+    // The source still lives in firmware/src/timelapse/ and firmware/src/ai/
+    // and the /ai/*, /timelapse/* routes are no longer registered, but the
+    // modules are not initialised at boot. To re-enable: restore the two
+    // init blocks that used to sit here, the two includes above, the
+    // CMakeLists.txt source lines and the route table entries in
+    // web/web_server.cpp. Nothing else was deleted.
+    //
+    // Phase 5 (timelapse) and Phase 6 (AI) remain valid plan phases; this is
+    // a deliberate shipping-order decision, not a cancellation.
 
-    // --- AI inference manager (Phase 6 task 6.1-6.4) -----------------------
-    // Provider abstraction for pluggable AI inference. NoAiProvider default;
-    // ExternalAiProvider primary; TfliteMicro experimental (owner decision D4).
-    // Runs at LOW priority; never blocks streaming/storage.
-    if (visioncam::storageManagerAvailable()) {
-        const esp_err_t aiErr = visioncam::aiManagerInit();
-        if (aiErr != ESP_OK) {
-            ESP_LOGE(TAG, "AI manager init FAILED: %s",
-                     esp_err_to_name(aiErr));
-        } else {
-            ESP_LOGI(TAG, "AI manager OK");
+    // --- MQTT / Home Assistant worker (Phase 7 task 7.1) -----------------
+    // Own task, bounded queue, never blocks camera/storage (AGENTS rule
+    // 11). With no broker configured the worker idles and the device is
+    // fully usable without it (SPEC §9): integrations are optional add-ons.
+    {
+        const esp_err_t mqttErr = visioncam::mqttManagerInit();
+        if (mqttErr != ESP_OK) {
+            ESP_LOGW(TAG, "MQTT worker not started: %s — continuing without it",
+                     esp_err_to_name(mqttErr));
         }
-    } else {
-        ESP_LOGW(TAG, "AI manager skipped — storage unavailable");
     }
 
     // --- step 14: camera + SD together, Wi-Fi off then Wi-Fi on ------------
     // A brownout during radio TX resets the chip, and the NEXT boot reports
     // reset reason BROWNOUT — so this log plus the following boot's banner
     // are the evidence pair for "no brownout". Wi-Fi here is only a local
-    // SoftAP + scan (wifi_bringup.h): no credentials, no network joined.
+    // The manager's setup SoftAP or station association is the radio load.
     //
     // ORDER (docs/REFERENCE_ANALYSIS.md, "Camera driver ISR overflow warning
     // vs flash-cache-off windows"): the radio must be started with the camera
@@ -397,23 +404,22 @@ extern "C" void app_main(void) {
     // sequence is safe even when the camera is already down.
     const char* step14 = "SKIP";
     if (camErr == ESP_OK && sd.self_test_ok) {
-        // (a) baseline cycle. With no credentials the radio has never been
-        // started ("Wi-Fi off"); with credentials the network manager owns
-        // it (started before the camera at boot — the safe order) and this
-        // cycle runs under whatever association it is doing.
+        // (a) baseline cycle. The network manager owns the radio in either
+        // setup-AP or station mode, and started it before camera bring-up.
         bool ok = togetherCycle("wifi off");
 
         if (visioncam::networkManagerRadioOwned()) {
-            // The real network manager owns the radio: its association and
-            // backoff traffic IS the TX load this test exists to survive,
-            // and a SoftAP next to a live STA would be wrong. The radio was
+            // The network manager owns the radio: AP beacons or station
+            // association/retry traffic provide the TX load, and a second
+            // SoftAP next to it would be wrong. The radio was
             // started before the camera ISR existed (boot order above), so
             // the camera-down dance is not needed. Three seconds of real
             // network activity with camera + SD running concurrently.
             const visioncam::WifiStatus ws0 = visioncam::networkManagerStatus();
             ESP_LOGI(TAG, "step 14: network manager owns the radio (%s, "
-                          "rssi %d dBm, connects=%u) — using real TX load",
-                     visioncam::wifiStateName(ws0.state), ws0.rssi,
+                          "AP=%d, rssi %d dBm, connects=%u) — using live TX load",
+                     visioncam::wifiStateName(ws0.state),
+                     ws0.ap_mode ? 1 : 0, ws0.rssi,
                      static_cast<unsigned>(ws0.connects));
             vTaskDelay(pdMS_TO_TICKS(3000));
             ok = togetherCycle("wifi on (network manager)") && ok;
@@ -427,8 +433,8 @@ extern "C" void app_main(void) {
                      static_cast<unsigned>(ws1.attempts),
                      static_cast<unsigned>(ws1.backoff_ms));
         } else {
-            // No credentials → manager left the driver alone → the Phase 0
-            // SoftAP probe provides the TX load, in the hazard-safe order:
+            // Radio is not owned by the manager → the Phase 0 SoftAP probe
+            // provides the TX load, in the hazard-safe order:
             // camera down, radio up, camera back, cycle, radio off. The
             // final wifiStop() runs with the camera UP (observed safe on
             // boot 4 of phase1-core-boot-03.log); the hazard is on the
