@@ -31,11 +31,15 @@ constexpr unsigned kWarmupFrames  = 3;    // SPEC 4.1.1 rule 6
 constexpr uint32_t kXclkHz        = 20'000'000;  // rule 3: 20 MHz, do not exceed
 constexpr int      kDefaultQuality = 12;  // 0..63, lower = better (R1's default)
 constexpr framesize_t kDefaultFramesize = FRAMESIZE_VGA;  // rule 1 runtime default
-// Rule 2 / §4.1.1: 2 PSRAM buffers, GRAB_LATEST (the value used below in
+// Rule 2 / §4.1.1: 3 PSRAM buffers, GRAB_LATEST (the value used below in
 // buildCameraConfig). Exposed through cameraManagerFrameBufferCount()
 // because the frame manager must reason about driver-buffer ownership
 // against exactly this number — it is configured in one place only.
-constexpr int      kFbCount = 2;
+// 3 buffers (instead of 2) give one spare buffer so a slow stream consumer
+// holding a lease across blocking socket sends cannot starve the capture
+// task of all driver buffers (observed: back-pressure warning when both
+// buffers held simultaneously during live view).
+constexpr int      kFbCount = 3;
 
 // SPEC 4.1.1 rule 8: "set jpeg_buffer_size explicitly for very small frame
 // sizes". The driver default is width*height/5 (cam_hal.c:619), which

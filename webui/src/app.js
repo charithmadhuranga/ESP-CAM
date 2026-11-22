@@ -164,7 +164,9 @@ const UI = {
   streamTimer: null,
   streamPollTimer: null,
   streamRetryTimer: null,
+  streamStallTimer: null,
   streamRetryCount: 0,
+  streamLastFrameMs: 0,
   frameUrl: null,
   storageOffset: 0,
   recordingOffset: 0,
@@ -375,31 +377,51 @@ const UI = {
     }
 
     const image = this.el('live-stream');
+    this.streamLastFrameMs = 0;
+    this.streamStallTimer = null;
+
     const markLive = () => {
       if (image.naturalWidth > 0 && image.naturalHeight > 0) {
-        clearTimeout(this.streamTimer);
-        clearInterval(this.streamPollTimer);
+        this.streamLastFrameMs = Date.now();
         this.streamRetryCount = 0;   // frames flowing — reset back-off
         this.setStatus('stream-state', 'Live', 'good');
       }
     };
+
+    // Watchdog: if no frame arrives for 10 s while we think we're Live,
+    // the connection has silently stalled — drop src and retry.
+    const checkStall = () => {
+      if (this.streamLastFrameMs > 0 &&
+          Date.now() - this.streamLastFrameMs > 10000 &&
+          this.el('stream-state').textContent === 'Live') {
+        this.setStatus('stream-state', 'Stream stalled', 'warn');
+        this.stopStream();
+        this.retryStream();
+      }
+    };
+
     this.setStatus('stream-state', 'Connecting…', 'muted');
     image.onload = markLive;
     image.onerror = () => {
-      clearTimeout(this.streamTimer);
-      clearInterval(this.streamPollTimer);
+      this.stopStream();
       this.setStatus('stream-state', 'Stream unavailable', 'bad');
       API.session();
       this.retryStream();
     };
-    this.streamPollTimer = setInterval(markLive, 250);
+    // Poll every 250 ms: detects first frame AND detects silent stalls
+    // after frames have started flowing (markLive alone only fires once
+    // on first load and cannot see the stream die mid-session).
+    this.streamPollTimer = setInterval(() => {
+      markLive();
+      checkStall();
+    }, 250);
     this.streamTimer = setTimeout(() => {
       if (this.el('stream-state').textContent === 'Connecting…') {
-        clearInterval(this.streamPollTimer);
         this.setStatus('stream-state', 'No frames received', 'warn');
         this.retryStream();
       }
     }, 12000);
+    this.streamStallTimer = setInterval(checkStall, 1000);
     image.src = '/camera/stream';
   },
 
@@ -410,6 +432,9 @@ const UI = {
     this.streamPollTimer = null;
     clearTimeout(this.streamRetryTimer);
     this.streamRetryTimer = null;
+    clearInterval(this.streamStallTimer);
+    this.streamStallTimer = null;
+    this.streamLastFrameMs = 0;
     const image = this.el('live-stream');
     if (image) {
       image.onload = null;
@@ -424,9 +449,10 @@ const UI = {
   },
 
   // Automatic reconnection with capped exponential back-off. Called when the
-  // stream fails (onerror, idle timeout, or server close). Clears the image
-  // src so the browser drops the failed response, then retries startStream()
-  // after a delay. Max 5 attempts; delay doubles each time (2s → 4s → 8s → 16s → 30s).
+  // stream fails (onerror, idle timeout, silent stall, or server close).
+  // Clears the image src so the browser drops the failed response, then
+  // retries startStream() after a delay. Max 5 attempts; delay doubles each
+  // time (2s → 4s → 8s → 16s → 30s).
   retryStream() {
     clearTimeout(this.streamRetryTimer);
     this.streamRetryTimer = null;
@@ -790,6 +816,15 @@ const UI = {
     if (!element) return;
     element.textContent = value;
     element.dataset.state = kind;
+    // Show a manual retry button when the stream is in a failed state so the
+    // user can trigger an immediate reconnection without waiting for back-off.
+    const retryBtn = this.el('[data-command="retry-stream"]');
+    if (retryBtn) {
+      const failed = id === 'stream-state' &&
+        (kind === 'bad' || kind === 'warn') &&
+        value !== 'Connecting…' && value !== 'Reconnecting';
+      retryBtn.hidden = !failed;
+    }
   },
 
   formatBytes(value) {
@@ -982,7 +1017,10 @@ const UI = {
       else if (command === 'mqtt-publish') this.testAction(API.testPublish, () => 'Test message published');
       else if (command === 'ha-republish') this.testAction(API.republishDiscovery, () => 'Home Assistant discovery republished');
       else if (command === 'network-test') this.testAction(API.testNetworkStorage, () => 'Network storage server reachable');
-      else if (command === 'restart') {
+      else if (command === 'retry-stream') {
+        this.streamRetryCount = 0;
+        void this.startStream();
+      } else if (command === 'restart') {
         if (window.confirm('Restart VisionCam Pro now? Active streams will disconnect.')) {
           this.testAction(API.restart, () => 'Device restarting');
         }

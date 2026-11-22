@@ -11,17 +11,17 @@ const WebAsset web_assets[] = {
     {
         .url = "/app.js",
         .data = web_asset__app_js,
-        .raw_size = 43909u,
-        .comp_size = 10616u,
-        .hash = "8fc0d7ce3761166e629a2393c73b41d02a9492c127f21a26656cc9fcb35731f0",
+        .raw_size = 45341u,
+        .comp_size = 11050u,
+        .hash = "8670e5f15562caf12bdaa936ed2736ce60c0b46471a1514d74f3921094427992",
         .mime = "text/javascript",
     },
     {
         .url = "/index.html",
         .data = web_asset__index_html,
-        .raw_size = 27648u,
-        .comp_size = 5753u,
-        .hash = "589983c959b963552c51f910816ac45b07593de60a8d7de94add02d7d6ec7d8b",
+        .raw_size = 27758u,
+        .comp_size = 5770u,
+        .hash = "48d9dbddaf6fb24bfc163b4393ca3aaa125bd71acdc992454238d32095331403",
         .mime = "text/html",
     },
     {

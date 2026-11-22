@@ -41,6 +41,16 @@ tagged once Phase 9 release criteria pass.
   unavailable” or “No frames received” until the user navigates away and
   back. The image src is cleared before each retry so the browser drops any
   failed response.
+- **Live View stall detection and recovery (2026-11-22).** The UI now polls
+  the `` element every 250 ms and watches for a 10 s silent stall
+  after frames have started flowing. On stall it stops the stream and
+  triggers reconnection instead of staying on “Live” forever. A manual
+  “Retry stream” button appears when the stream is in a failed state.
+- **Camera frame buffers increased 2→3 (2026-11-22).** The R2 driver now
+  allocates 3 PSRAM frame buffers instead of 2, giving the capture task a
+  spare driver buffer when a slow stream consumer holds a lease across
+  blocking socket sends. Eliminates the “all N frame buffers held by
+  consumers — waiting” back-pressure warning seen during live view.
 
 ### Added
 
