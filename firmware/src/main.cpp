@@ -5,11 +5,10 @@
 //   step 12  SD 1-bit mount + write/read/delete  (visioncam::sdMount/sdSelfTest)
 //   step 13  GPIO4 / flash-lamp behaviour with the SD mounted
 //   step 14  camera + SD together with Wi-Fi off, then Wi-Fi on
-//   step 15  frame manager: capture task, bounded queues, leases + the
-//            SPEC 9.1 recovery ladder driven BY the capture task
+//   step 15  optional, destructive frame-manager + SPEC 9.1 recovery test
 //
-// Steps 11-14 compile and link here; they run on the owner's board. Every
-// runtime result is recorded in docs/HARDWARE.md section 5 (AGENTS rule 26).
+// The destructive step 15 is opt-in through CONFIG_VISIONCAM_RUN_CAMERA_RECOVERY_SELFTEST.
+// Every runtime result is recorded in docs/HARDWARE.md section 5 (AGENTS rule 26).
 
 #include <cstdio>
 
@@ -552,7 +551,9 @@ extern "C" void app_main(void) {
     ESP_LOGI(TAG, "health marked: abnormal boots now %u",
              static_cast<unsigned>(visioncam::ringLogAbnormalBoots()));
 
-    // --- step 15: SPEC 9.1 NULL-frame recovery ladder ---------------------
+    // --- optional step 15: SPEC 9.1 NULL-frame recovery ladder ------------
+#if defined(CONFIG_VISIONCAM_RUN_CAMERA_RECOVERY_SELFTEST) && \
+    CONFIG_VISIONCAM_RUN_CAMERA_RECOVERY_SELFTEST
     // The capture task drives the ladder itself: it calls esp_camera_fb_get
     // directly (the ONLY acquire call site in the firmware, AGENTS rule 9),
     // and on every NULL it runs cameraRecoveryNoteNullFrame() with the
@@ -639,7 +640,10 @@ extern "C" void app_main(void) {
                               rs.sensor_resets == 5 && rs.re_inits == 5 &&
                               rs.rung_errors == 10 &&
                               rs.failed_events == 1;
-        ladder = (was_failed && gates_ok && ladder_reset) ? "OK" : "FAIL";
+        ladder = (was_failed && gates_ok && ladder_reset &&
+                  restore_err == ESP_OK)
+                     ? "OK"
+                     : "FAIL";
         ESP_LOGI(TAG, "step 15 result: %s (attempts=%u nulls=%u rung1=%u "
                       "rung2=%u errors=%u elapsed=%lld ms; cam_failed=%d "
                       "ladder reset=%d restore=%s)",
@@ -663,11 +667,13 @@ extern "C" void app_main(void) {
     } else {
         ESP_LOGW(TAG, "step 15 skipped — camera not OK");
     }
+#else
+    ESP_LOGI(TAG, "step 15 skipped — destructive camera recovery self-test disabled");
+#endif
 
-    // Capture is RUNNING again after step 15 (restore=OK above): the device
-    // comes out of boot live, which is what the Phase 2 snapshot/gallery work
-    // and the live stream depend on. If restore failed the capture task stays
-    // parked and the boot log says restore=FAIL — never silently.
+    // The production boot leaves frame acquisition running. The opt-in
+    // recovery self-test intentionally takes the camera offline and may fail
+    // to restore it if internal DMA-capable heap has fragmented.
 
     // Keep the task alive so heap minima accumulate across the idle period.
     for (;;) {

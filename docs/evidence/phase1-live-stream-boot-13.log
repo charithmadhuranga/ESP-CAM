@@ -1,0 +1,32 @@
+# Phase 1 live MJPEG and concurrent API hardware test
+# Date: 2026-11-22
+# Board: AI-Thinker ESP32-CAM (original ESP32, OV2640), ESP32-CAM-MB
+# Build: final focused MJPEG-chunking source; PlatformIO upload hash verified
+
+## Result
+
+Authenticated GET /camera/stream returned HTTP 200 with
+multipart/x-mixed-replace; boundary=vcframe.
+
+curl --max-time 10 observed:
+  downloaded bytes: 613270
+  JPEG SOI markers: 53
+  JPEG EOI markers: 52
+  multipart boundaries: 53
+
+While the stream was open, authenticated GET /camera/status returned HTTP
+200, 160 bytes, with camera initialized and sensor OV2640. curl exited with
+code 28 at the intentional 10-second client timeout; the final frame was
+therefore partial.
+
+## UART excerpt
+
+I (7587) vc_net: GOT_IP 10.151.183.4 (rssi -58 dBm, connects=1)
+W (19167) httpd_txrx: httpd_sock_err: error in send : 104
+W (19167) httpd_txrx: httpd_sock_err: error in send : 128
+I (19177) vc_web: live stream ended after 9986 ms
+W (19177) httpd_txrx: httpd_sock_err: error in recv : 104
+
+The socket errors followed the client timeout/close; stream cleanup completed
+after approximately 10 seconds. Browser-rendered frames on phone/laptop and
+GPIO4 flash-off behavior on stream exit were not tested.

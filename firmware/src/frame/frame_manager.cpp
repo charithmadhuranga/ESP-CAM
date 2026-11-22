@@ -43,12 +43,14 @@ constexpr uint32_t kParkPollMs     = 50;    // wait granularity while stopped
 // outstanding lease + 1 while the capture task still owns it. The camera
 // buffer goes back to the driver exactly when refs hits 0.
 struct Record {
-    camera_fb_t*     fb = nullptr;
+    std::atomic<camera_fb_t*> fb{nullptr};
     std::atomic<uint32_t> refs{0};
     uint32_t         id = 0;
     uint64_t         ts_us = 0;
     framesize_t      framesize = FRAMESIZE_VGA;   // sampled at capture time
 };
+
+constexpr uint32_t kRecordReleasing = UINT32_MAX;
 
 Record s_pool[VC_FRAME_POOL];
 
@@ -108,11 +110,41 @@ Record* poolTake() {
 // Releases one reference; returns the camera buffer at zero.
 void recordUnref(Record* rec) {
     if (rec == nullptr) return;
-    if (rec->refs.fetch_sub(1) != 1) return;   // still referenced
-    if (rec->fb != nullptr) {
-        esp_camera_fb_return(rec->fb);        // the ONLY return() call site
-        rec->fb = nullptr;
+    uint32_t refs = rec->refs.load(std::memory_order_acquire);
+    for (;;) {
+        if (refs == 0 || refs == kRecordReleasing) {
+            ESP_LOGE(TAG, "frame record reference underflow");
+            return;
+        }
+        if (refs > 1) {
+            if (rec->refs.compare_exchange_weak(
+                    refs, refs - 1, std::memory_order_acq_rel,
+                    std::memory_order_acquire)) {
+                return;
+            }
+            continue;
+        }
+        if (rec->refs.compare_exchange_weak(
+                refs, kRecordReleasing, std::memory_order_acq_rel,
+                std::memory_order_acquire)) {
+            camera_fb_t* fb = rec->fb.exchange(nullptr,
+                                                std::memory_order_acq_rel);
+            if (fb != nullptr) {
+                esp_camera_fb_return(fb);  // the ONLY return() call site
+            }
+            rec->refs.store(0, std::memory_order_release);
+            return;
+        }
     }
+}
+
+// Acquire the queue's reference before publishing the pointer. A consumer
+// may run on the other core as soon as xQueueSend succeeds.
+bool queueFrame(QueueHandle_t queue, Record* rec) {
+    rec->refs.fetch_add(1);
+    if (xQueueSend(queue, &rec, 0) == pdPASS) return true;
+    recordUnref(rec);  // drop the provisional queue reference
+    return false;
 }
 
 // Invoked by cameraManagerShutdown() through the flush hook, AFTER
@@ -164,7 +196,8 @@ unsigned buffersHeldByUs() {
     unsigned held = 0;
     for (unsigned i = 0; i < VC_FRAME_POOL; ++i) {
         const Record& r = s_pool[i];
-        if (r.fb != nullptr && r.refs.load(std::memory_order_acquire) > 0) {
+        if (r.fb.load(std::memory_order_acquire) != nullptr &&
+            r.refs.load(std::memory_order_acquire) > 0) {
             ++held;
         }
     }
@@ -230,19 +263,14 @@ void distribute(Record* rec) {
     for (unsigned i = 0; i < VC_FRAME_SUBSCRIBERS; ++i) {
         Subscriber& sub = s_subs[i];
         if (!sub.used || sub.queue == nullptr) continue;
-        if (xQueueSend(sub.queue, &rec, 0) == pdPASS) {
-            rec->refs.fetch_add(1);           // the queue's reference
-            continue;
-        }
+        if (queueFrame(sub.queue, rec)) continue;
+
         // Slow consumer: the queued frame is replaced by this one.
         Record* old = nullptr;
         if (xQueueReceive(sub.queue, &old, 0) == pdPASS && old != nullptr) {
             sub.dropped++;
             recordUnref(old);
-            if (xQueueSend(sub.queue, &rec, 0) == pdPASS) {
-                rec->refs.fetch_add(1);
-                continue;
-            }
+            if (queueFrame(sub.queue, rec)) continue;
         }
         // Still full (should not happen): count and move on. Never block.
         sub.dropped++;
@@ -344,7 +372,7 @@ void captureTask(void* /*arg*/) {
             continue;
         }
 
-        rec->fb = fb;
+        rec->fb.store(fb, std::memory_order_release);
         rec->id = s_next_id.fetch_add(1);
         rec->ts_us = nowUs();
         rec->framesize = cameraManagerFramesize();
@@ -491,17 +519,22 @@ bool frameAcquire(FrameSubscriberId sub, FrameLease& lease,
                       pdMS_TO_TICKS(timeout_ms)) != pdPASS) {
         return false;
     }
-    if (rec == nullptr || rec->fb == nullptr) return false;
+    if (rec == nullptr) return false;
+    camera_fb_t* fb = rec->fb.load(std::memory_order_acquire);
+    if (fb == nullptr) {
+        recordUnref(rec);
+        return false;
+    }
 
     // The queue's reference transfers to this lease — no refcount change.
     lease.valid = true;
     lease.framesize = rec->framesize;
     lease.id = rec->id;
     lease.ts_us = rec->ts_us;
-    lease.width = rec->fb->width;
-    lease.height = rec->fb->height;
-    lease.len = rec->fb->len;
-    lease.data = rec->fb->buf;
+    lease.width = fb->width;
+    lease.height = fb->height;
+    lease.len = fb->len;
+    lease.data = fb->buf;
     lease.record = rec;
     s_leases_taken.fetch_add(1);
     return true;

@@ -55,6 +55,9 @@ static std::atomic<int> g_live_streams{0};
 
 namespace {
 
+TaskHandle_t s_live_stream_worker = nullptr;
+std::atomic<httpd_req_t*> s_pending_live_stream{nullptr};
+
 // --- auth middleware --------------------------------------------------------
 constexpr char kSessionCookie[] = "visioncam_session";
 constexpr char kCsrfCookie[] = "visioncam_csrf";
@@ -2287,9 +2290,10 @@ static esp_err_t motionStatusHandler(httpd_req_t* req) {
 constexpr int kMaxLiveStreams = VC_MAX_STREAM_CLIENTS;
 constexpr uint32_t kLiveStreamIdleMs = 10000;   // no frame -> close
 constexpr uint32_t kLiveStreamMaxMs = 30u * 60u * 1000u;  // 30 min cap
+constexpr size_t kLiveStreamChunkBytes = 1024;
 // Hard ceiling for one frame copy (AGENTS rule 13: fixed, never sized from
-// user input). A frame larger than this is dropped, never truncated.
-constexpr size_t kLiveStreamFrameCap = 256 * 1024;
+// user input). Covers the camera driver's UXGA JPEG buffer capacity.
+constexpr size_t kLiveStreamFrameCap = 384 * 1024;
 
 // Concurrent live streams (bounded — each stream owns a socket, worker task,
 // and frame subscriber slot).
@@ -2323,7 +2327,7 @@ struct LiveStreamBuffer {
         if (need <= cap) return true;
         if (need > kLiveStreamFrameCap) return false;
         uint8_t* p = static_cast<uint8_t*>(
-            heap_caps_malloc(need, MALLOC_CAP_DEFAULT));
+            heap_caps_malloc(need, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
         if (p == nullptr) return false;
         heap_caps_free(data);
         data = p;
@@ -2334,14 +2338,18 @@ struct LiveStreamBuffer {
 };
 
 static void cameraStreamTaskBody(httpd_req_t* req) {
-    struct StreamCountGuard {
-        ~StreamCountGuard() { g_live_streams.fetch_sub(1); }
-    } count_guard;
-
     LiveSubGuard sub_guard;
     if (sub_guard.acquire() != ESP_OK) {
         httpReplyError(req, httpNextRequestId(), ErrCode::Internal,
                        "stream slot unavailable");
+        return;
+    }
+
+    LiveStreamBuffer buf;
+    if (!buf.growTo(cameraManagerJpegCapacity())) {
+        ESP_LOGE(TAG, "could not allocate bounded live-stream JPEG buffer");
+        httpReplyError(req, httpNextRequestId(), ErrCode::Internal,
+                       "live stream buffer unavailable");
         return;
     }
 
@@ -2362,7 +2370,6 @@ static void cameraStreamTaskBody(httpd_req_t* req) {
 
     const uint32_t started =
         static_cast<uint32_t>(esp_timer_get_time() / 1000);
-    LiveStreamBuffer buf;
     for (;;) {
         const uint32_t now =
             static_cast<uint32_t>(esp_timer_get_time() / 1000);
@@ -2373,9 +2380,16 @@ static void cameraStreamTaskBody(httpd_req_t* req) {
 
         const size_t len = lease.len;
         const bool size_ok = (len > 0 && buf.growTo(len));
-        if (size_ok) frameLeaseCopyTo(lease, buf.data, buf.cap);
+        const esp_err_t copy_err =
+            size_ok ? frameLeaseCopyTo(lease, buf.data, buf.cap)
+                    : ESP_ERR_INVALID_SIZE;
         frameRelease(lease);
-        if (!size_ok) continue;
+        if (copy_err != ESP_OK) {
+            ESP_LOGE(TAG, "live stream frame copy failed: %s (len=%u cap=%u)",
+                     esp_err_to_name(copy_err), static_cast<unsigned>(len),
+                     static_cast<unsigned>(buf.cap));
+            break;
+        }
 
         char hdr[128] = {};
         const int hlen = std::snprintf(hdr, sizeof(hdr),
@@ -2385,9 +2399,20 @@ static void cameraStreamTaskBody(httpd_req_t* req) {
                                        static_cast<unsigned>(len));
         if (hlen <= 0) continue;
         if (httpd_resp_send_chunk(req, hdr, hlen) != ESP_OK) break;
-        if (httpd_resp_send_chunk(req,
-                                  reinterpret_cast<const char*>(buf.data),
-                                  len) != ESP_OK) break;
+        // Keep each TCP write bounded instead of sending the whole JPEG at once.
+        bool frame_sent = true;
+        for (size_t offset = 0; offset < len;) {
+            const size_t chunk =
+                std::min(len - offset, kLiveStreamChunkBytes);
+            if (httpd_resp_send_chunk(
+                    req, reinterpret_cast<const char*>(buf.data + offset),
+                    chunk) != ESP_OK) {
+                frame_sent = false;
+                break;
+            }
+            offset += chunk;
+        }
+        if (!frame_sent) break;
         if (httpd_resp_send_chunk(req, "\r\n", 2) != ESP_OK) break;
     }
     httpd_resp_send_chunk(req, nullptr, 0);
@@ -2397,15 +2422,20 @@ static void cameraStreamTaskBody(httpd_req_t* req) {
                  started));
 }
 
-static void cameraStreamTask(void* arg) {
-    auto* req = static_cast<httpd_req_t*>(arg);
-    cameraStreamTaskBody(req);
-    const esp_err_t err = httpd_req_async_handler_complete(req);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "live stream async request cleanup failed: %s",
-                 esp_err_to_name(err));
+static void cameraStreamWorkerTask(void*) {
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        httpd_req_t* req = s_pending_live_stream.exchange(nullptr);
+        if (req == nullptr) continue;
+
+        cameraStreamTaskBody(req);
+        const esp_err_t err = httpd_req_async_handler_complete(req);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "live stream async request cleanup failed: %s",
+                     esp_err_to_name(err));
+        }
+        g_live_streams.fetch_sub(1);
     }
-    vTaskDelete(nullptr);
 }
 
 static esp_err_t cameraStreamHandler(httpd_req_t* req) {
@@ -2431,13 +2461,11 @@ static esp_err_t cameraStreamHandler(httpd_req_t* req) {
                               "could not start live stream");
     }
 
-    const BaseType_t task_created =
-        xTaskCreate(cameraStreamTask, "vc_stream", VC_STACK_STREAM, async_req,
-                    VC_PRIO_STREAM, nullptr);
-    if (task_created != pdPASS) {
+    if (s_live_stream_worker == nullptr ||
+        s_pending_live_stream.load() != nullptr) {
         g_live_streams.fetch_sub(1);
         httpReplyError(async_req, rid, ErrCode::Internal,
-                       "could not start live stream task");
+                       "live stream worker unavailable");
         const esp_err_t complete_err =
             httpd_req_async_handler_complete(async_req);
         if (complete_err != ESP_OK) {
@@ -2446,6 +2474,8 @@ static esp_err_t cameraStreamHandler(httpd_req_t* req) {
         }
         return ESP_OK;
     }
+    s_pending_live_stream.store(async_req);
+    xTaskNotifyGive(s_live_stream_worker);
     return ESP_OK;
 }
 
@@ -2581,8 +2611,21 @@ esp_err_t webServerStart() {
         ESP_LOGE(TAG, "httpd_start failed: %s", esp_err_to_name(err));
         return err;
     }
+    if (s_live_stream_worker == nullptr) {
+        const BaseType_t task_created =
+            xTaskCreate(cameraStreamWorkerTask, "vc_stream", VC_STACK_STREAM,
+                        nullptr, VC_PRIO_STREAM, &s_live_stream_worker);
+        if (task_created != pdPASS) {
+            ESP_LOGE(TAG, "could not create persistent live stream worker");
+            httpd_stop(s_server);
+            s_server = nullptr;
+            return ESP_ERR_NO_MEM;
+        }
+    }
     ESP_LOGI(TAG, "HTTP server on port 80, max_open_sockets=%d, stack=%d B",
              kHttpMaxOpenSockets, kHttpServerStack);
+    ESP_LOGI(TAG, "persistent live stream worker ready, stack=%d B",
+             VC_STACK_STREAM);
     VC_RING_INFO("web", "HTTP server started");
     return ESP_OK;
 }

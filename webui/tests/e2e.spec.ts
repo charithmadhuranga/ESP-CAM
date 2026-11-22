@@ -139,6 +139,16 @@ test('live view receives MJPEG frames and controls the flash', async ({ page, re
   expect(deviceState.flashUpdates).toEqual([true, false, true, false]);
 });
 
+test('live view returns to sign-in when the reboot invalidates its session', async ({ page, request }) => {
+  await signIn(page);
+  await request.post('/__test/expire-session');
+  await page.locator('.nav-item[data-page="live"]').click();
+
+  await expect(page.locator('#login-page')).toBeVisible();
+  const deviceState = await (await request.get('/__test/state')).json();
+  expect(deviceState.streamRequests).toBe(0);
+});
+
 test('recording playback reports its stream and downloads the complete AVI response', async ({ page }) => {
   await signIn(page);
   await page.locator('button[data-page="recordings"]').click();

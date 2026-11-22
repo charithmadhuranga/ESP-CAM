@@ -53,3 +53,7 @@ secrets.json
 # reference/ is deliberately NOT ignored: it is pinned behavioural evidence.
 # It is excluded from the firmware build and from release archives instead
 # (see reference/README.md).
+
+# --- Playwright artifacts ---
+webui/test-results/
+webui/playwright-report/

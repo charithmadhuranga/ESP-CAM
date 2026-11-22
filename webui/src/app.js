@@ -358,6 +358,20 @@ const UI = {
 
   async startStream() {
     this.stopStream();
+    const camera = await API.cameraStatus();
+    if (!camera.ok) {
+      if (!this.el('app').hidden) {
+        this.setStatus('stream-state', 'Unavailable', 'bad');
+        this.toast(this.messageOf(camera, 'Camera status unavailable'), 'error');
+      }
+      return;
+    }
+    if (camera.data?.initialised !== true) {
+      this.setStatus('stream-state', 'Camera unavailable', 'bad');
+      this.toast('The camera is not initialized. Check device status.', 'error');
+      return;
+    }
+
     const image = this.el('live-stream');
     const markLive = () => {
       if (image.naturalWidth > 0 && image.naturalHeight > 0) {
@@ -371,7 +385,8 @@ const UI = {
     image.onerror = () => {
       clearTimeout(this.streamTimer);
       clearInterval(this.streamPollTimer);
-      this.setStatus('stream-state', 'Unavailable', 'bad');
+      this.setStatus('stream-state', 'Stream unavailable', 'bad');
+      API.session();
     };
     this.streamPollTimer = setInterval(markLive, 250);
     this.streamTimer = setTimeout(() => {

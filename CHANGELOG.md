@@ -8,12 +8,32 @@ tagged once Phase 9 release criteria pass.
 
 ### Fixed
 
+- **Live View after reboot (2026-11-22).** Check the authenticated camera
+  status before opening the MJPEG stream. Since sessions are intentionally
+  RAM-only, a device reboot invalidates existing browser sessions; the UI
+  now returns to sign-in instead of misreporting the protected stream as
+  an unavailable camera.
+- **Live View worker allocation (2026-11-22).** Reuse one stream worker
+  created at server startup instead of allocating its task stack for every
+  request. Allocate the bounded UXGA JPEG copy buffer from PSRAM so large
+  frames do not depend on fragmented internal heap.
+- **Camera startup after recovery testing (2026-11-22).** The destructive
+  camera-recovery self-test is now opt-in and disabled in normal builds; the
+  repeated shutdown/reinitialization sequence could fragment internal
+  DMA-capable heap and prevent camera startup. The opt-in test now reports
+  failure unless the camera is restored successfully.
 - **Live View streaming (2026-11-22).** Corrected MJPEG multipart framing
   and moved the bounded stream to an ESP-IDF asynchronous request worker so
   it no longer blocks capture, flash, or other HTTP controls. The UI now
   reports a no-frames timeout instead of staying on “Connecting…” forever.
+  Fixed frame-manager cross-core reference races by acquiring a queue
+  reference before publishing a record and delaying pool reuse until the
+  final camera-buffer release has completed.
   Added authenticated, CSRF-protected flash control; GPIO4 is driven low
-  after SD 1-bit mount and when the stream closes.
+  after SD 1-bit mount and when the stream closes. The final flashed build
+  was hardware-verified for raw MJPEG delivery over 10 seconds (613,270 B,
+  52 complete JPEGs) and a responsive camera-status request during streaming;
+  browser rendering and flash-off behavior remain unverified.
 
 ### Added
 

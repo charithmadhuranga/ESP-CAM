@@ -1,0 +1,11 @@
+menu "VisionCam Pro"
+
+config VISIONCAM_RUN_CAMERA_RECOVERY_SELFTEST
+    bool "Run destructive camera recovery self-test at boot"
+    default n
+    help
+        Enable only for hardware validation. This test deliberately shuts
+        down and repeatedly reinitializes the camera, which can fragment
+        internal DMA-capable heap and leave the camera unavailable.
+
+endmenu

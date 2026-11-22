@@ -16,7 +16,8 @@ const state = {
   downloads: [],
   flashEnabled: false,
   flashUpdates: [],
-  streamRequests: 0
+  streamRequests: 0,
+  cameraStatusUnauthorized: false
 };
 const csrfToken = 'playwright-csrf-token';
 const sessionToken = 'playwright-session';
@@ -56,6 +57,12 @@ const server = http.createServer(async (req, res) => {
     state.flashEnabled = false;
     state.flashUpdates = [];
     state.streamRequests = 0;
+    state.cameraStatusUnauthorized = false;
+    res.writeHead(204).end();
+    return;
+  }
+  if (url.pathname === '/__test/expire-session') {
+    state.cameraStatusUnauthorized = true;
     res.writeHead(204).end();
     return;
   }
@@ -165,7 +172,13 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === '/device') data = { device_name: 'VisionCam Pro', firmware_version: 'test-build' };
   else if (url.pathname === '/status') data = { wifi: { state: 'AP', configured: false, ap_mode: true, provision_pending: false }, time_synced: false, heap_free_bytes: 180000 };
   else if (url.pathname === '/health') data = { healthy: true };
-  else if (url.pathname === '/camera/status') data = { initialised: true, sensor: 'OV2640', framesize: 10, quality: 12 };
+  else if (url.pathname === '/camera/status') {
+    if (state.cameraStatusUnauthorized) {
+      jsonResponse(res, envelope(null, 401));
+      return;
+    }
+    data = { initialised: true, sensor: 'OV2640', framesize: 10, quality: 12 };
+  }
   else if (url.pathname === '/camera/stream') {
     state.streamRequests++;
     if (!req.headers.cookie?.includes(`visioncam_session=${sessionToken}`)) {

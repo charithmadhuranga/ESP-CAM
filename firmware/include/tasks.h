@@ -83,8 +83,9 @@
 #define VC_STACK_PLAYBACK       5120
 
 // --- live MJPEG stream worker (Phase 1) ------------------------------------
-// Runs below the HTTP server and camera capture tasks. One bounded worker
-// keeps a live response from monopolising esp_http_server's request task.
+// Runs below the HTTP server and camera capture tasks. One persistent,
+// bounded worker keeps a live response from monopolising esp_http_server's
+// request task and avoids allocating its internal-RAM stack per request.
 #define VC_PRIO_STREAM          4
 #define VC_STACK_STREAM         6144
 

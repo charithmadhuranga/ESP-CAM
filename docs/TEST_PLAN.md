@@ -80,7 +80,7 @@ ESP32-CAM-MB. Evidence:
 | 1.1.3b | Rule-8 explicit `jpeg_buffer_size` for very small init sizes | **code path present, not reachable on this board** | `cameraManagerJpegCapacity`/`explicitJpegBufferFor` derive the floor (32 KB) from the driver's public `resolution[]` table below VGA; this board's PSRAM picks UXGA, so the driver default already has room. Exercised by inspection; needs a sub-VGA board to be a hardware fact |
 | 1.1.4a | SPEC 9.1 NULL-frame recovery ladder, closed-loop on hardware | RUN PASS | `docs/evidence/phase1-ladder-boot-01.log` — standalone ladder (no frame manager yet): camera held genuinely dead, rung 1 ×5 + rung 2 ×5 gated to 2 s apart, exactly 10 attempts, one terminal `CameraFailed`, rule-3 reset verified, no spin, no panic |
 | 1.1.5a | Frame manager: capture task is the SOLE `esp_camera_fb_get`/`fb_return` owner (AGENTS rule 9), bounded pool (4 records), per-consumer queues (depth 2, drop-oldest), ~10 ms yield per frame to avoid wedging the core | RUN PASS | `docs/evidence/phase1-frame-boot-11.log` — `frame manager running for consumer 0`, step 14 leases acquired and released cleanly (`lease id=1, 61272 B`), no core wedging, no interrupt-WDT panic after the capture-task yield fix |
-| 1.1.5b | Frame manager + SPEC 9.1 ladder integration (task must RUN for rungs) | RUN PASS | `docs/evidence/phase1-frame-boot-11.log` — ladder runs through the live capture task: rung 1 ×5 + rung 2 ×5 gated to 2 s apart (`elapsed=21182 ms`), `attempts=10 rung1=5 rung2=5 errors=10`, one terminal `CameraFailed`, `ladder reset=1`, camera+SD under radio TX stable (`step 14 result: OK`) |
+| 1.1.5b | Frame manager + SPEC 9.1 ladder integration (task must RUN for rungs) | RUN PASS (ladder); restore failure found in later boot test | `docs/evidence/phase1-frame-boot-11.log` — ladder runs through the live capture task: rung 1 ×5 + rung 2 ×5 gated to 2 s apart (`elapsed=21182 ms`), `attempts=10 rung1=5 rung2=5 errors=10`, one terminal `CameraFailed`, `ladder reset=1`. A later 2026-11-22 UART run found that running this destructive ladder on every boot could leave only a 23,552 B largest internal block for a 32,768 B camera DMA allocation; normal boots now skip the ladder, and opt-in test verdict includes restore success. |
 | 1.1.5c | Interrupt-watchdog fix: capture task yields between frames instead of tight-looping on immediate `fb_get` returns | RUN PASS | Reproduced as "Interrupt wdt timeout on CPU1" Guru Meditation when the capture task tight-looped; fixed with `taskYield()` after each frame and pool/exhaustion drop; no panic in `phase1-frame-boot-06` through `-11` |
 | 1.2a | HTTP server: esp_http_server on port 80, lru_purge on, 4 KB stack, 6 max_open_sockets, 16 max_uri_handlers, envelope + request_id on every response | RUN PASS | `docs/evidence/phase1-web-boot-03.log` — `web server running`, all 14 routes register, no panic, health marked |
 | 1.2b | lwIP always initialized (web server needs tcpip even in local-only mode) | RUN PASS | Fixed `tcpip_send_msg_wait_sem (Invalid mbox)` assert that crash-looped every boot (phase1-web-boot-01.log showed 259 panic boots); phase1-web-boot-03.log shows single clean boot |
@@ -88,7 +88,7 @@ ESP32-CAM-MB. Evidence:
 | 1.2d | Device/status/health/metrics/restart endpoints | RUN PASS | HTTP tested: /device, /status, /health, /metrics all return 200 with valid session cookie, 401 without |
 | 1.2e | Camera settings: GET/PUT /camera/settings with framesize/quality validation | RUN PASS | HTTP tested: GET returns current settings, PUT applies live changes |
 | 1.2f | Camera capture: POST /camera/capture returns JPEG | RUN PASS | HTTP tested: authenticated POST returns 200 with valid JPEG image (640x480, 19759 bytes), unauthenticated POST returns 401 |
-| 1.2g | Live MJPEG delivers browser frames while control APIs stay responsive; flash POST requires auth + CSRF and turns GPIO4 off when the stream closes | **UNVERIFIED on hardware** | Local Playwright mock verifies rendered stream state and flash transitions. Board procedure: with SD mounted in 1-bit mode, verify live frames, exercise camera/recording controls, toggle the lamp, then leave Live View and confirm the lamp is off |
+| 1.2g | Live MJPEG delivers browser frames while control APIs stay responsive; flash POST requires auth + CSRF and turns GPIO4 off when the stream closes | **UNVERIFIED (raw transport verified; browser and flash pending)** | Local Playwright mock verifies rendered stream state and flash transitions. Hardware raw-stream test: `docs/evidence/phase1-live-stream-boot-13.log` — authenticated 10 s stream delivered 613,270 B (53 JPEG starts / 52 complete JPEGs); concurrent `/camera/status` returned HTTP 200. Browser-rendered frames and hardware flash-off lifecycle remain UNVERIFIED. The boot-time recovery self-test is disabled by default. |
 | 1.3a | Web UI builds (vite + tsc clean) | RUN PASS | `npm run build` — JS 333 KB / 104 KB gzip, CSS 11 KB / 2.6 KB gzip |
 | 1.3b | All seven page states implemented (loading, empty, error, degraded, success, auth, confirm) | RUN PASS | Login, Overview, Live View, Settings pages each implement loading/empty/error/toast states; ConfirmDialog for destructive actions |
 | 1.3c | No runtime CDN, no remote fonts, no remote images | RUN PASS | system-ui font stack, inline SVGs only, all assets self-contained |
@@ -99,14 +99,14 @@ ESP32-CAM-MB. Evidence:
 
 ## Phase 1 exit gate status
 
-**Revalidation pending — the asynchronous live-stream changes are not yet
-verified on the board.**
+**Raw authenticated stream transport and API concurrency verified on the
+board; browser rendering and flash lifecycle remain unverified.**
 
 Exit gate: "Authenticated live MJPEG on phone and laptop, snapshot saved, no unauthenticated stream access, UI fully offline."
 
 | Gate item | Status | Notes |
 |---|---|---|
-| Authenticated live MJPEG on phone and laptop | **UNVERIFIED** | Existing device test only established auth rejection; async delivery and rendered frames require a fresh hardware run |
+| Authenticated live MJPEG on phone and laptop | **UNVERIFIED** | Raw authenticated MJPEG transport and concurrent camera-status API are verified in `docs/evidence/phase1-live-stream-boot-13.log`; rendered frames in phone and laptop browsers still need validation |
 | Snapshot saved | RUN PASS | POST /camera/capture returns 200 with valid JPEG image (JFIF standard, 640x480) |
 | No unauthenticated stream access | RUN PASS | Unauthenticated GET /camera/stream returns 401 |
 | UI fully offline | RUN PASS | All assets embedded; no CDN, no remote fonts, no remote images |
