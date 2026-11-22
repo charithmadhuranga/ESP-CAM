@@ -57,3 +57,6 @@ secrets.json
 # --- Playwright artifacts ---
 webui/test-results/
 webui/playwright-report/
+
+# --- OpenCode session artifacts ---
+.opencode/session*.json

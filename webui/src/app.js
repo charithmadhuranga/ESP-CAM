@@ -163,6 +163,8 @@ const UI = {
   flashRequest: null,
   streamTimer: null,
   streamPollTimer: null,
+  streamRetryTimer: null,
+  streamRetryCount: 0,
   frameUrl: null,
   storageOffset: 0,
   recordingOffset: 0,
@@ -377,6 +379,7 @@ const UI = {
       if (image.naturalWidth > 0 && image.naturalHeight > 0) {
         clearTimeout(this.streamTimer);
         clearInterval(this.streamPollTimer);
+        this.streamRetryCount = 0;   // frames flowing — reset back-off
         this.setStatus('stream-state', 'Live', 'good');
       }
     };
@@ -387,12 +390,14 @@ const UI = {
       clearInterval(this.streamPollTimer);
       this.setStatus('stream-state', 'Stream unavailable', 'bad');
       API.session();
+      this.retryStream();
     };
     this.streamPollTimer = setInterval(markLive, 250);
     this.streamTimer = setTimeout(() => {
       if (this.el('stream-state').textContent === 'Connecting…') {
         clearInterval(this.streamPollTimer);
         this.setStatus('stream-state', 'No frames received', 'warn');
+        this.retryStream();
       }
     }, 12000);
     image.src = '/camera/stream';
@@ -403,6 +408,8 @@ const UI = {
     this.streamTimer = null;
     clearInterval(this.streamPollTimer);
     this.streamPollTimer = null;
+    clearTimeout(this.streamRetryTimer);
+    this.streamRetryTimer = null;
     const image = this.el('live-stream');
     if (image) {
       image.onload = null;
@@ -414,6 +421,30 @@ const UI = {
       URL.revokeObjectURL(this.frameUrl);
       this.frameUrl = null;
     }
+  },
+
+  // Automatic reconnection with capped exponential back-off. Called when the
+  // stream fails (onerror, idle timeout, or server close). Clears the image
+  // src so the browser drops the failed response, then retries startStream()
+  // after a delay. Max 5 attempts; delay doubles each time (2s → 4s → 8s → 16s → 30s).
+  retryStream() {
+    clearTimeout(this.streamRetryTimer);
+    this.streamRetryTimer = null;
+    if (this.streamRetryCount >= 5) {
+      this.setStatus('stream-state', 'Stream unavailable', 'bad');
+      return;
+    }
+    const delayMs = Math.min(2000 * Math.pow(2, this.streamRetryCount), 30000);
+    this.streamRetryCount++;
+    this.setStatus('stream-state', `Reconnecting (${this.streamRetryCount}/5)…`, 'muted');
+    this.streamRetryTimer = setTimeout(() => {
+      this.streamRetryTimer = null;
+      const image = this.el('live-stream');
+      if (image) {
+        image.removeAttribute('src');
+      }
+      void this.startStream();
+    }, delayMs);
   },
 
   setFlash(enabled, notifySuccess = false) {

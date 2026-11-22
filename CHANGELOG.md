@@ -34,6 +34,13 @@ tagged once Phase 9 release criteria pass.
   was hardware-verified for raw MJPEG delivery over 10 seconds (613,270 B,
   52 complete JPEGs) and a responsive camera-status request during streaming;
   browser rendering and flash-off behavior remain unverified.
+- **Live View stream reconnection (2026-11-22).** When the MJPEG stream
+  fails (image error, idle timeout, or server close), the UI now
+  automatically retries with capped exponential back-off (2 s → 4 s →
+  8 s → 16 s → 30 s, max 5 attempts) instead of staying on “Stream
+  unavailable” or “No frames received” until the user navigates away and
+  back. The image src is cleared before each retry so the browser drops any
+  failed response.
 
 ### Added
 
