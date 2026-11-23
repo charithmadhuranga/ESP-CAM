@@ -2,7 +2,7 @@ Now let's follow the video from the sensor to your screen. Live view is an authe
 
 For other apps, the camera also runs an RTSP server. VLC, a network video recorder, or Home Assistant can pull the same live stream, sent as Motion JPEG over RTP.
 
-RTSP uses digest authentication with its own username and password, and allows two viewers at a time. Each viewer is just another frame subscriber, so it can never slow down recording.
+RTSP uses digest authentication with its own username and password, and allows three viewers at a time. Each viewer is just another frame subscriber, so it can never slow down recording.
 
 On the test board, RTSP delivered ten to twelve frames per second at six forty by four eighty, even with the browser live view running at the same time.
 

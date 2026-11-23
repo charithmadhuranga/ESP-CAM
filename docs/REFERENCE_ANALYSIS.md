@@ -728,7 +728,7 @@ playback timing, timelapse, upload, WebDAV, HA discovery, and every
 - **Decision:** **adopt the standards, reject R1 code.** Clean-room
   RTSP server: TCP-interleaved RTP only, Digest auth (no Basic: AGENTS rule
   35) with a dedicated credential stored as HA1 only, disabled until
-  configured, at most two sessions, each an ordinary frame-manager
+  configured, at most four connections / three streaming sessions, each an ordinary frame-manager
   subscriber (lease, copy, release; drop-oldest), with session buffers in
   PSRAM.
 - **Reason:** gives Home Assistant/NVR/VLC a standard pull stream without

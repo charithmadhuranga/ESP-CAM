@@ -21,7 +21,7 @@ const WebAsset web_assets[] = {
         .data = web_asset__index_html,
         .raw_size = 32353u,
         .comp_size = 6833u,
-        .hash = "9f3451a1f283a76d70ed30bd846ac42a0a479d276d7259c666f0878a43add562",
+        .hash = "5a71519e32044d35f179b3155736acaea25a654856009bd3c8484f05a2433f3b",
         .mime = "text/html",
     },
     {

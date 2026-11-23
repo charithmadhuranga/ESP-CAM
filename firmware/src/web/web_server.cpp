@@ -2829,22 +2829,28 @@ static esp_err_t rtspIntegrationGetHandler(httpd_req_t* req) {
         visioncam::rtspServerStatus(&st) != ESP_OK) {
         return httpReplyError(req, rid, ErrCode::Internal, "RTSP unavailable");
     }
-    char payload[512];
+    char payload[640];
     std::snprintf(payload, sizeof(payload),
                   "{\"enabled\":%s,\"port\":%u,\"username\":\"%s\","
                   "\"password_set\":%s,\"path\":\"/stream\",\"codec\":\"MJPEG\","
-                  "\"transport\":\"RTP/AVP/TCP\",\"max_clients\":%u,"
-                  "\"status\":{\"running\":%s,\"clients\":%u,\"sessions_total\":%u,"
+                  "\"transport\":\"RTP/AVP/TCP\",\"max_clients\":%u,\"max_playing\":%u,"
+                  "\"status\":{\"running\":%s,\"clients\":%u,\"playing\":%u,"
+                  "\"sessions_total\":%u,\"busy_rejects\":%u,"
                   "\"auth_failures\":%u,\"frames_sent\":%u,\"frames_dropped\":%u,"
+                  "\"session_stack_min_free\":%u,"
                   "\"last_error\":\"%s\"},\"schema_version\":%u}",
                   cfg.enabled ? "true" : "false", static_cast<unsigned>(cfg.port),
                   cfg.username, cfg.password_set ? "true" : "false",
                   static_cast<unsigned>(kRtspMaxClients),
+                  static_cast<unsigned>(kRtspMaxPlaying),
                   st.running ? "true" : "false", static_cast<unsigned>(st.clients),
+                  static_cast<unsigned>(st.playing),
                   static_cast<unsigned>(st.sessions_total),
+                  static_cast<unsigned>(st.busy_rejects),
                   static_cast<unsigned>(st.auth_failures),
                   static_cast<unsigned>(st.frames_sent),
-                  static_cast<unsigned>(st.frames_dropped), st.last_error,
+                  static_cast<unsigned>(st.frames_dropped),
+                  static_cast<unsigned>(st.stack_min_free), st.last_error,
                   static_cast<unsigned>(kRtspConfigSchema));
     return httpReplyOk(req, rid, payload);
 }

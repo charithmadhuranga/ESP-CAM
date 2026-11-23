@@ -12,7 +12,7 @@ tagged once Phase 9 release criteria pass.
   decision D7).** Clean-room RTSP 1.0 server (`firmware/src/rtsp/`):
   MJPEG over RTP (RFC 2435) interleaved on TCP, Digest authentication with
   a dedicated RTSP credential (only the HA1 hash is stored), disabled until
-  configured, up to 2 viewers, each a normal frame-manager subscriber with
+  configured, up to 3 streaming viewers (4 connections), each a normal frame-manager subscriber with
   PSRAM buffers. New API `GET/PUT /integrations/rtsp` and an RTSP card on
   the Integrations page: status chip, enable/port/username/write-only
   password, copy buttons for the VLC and Home Assistant URLs, and built-in
@@ -79,6 +79,16 @@ tagged once Phase 9 release criteria pass.
   PSRAM and `SPIRAM_MALLOC_ALWAYSINTERNAL` is 4096 (`sdkconfig.defaults`).
   Recordings made before this fix were written corrupt and stay unplayable.
   New host test: `test/host/run_avi_test.sh` (ffprobe/ffmpeg validated).
+- **Home Assistant RTSP: "503 Service Unavailable" (2026-11-23).** HA
+  opens several RTSP connections per camera (go2rtc's H.264 transcoder,
+  its own stream worker, config-flow previews), so the 2-connection limit
+  refused the extra ones and WebRTC failed. Now 4 connections, of which 3
+  may stream (`453` beyond that, so probes still succeed); connections that
+  never PLAY close after 15 s instead of 60 s; session stacks shrank from
+  4 KB to 3 KB (buffers moved to PSRAM; measured worst-case headroom 992 B,
+  reported as `session_stack_min_free`). Verified on the board with 3
+  concurrent viewers + a probe + a refused 4th; HA's go2rtc fetched a frame
+  through the H.264 transcoder.
 - **RTSP URLs stayed empty ("—") (2026-11-23).** The RTSP card was filled
   only after four other Integrations requests succeeded together; over a
   slow link one unrelated timeout (e.g. the network-storage queue) left the

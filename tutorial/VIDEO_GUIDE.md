@@ -114,7 +114,7 @@ recordings: every visual beat is scheduled from the actual mp3 length.
 |---|---|---|
 | [0,1) | `architecture` **video-path** | Frame manager → Live-stream worker → Browser (MJPEG). The HTTP server node stays lit to show it is still free for other requests. |
 | [1,2) | `architecture` **rtsp-path** | Frame manager → RTSP server → three clients fanning out: VLC, NVR, Home Assistant. Label "MJPEG over RTP · TCP". The RTP edge pulses. |
-| [2,3) | `grid` | Four RTSP fact cards: 🔒 Digest auth · 👤 own username/password · 2 viewers max · "just another subscriber". |
+| [2,3) | `grid` | Four RTSP fact cards: 🔒 Digest auth · 👤 own username/password · 3 viewers max · "just another subscriber". |
 | [3,4) | `chart` (bars) | **Measured on the test board:** RTSP alone 9.9 fps (60 s) · RTSP with browser live view 12.4 fps · browser live view at the same time 11.7 fps. Caption "640×480 · 0 decode errors". |
 | [4,5) | `architecture` **video-path** | Highlight Frame manager → Snapshot → Storage → SD. |
 | [5,6) | `architecture` **avi-layout** | AVI file drawn as stacked blocks: RIFF header (hdrl · avih · strh · strf) → movi (00dc frame chunks ×N) → idx1 index. The frame chunks fill in one by one. |

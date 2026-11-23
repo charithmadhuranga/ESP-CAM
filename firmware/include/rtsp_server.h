@@ -33,7 +33,16 @@
 
 namespace visioncam {
 
-constexpr uint32_t kRtspMaxClients = 2;
+// Connections vs. streams: Home Assistant opens several short RTSP
+// connections at once (go2rtc's transcoder, its own stream worker, config-
+// flow previews, still-image probes). With a limit of 2 the extra ones got
+// "503 Service Unavailable" (seen in HA, 2026-11-23). Connections that only
+// probe (OPTIONS/DESCRIBE) cost a small task; only PLAYing sessions take a
+// frame-manager slot and bandwidth, so the two are bounded separately.
+// 3 playing = the frame-manager slots left after smoke, recorder, motion,
+// live view and a transient snapshot (VC_FRAME_SUBSCRIBERS = 8).
+constexpr uint32_t kRtspMaxClients = 4;
+constexpr uint32_t kRtspMaxPlaying = 3;
 constexpr size_t kRtspRequestMax = 2048;
 constexpr size_t kRtspFrameMax = 400 * 1024;
 constexpr uint16_t kRtspDefaultPort = 554;
@@ -54,6 +63,9 @@ struct RtspStatus {
     uint32_t auth_failures = 0;
     uint32_t frames_sent = 0;
     uint32_t frames_dropped = 0;   // send failures / oversize
+    uint32_t playing = 0;          // sessions currently streaming
+    uint32_t busy_rejects = 0;     // connections refused (limit reached)
+    uint32_t stack_min_free = 0;   // worst session stack headroom (bytes)
     char last_error[48] = {};
 };
 

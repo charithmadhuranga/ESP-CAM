@@ -50,7 +50,9 @@ constexpr size_t kPacketMax = 4 + 12 + 8 + 4 + 4 + 128 + kRtpChunk;
 // view over a phone hotspot); they only lower the frame rate, since each
 // subscriber always gets the newest frame (drop-oldest queue).
 constexpr uint32_t kIoTimeoutMs = 10000;
-constexpr uint32_t kSetupIdleMs = 60000;  // before PLAY
+// A connection that never starts playing is a probe (HA config-flow
+// preview, still-image fetch, health check); free its slot quickly.
+constexpr uint32_t kSetupIdleMs = 15000;
 
 // ---- state ------------------------------------------------------------------
 SemaphoreHandle_t g_lock = nullptr;
@@ -64,6 +66,9 @@ std::atomic<uint32_t> g_sessions_total{0};
 std::atomic<uint32_t> g_auth_failures{0};
 std::atomic<uint32_t> g_frames_sent{0};
 std::atomic<uint32_t> g_frames_dropped{0};
+std::atomic<uint32_t> g_playing{0};
+std::atomic<uint32_t> g_busy_rejects{0};
+std::atomic<uint32_t> g_stack_min_free{UINT32_MAX};
 char g_last_error[48] = {};
 
 struct Lock {
@@ -279,6 +284,11 @@ struct Session {
     size_t frame_cap = 0;
     uint8_t pkt[kPacketMax] = {};
     char resp[1024] = {};
+    // Scratch kept in the (PSRAM) session instead of on the 3 KB task stack.
+    char auth[512] = {};
+    char uri[256] = {};
+    char extra[320] = {};
+    char sdp[320] = {};
 };
 
 bool waitReadable(int fd, uint32_t ms) {
@@ -320,11 +330,13 @@ bool reply(Session& s, int code, const char* reason, const char* cseq,
 
 bool checkAuth(Session& s, const char* method, const char* cseq) {
     if (s.authed) return true;
-    char auth[512] = {};
+    char* auth = s.auth;
+    char* uri = s.uri;
+    auth[0] = uri[0] = '\0';
     bool ok = false;
-    if (header(s.req, "Authorization", auth, sizeof(auth)) &&
+    if (header(s.req, "Authorization", auth, sizeof(s.auth)) &&
         strncasecmp(auth, "Digest ", 7) == 0) {
-        char user[40] = {}, nonce[40] = {}, uri[256] = {}, resp[40] = {};
+        char user[40] = {}, nonce[40] = {}, resp[40] = {};
         char qop[16] = {}, nc[16] = {}, cnonce[72] = {};
         const char* a = auth + 7;
         char ha1[33];
@@ -336,7 +348,7 @@ bool checkAuth(Session& s, const char* method, const char* cseq) {
         }
         if (digestParam(a, "username", user, sizeof(user)) &&
             digestParam(a, "nonce", nonce, sizeof(nonce)) &&
-            digestParam(a, "uri", uri, sizeof(uri)) &&
+            digestParam(a, "uri", uri, sizeof(s.uri)) &&
             digestParam(a, "response", resp, sizeof(resp)) &&
             std::strlen(resp) == 32 && std::strcmp(user, cfg_user) == 0 &&
             std::strcmp(nonce, s.nonce) == 0 && ha1[0] != '\0') {
@@ -363,8 +375,8 @@ bool checkAuth(Session& s, const char* method, const char* cseq) {
         s.authed = true;
         return true;
     }
-    char extra[128];
-    std::snprintf(extra, sizeof(extra),
+    char* extra = s.extra;
+    std::snprintf(extra, sizeof(s.extra),
                   "WWW-Authenticate: Digest realm=\"%s\", nonce=\"%s\", "
                   "algorithm=\"MD5\"\r\n",
                   kRtspRealm, s.nonce);
@@ -444,7 +456,8 @@ bool handleRequest(Session& s) {
     char method[16] = {}, url[256] = {}, cseq[16] = "0";
     if (std::sscanf(s.req, "%15s %255s", method, url) != 2) return false;
     header(s.req, "CSeq", cseq, sizeof(cseq));
-    char extra[320];
+    char* extra = s.extra;
+    constexpr size_t kExtra = sizeof(Session::extra);
 
     if (std::strcmp(method, "OPTIONS") == 0) {
         return reply(s, 200, "OK", cseq,
@@ -459,15 +472,15 @@ bool handleRequest(Session& s) {
     if (!checkAuth(s, method, cseq)) return true;  // 401 sent; client retries
 
     if (std::strcmp(method, "DESCRIBE") == 0) {
-        char sdp[320];
-        std::snprintf(sdp, sizeof(sdp),
+        char* sdp = s.sdp;
+        std::snprintf(sdp, sizeof(s.sdp),
                       "v=0\r\no=- %u 1 IN IP4 0.0.0.0\r\ns=VisionCam Pro\r\n"
                       "c=IN IP4 0.0.0.0\r\nt=0 0\r\na=control:*\r\n"
                       "m=video 0 RTP/AVP 26\r\na=rtpmap:26 JPEG/90000\r\n"
                       "a=control:track1\r\n",
                       static_cast<unsigned>(s.session_id));
         const size_t ulen = std::strlen(url);
-        std::snprintf(extra, sizeof(extra),
+        std::snprintf(extra, kExtra,
                       "Content-Base: %s%s\r\nContent-Type: application/sdp\r\n",
                       url, (ulen && url[ulen - 1] == '/') ? "" : "/");
         return reply(s, 200, "OK", cseq, extra, sdp);
@@ -484,7 +497,7 @@ bool handleRequest(Session& s) {
         if (a > 254) a = 0;
         s.channel = static_cast<uint8_t>(a);
         s.setup = true;
-        std::snprintf(extra, sizeof(extra),
+        std::snprintf(extra, kExtra,
                       "Transport: RTP/AVP/TCP;unicast;interleaved=%u-%u;ssrc=%08X\r\n"
                       "Session: %08X;timeout=60\r\n",
                       a, a + 1, static_cast<unsigned>(s.ssrc),
@@ -496,13 +509,20 @@ bool handleRequest(Session& s) {
             return reply(s, 455, "Method Not Valid in This State", cseq, nullptr, nullptr);
         }
         if (!s.subscribed) {
+            if (g_playing.fetch_add(1) >= kRtspMaxPlaying) {
+                g_playing.fetch_sub(1);
+                g_busy_rejects.fetch_add(1);
+                return reply(s, 453, "Not Enough Bandwidth", cseq, nullptr, nullptr);
+            }
             if (frameManagerSubscribe(&s.sub, "rtsp") != ESP_OK) {
+                g_playing.fetch_sub(1);
+                g_busy_rejects.fetch_add(1);
                 return reply(s, 453, "Not Enough Bandwidth", cseq, nullptr, nullptr);
             }
             s.subscribed = true;
         }
         s.playing = true;
-        std::snprintf(extra, sizeof(extra),
+        std::snprintf(extra, kExtra,
                       "Session: %08X\r\nRange: npt=0.000-\r\n",
                       static_cast<unsigned>(s.session_id));
         ESP_LOGI(TAG, "PLAY from %s", s.peer);
@@ -510,13 +530,13 @@ bool handleRequest(Session& s) {
     }
     if (std::strcmp(method, "PAUSE") == 0) {
         s.playing = false;
-        std::snprintf(extra, sizeof(extra), "Session: %08X\r\n",
+        std::snprintf(extra, kExtra, "Session: %08X\r\n",
                       static_cast<unsigned>(s.session_id));
         return reply(s, 200, "OK", cseq, extra, nullptr);
     }
     if (std::strcmp(method, "GET_PARAMETER") == 0 ||
         std::strcmp(method, "SET_PARAMETER") == 0) {
-        std::snprintf(extra, sizeof(extra), "Session: %08X\r\n",
+        std::snprintf(extra, kExtra, "Session: %08X\r\n",
                       static_cast<unsigned>(s.session_id));
         return reply(s, 200, "OK", cseq, extra, nullptr);
     }
@@ -605,7 +625,14 @@ void sessionRun(Session& s) {
 void sessionTask(void* arg) {
     auto* s = static_cast<Session*>(arg);
     sessionRun(*s);
-    if (s->subscribed) frameManagerUnsubscribe(s->sub);
+    if (s->subscribed) {
+        frameManagerUnsubscribe(s->sub);
+        g_playing.fetch_sub(1);
+    }
+    // Record the worst stack headroom any session reached (sizing evidence).
+    const uint32_t hwm = uxTaskGetStackHighWaterMark(nullptr);
+    uint32_t prev = g_stack_min_free.load();
+    while (hwm < prev && !g_stack_min_free.compare_exchange_weak(prev, hwm)) {}
     shutdown(s->fd, SHUT_RDWR);
     close(s->fd);
     ESP_LOGI(TAG, "session from %s closed", s->peer);
@@ -618,6 +645,7 @@ void sessionTask(void* arg) {
 void startSession(int fd, const sockaddr_in& peer) {
     if (g_clients.fetch_add(1) >= kRtspMaxClients) {
         g_clients.fetch_sub(1);
+        g_busy_rejects.fetch_add(1);
         const char busy[] = "RTSP/1.0 503 Service Unavailable\r\nCSeq: 0\r\n\r\n";
         send(fd, busy, sizeof(busy) - 1, 0);
         close(fd);
@@ -824,6 +852,10 @@ esp_err_t rtspServerStatus(RtspStatus* out) {
     out->auth_failures = g_auth_failures.load();
     out->frames_sent = g_frames_sent.load();
     out->frames_dropped = g_frames_dropped.load();
+    out->playing = g_playing.load();
+    out->busy_rejects = g_busy_rejects.load();
+    const uint32_t m = g_stack_min_free.load();
+    out->stack_min_free = (m == UINT32_MAX) ? 0 : m;
     Lock l;
     std::snprintf(out->last_error, sizeof(out->last_error), "%s", g_last_error);
     return ESP_OK;

@@ -498,5 +498,10 @@ on the HA host. Without it HA shows snapshots instead of live video.
   640×480, 20 packets in 2.1 s;
 - settings survive a reboot; internal heap ≈ 34 KB free idle, ≈ 30 KB
   while streaming.
-- **UNVERIFIED:** adding the Generic Camera through the HA UI (needs the
-  owner's HA login).
+- connection limits (after HA hit the old limit of 2 with `503`): 3
+  concurrent streaming viewers OK, a 4th gets `453`, a probe-only connection
+  still gets `200`; worst session stack headroom 992 B of 3 KB;
+- HA tips: delete leftover Generic Camera entries from earlier attempts
+  (each keeps its own go2rtc stream pulling from the camera) and leave
+  *Preload camera stream* off, so HA uses one connection via go2rtc. Over a
+  slow link every extra viewer divides the bandwidth.
