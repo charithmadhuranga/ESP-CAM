@@ -37,9 +37,12 @@ namespace visioncam {
 
 // --- server configuration --------------------------------------------------
 
-// Total concurrent sockets the server may hold. The original ESP32 uses a
-// small fixed limit of 7; the live stream itself is limited to one client.
-constexpr int kHttpMaxOpenSockets = 7;
+// Total concurrent sockets the server may hold. LWIP_MAX_SOCKETS is raised
+// to 16 in sdkconfig.defaults, so the IDF limit is 13 (16 − 3 internal).
+// Browsers open 6–8 concurrent connections to the same origin; plus the live
+// stream takes one slot; plus polling/API calls need headroom. 10 client
+// sockets gives comfortable headroom without exhausting the limit.
+constexpr int kHttpMaxOpenSockets = 10;
 
 // The server task stack. Not a number of its own: tasks.h is the single
 // source of truth for every task's stack (firmware/AGENTS.md), so this can

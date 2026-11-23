@@ -11,9 +11,9 @@ const WebAsset web_assets[] = {
     {
         .url = "/app.js",
         .data = web_asset__app_js,
-        .raw_size = 45341u,
-        .comp_size = 11050u,
-        .hash = "8670e5f15562caf12bdaa936ed2736ce60c0b46471a1514d74f3921094427992",
+        .raw_size = 46287u,
+        .comp_size = 11323u,
+        .hash = "822f5ab57f733aebe18efe054ea065998efe600d2273710ed8b0868e0c36d335",
         .mime = "text/javascript",
     },
     {

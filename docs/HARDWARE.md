@@ -431,3 +431,37 @@ credentials. A later configured-boot check reported `GOT_IP 10.151.183.4`
 (RSSI -51 dBm), and the workstation scan did not show the setup SSID. The
 successful setup-endpoint-to-AP-shutdown transition has not yet been exercised
 on hardware.
+
+### 7.1 Serial Wi-Fi provisioning (built into the firmware)
+
+The firmware runs a UART0 console (`core/serial_console.cpp`) so a workstation
+can set the Wi-Fi network over the ESP32-CAM-MB USB link without joining the
+setup AP. At 115200 baud, send one line, fields separated by a **TAB**
+(an SSID may contain spaces or quotes):
+
+```
+wifi<TAB><ssid><TAB><passphrase>\n
+```
+
+The firmware validates the values (SSID 1–32 B, passphrase empty or 8–63 B),
+writes them to NVS (`visioncam` namespace), replies
+`vc_console: OK wifi credentials saved (ssid N B, pass M B) - rebooting to
+join` and restarts. `help` lists the commands. The line is never echoed and
+replies carry lengths only (AGENTS rule 17); lines over 127 B are discarded.
+Open the port with DTR/RTS de-asserted, or the MB board's auto-reset
+circuit reboots the ESP32 before the line arrives.
+
+Do **not** use `tools/nvs_provision` on a board running VisionCam: its
+partition table puts the app at `0x10000`, inside VisionCam's NVS
+(`0x9000`–`0x20000`), so flashing it overwrites stored settings and the
+admin credentials.
+
+**2026-11-23 hardware check:** credentials for the workstation's network
+sent over the console → `OK ... (ssid 10 B, pass 8 B)`, reboot,
+`GOT_IP 10.151.183.4` (RSSI -46 dBm), NTP synced. From the workstation on
+the same network: `/auth/login` 200 with both cookies, unauthenticated
+`/camera/status` 401, `/camera/capture` 640x480 JPEG, `/camera/stream`
+102 frames in 10 s while 8 parallel `/status` requests all returned 200,
+and the web UI loaded in Chromium through the forced first-login screen
+(no page errors). The previous note about hotspot client isolation no longer
+applies — HTTP from the workstation works.

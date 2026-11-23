@@ -94,3 +94,11 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 # this file's own rule: never assume a line took effect (plan 02 task
 # 1.1.1, verified at the first Phase 1 build).
 CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+
+# --- LWIP sockets ------------------------------------------------------------
+# Raised from the IDF default of 10 so esp_http_server's max_open_sockets can
+# exceed 7 (httpd reserves 3 internally: limit = LWIP_MAX_SOCKETS - 3 = 13).
+# Browsers open 6-8 concurrent connections per origin; with the live stream
+# holding one, the old limit caused ERR_CONNECTION_RESET under API polling.
+# kHttpMaxOpenSockets (web_server.h) = 10 stays below the new limit of 13.
+CONFIG_LWIP_MAX_SOCKETS=16

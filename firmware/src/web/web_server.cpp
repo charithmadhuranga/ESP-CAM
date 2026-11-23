@@ -1,7 +1,7 @@
 // web_server.cpp — see web_server.h.
 //
 // esp_http_server core (SPEC 6.0): one instance, lru_purge on,
-// max_open_sockets = 7, task stack from VC_STACK_HTTPD in tasks.h. Every JSON response uses
+// max_open_sockets = kHttpMaxOpenSockets (10), task stack from VC_STACK_HTTPD in tasks.h. Every JSON response uses
 // the {ok,data,error,request_id} envelope with a monotonic per-boot
 // request_id.
 //
@@ -468,6 +468,16 @@ static esp_err_t assetHandler(httpd_req_t* req) {
                : ESP_FAIL;
 }
 
+// --- GET /favicon.ico --------------------------------------------------------
+// Browsers request this on every page load. Without a handler it falls
+// through to the catch-all asset handler, which serves index.html as the
+// favicon. Reply 204 No Content and let the browser cache that for a day.
+static esp_err_t faviconHandler(httpd_req_t* req) {
+    httpd_resp_set_status(req, "204 No Content");
+    httpd_resp_set_hdr(req, "Cache-Control", "public, max-age=86400");
+    return httpd_resp_send(req, nullptr, 0);
+}
+
 // Monotonic per-boot request_id (SPEC 6.0).
 std::atomic<uint32_t> s_request_id{0};
 
@@ -556,6 +566,10 @@ esp_err_t sendEnvelope(httpd_req_t* req, bool ok, uint32_t request_id,
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    // Do not let the browser reuse a keep-alive connection after an error
+    // reply; a fresh connection avoids ERR_CONNECTION_RESET on the next
+    // request if the failed exchange left the socket in a bad state.
+    if (!ok) httpd_resp_set_hdr(req, "Connection", "close");
     const esp_err_t err = httpd_resp_send(req, buf, static_cast<ssize_t>(total));
     std::free(buf);
     return err;
@@ -3184,6 +3198,8 @@ static const httpd_uri_t s_routes[] = {
      netStorageQueueHandler, nullptr},
     // Timelapse (Phase 5) — descoped, routes intentionally absent
     // AI (Phase 6) — descoped, routes intentionally absent
+    // Favicon: must be registered before the catch-all below.
+    {"/favicon.ico", HTTP_GET, faviconHandler, nullptr},
     // Catch-all static asset server (SPA fallback for unknown routes).
     // Specific API routes are registered above and match first.
     {"/*", HTTP_GET, assetHandler, nullptr},

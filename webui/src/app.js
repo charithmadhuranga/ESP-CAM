@@ -4,7 +4,10 @@
 const API = (() => {
   const waiters = [];
   let activeRequests = 0;
-  const maxConcurrentRequests = 2;
+  // Stays below the firmware's client socket budget (kHttpMaxOpenSockets =
+  // 10, one of which the live stream holds).
+  const maxConcurrentRequests = 6;
+  const REQUEST_TIMEOUT_MS = 10000;
 
   async function acquireSlot() {
     if (activeRequests < maxConcurrentRequests) {
@@ -35,12 +38,16 @@ const API = (() => {
     }
 
     await acquireSlot();
+    // The timeout covers headers AND body; cleared in finally on every path.
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
       const response = await fetch(path, {
         method,
         credentials: 'same-origin',
         cache: 'no-store',
         headers,
+        signal: controller.signal,
         body: body === undefined ? undefined : JSON.stringify(body)
       });
       let envelope;
@@ -59,8 +66,11 @@ const API = (() => {
       }
       return envelope;
     } catch (error) {
+      if (error.name === 'AbortError')
+        return { ok: false, error: { message: 'Device request timed out' } };
       return { ok: false, error: { message: error.message || 'Device unavailable' } };
     } finally {
+      clearTimeout(timeoutId);
       releaseSlot();
     }
   }
@@ -93,19 +103,29 @@ const API = (() => {
       const headers = {};
       const token = csrfToken();
       if (token) headers['X-CSRF-Token'] = token;
-      const response = await fetch('/camera/capture', {
-        method: 'POST', credentials: 'same-origin', cache: 'no-store', headers
-      });
-      if (!response.ok) {
-        if (response.status === 401) UI.showLogin('Your session expired. Sign in again.');
-        let message = `Camera capture failed (${response.status})`;
-        try {
-          const envelope = await response.json();
-          message = envelope.error?.message || message;
-        } catch { /* The firmware may return a non-JSON transport error. */ }
-        throw new Error(message);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+      try {
+        const response = await fetch('/camera/capture', {
+          method: 'POST', credentials: 'same-origin', cache: 'no-store', headers,
+          signal: controller.signal
+        });
+        if (!response.ok) {
+          if (response.status === 401) UI.showLogin('Your session expired. Sign in again.');
+          let message = `Camera capture failed (${response.status})`;
+          try {
+            const envelope = await response.json();
+            message = envelope.error?.message || message;
+          } catch { /* The firmware may return a non-JSON transport error. */ }
+          throw new Error(message);
+        }
+        return await response.blob();
+      } catch (error) {
+        if (error.name === 'AbortError') throw new Error('Camera capture timed out');
+        throw error;
+      } finally {
+        clearTimeout(timeoutId);
       }
-      return response.blob();
     },
     recordingStatus: () => request('/recording/status'),
     recordingConfig: () => request('/recording/config'),

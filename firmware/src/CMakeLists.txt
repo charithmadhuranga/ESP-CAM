@@ -34,6 +34,7 @@ idf_component_register(
         "core/event_bus.cpp"
         "core/resource_monitor.cpp"
         "core/ring_log.cpp"
+        "core/serial_console.cpp"
         "network/network_manager.cpp"
         "network/wifi_credentials.cpp"
         "camera/camera_manager.cpp"
@@ -87,6 +88,8 @@ idf_component_register(
         sdmmc
         esp_driver_sdmmc
         esp_driver_gpio
+        # esp_driver_uart: core/serial_console.cpp UART0 RX (Wi-Fi provisioning)
+        esp_driver_uart
         esp_wifi
         esp_netif
         esp_event

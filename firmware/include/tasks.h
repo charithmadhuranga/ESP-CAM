@@ -128,6 +128,12 @@
 #define VC_PRIO_MQTT              1
 #define VC_STACK_MQTT             8192
 
+// --- serial provisioning console (serial_console.cpp) ----------------------
+// Blocks on UART0 RX; idle almost always. Priority 1: never competes with
+// capture/storage. Stack covers printf + one 128 B line buffer.
+#define VC_PRIO_CONSOLE           1
+#define VC_STACK_CONSOLE          3072
+
 // --- shared limits ---
 // Maximum concurrent inference requests in the bounded queue.
 #define VC_MAX_AI_QUEUE         4

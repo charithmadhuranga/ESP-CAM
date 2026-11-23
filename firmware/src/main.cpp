@@ -31,6 +31,7 @@
 #include "ring_log.h"
 #include "sd_bringup.h"
 #include "sd_storage_backend.h"
+#include "serial_console.h"
 #include "storage_manager.h"
 #include "http_upload_storage_backend.h"   // Phase 8: network storage backend
 #include "snapshot_manager.h"
@@ -249,6 +250,11 @@ extern "C" void app_main(void) {
         ESP_LOGI(TAG, "web server running");
     } else {
         ESP_LOGE(TAG, "web server start FAILED — no HTTP API");
+    }
+
+    // Serial provisioning console (wifi<TAB>ssid<TAB>pass). Not fatal.
+    if (visioncam::serialConsoleStart() != ESP_OK) {
+        ESP_LOGW(TAG, "serial console unavailable — use the web UI to set Wi-Fi");
     }
 
     logHeap("after camera");

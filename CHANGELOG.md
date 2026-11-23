@@ -6,7 +6,25 @@ tagged once Phase 9 release criteria pass.
 
 ## [Unreleased]
 
+### Added
+
+- **Serial Wi-Fi provisioning (2026-11-23).** UART0 console command
+  `wifi<TAB>ssid<TAB>pass` saves validated credentials to NVS and reboots
+  into station mode, so a board can join a network over USB without
+  using the setup AP. The input is never echoed and only lengths are logged;
+  the line buffer is fixed at 128 B. Costs ~15 KB flash (UART driver) and a
+  3 KB priority-1 task. Procedure: `docs/HARDWARE.md` §7.1. Hardware-verified.
+
 ### Fixed
+
+- **HTTP connection limits (2026-11-23).** `CONFIG_LWIP_MAX_SOCKETS` raised
+  to 16 and the HTTP server's `max_open_sockets` from 7 to 10, so browser
+  parallel connections plus the live stream no longer cause
+  `ERR_CONNECTION_RESET`. The web UI allows 6 concurrent API requests (was
+  2) and times every request out after 10 s. JSON error replies send
+  `Connection: close`. `/favicon.ico` answers 204 instead of falling through
+  to the SPA page. Hardware-verified: 8 parallel `/status` requests during a
+  live stream all returned 200.
 
 - **Live View after reboot (2026-11-22).** Check the authenticated camera
   status before opening the MJPEG stream. Since sessions are intentionally

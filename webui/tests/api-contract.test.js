@@ -14,6 +14,7 @@ function createClient(responseFactory) {
     document,
     window: {},
     console,
+    AbortController,
     setTimeout,
     clearTimeout,
     fetch: async (url, options) => {
