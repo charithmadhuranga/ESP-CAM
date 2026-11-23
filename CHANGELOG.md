@@ -8,6 +8,9 @@ tagged once Phase 9 release criteria pass.
 
 ### Added
 
+- **Licence: MIT (2026-11-23, owner decision D8).** `LICENSE` added at the
+  repository root (© 2026 Proto Vision Lab); README badge and licence
+  section updated; `webui/package.json` licence field corrected from ISC.
 - **RTSP live stream for Home Assistant, VLC and NVRs (2026-11-23, owner
   decision D7).** Clean-room RTSP 1.0 server (`firmware/src/rtsp/`):
   MJPEG over RTP (RFC 2435) interleaved on TCP, Digest authentication with

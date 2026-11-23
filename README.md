@@ -15,6 +15,7 @@ Live view · RTSP · Snapshots · AVI recording · Motion detection · Home Assi
 ![Home Assistant](https://img.shields.io/badge/Home%20Assistant-MQTT%20discovery%20%2B%20RTSP-18BCF2?logo=homeassistant&logoColor=white)
 ![RTSP](https://img.shields.io/badge/RTSP-MJPEG%20%2F%20RTP-555555)
 ![Flash](https://img.shields.io/badge/app%20slot-82.6%25%20of%201.5%20MB-4F9CF9)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 <img src="docs/images/live-view.png" alt="VisionCam Pro live view" width="900">
 
@@ -483,8 +484,10 @@ Read [`AGENTS.md`](AGENTS.md) and [`SPEC.md`](SPEC.md) first. In short:
 
 ## Licence and acknowledgements
 
-No licence has been chosen for VisionCam Pro yet. All rights are reserved by
-the author until one is added.
+VisionCam Pro is released under the **[MIT License](LICENSE)** —
+© 2026 Proto Vision Lab.
+
+Third-party components keep their own licences:
 
 - [espressif/esp32-camera](https://github.com/espressif/esp32-camera) (Apache-2.0) — the camera driver, pinned as a managed component.
 - [ESP-IDF](https://github.com/espressif/esp-idf) and [esp-mqtt](https://github.com/espressif/esp-mqtt) by Espressif.
