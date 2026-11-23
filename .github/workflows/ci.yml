@@ -13,7 +13,8 @@ env:
 
 jobs:
   # ------------------------------------------------------------------
-  # Web UI: install, lint, type-check, build
+  # Web UI: syntax + API-contract unit tests, then Playwright E2E against
+  # the mock device server (webui/tests/e2e-server.js)
   # ------------------------------------------------------------------
   webui:
     runs-on: ubuntu-latest
@@ -33,18 +34,28 @@ jobs:
       - name: Install dependencies (ci)
         run: npm ci
 
-      - name: Lint (oxlint)
-        run: npm run lint
+      - name: Syntax check + unit tests
+        run: npm run check
 
-      - name: Type-check + build (tsc -b && vite build)
-        run: npm run build
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
 
-      - name: Upload web UI bundle for inspection
-        uses: actions/upload-artifact@v4
-        with:
-          name: webui-dist
-          path: webui/dist/
-          retention-days: 7
+      - name: End-to-end tests (Playwright)
+        run: npm run test:e2e
+
+  # ------------------------------------------------------------------
+  # Host test: AVI writer output validated with ffprobe/ffmpeg
+  # ------------------------------------------------------------------
+  avi-host-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - name: Build and validate AVI output
+        run: test/host/run_avi_test.sh
 
   # ------------------------------------------------------------------
   # Firmware: configure + build with PlatformIO / ESP-IDF
@@ -72,11 +83,14 @@ jobs:
       - name: Install PlatformIO
         run: pipx install platformio
 
-      - name: Configure project (pio run -t upload? no — just build)
+      - name: Build firmware
         run: pio run -e esp32cam
 
+      # The build above is the gate. Uploading the binaries is a convenience
+      # and must not fail CI when the account's artifact quota is full.
       - name: Upload firmware artifacts
         uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: firmware-esp32cam
           path: |
@@ -84,7 +98,7 @@ jobs:
             .pio/build/esp32cam/bootloader.bin
             .pio/build/esp32cam/partitions.bin
             .pio/build/esp32cam/firmware.elf
-          retention-days: 30
+          retention-days: 7
 
   # ------------------------------------------------------------------
   # Embed-asset drift check (deferred until gzip determinism verified)
