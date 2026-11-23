@@ -212,3 +212,100 @@ test('logout returns to the sign-in screen', async ({ page }) => {
   await expect(page.locator('#login-page')).toBeVisible();
   await expect(page.locator('#app')).toBeHidden();
 });
+
+test('integrations page shows RTSP status and Home Assistant URL without the password', async ({ page }) => {
+  await signIn(page);
+  await page.locator('.nav-item[data-page=integrations]').click();
+  await expect(page.locator('#rtsp-live-status')).toHaveText('Running · 1 viewer');
+  await expect(page.locator('#rtsp-url')).toHaveText(/^rtsp:\/\/homeassistant:PASSWORD@[^/]+:554\/stream$/);
+  await expect(page.locator('#rtsp-ha-url')).toHaveText(/\/stream#video=h264$/);
+  await expect(page.locator('#rtsp-form input[name=password]')).toHaveValue('');
+  await expect(page.locator('#rtsp-password-hint')).toBeHidden();
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+  // Copy opens the dialog; the generated URL is shown as the password is typed.
+  await page.locator('[data-command=copy-rtsp][data-target=rtsp-ha-url]').click();
+  await expect(page.locator('#rtsp-copy-dialog')).toBeVisible();
+  await expect(page.locator('#rtsp-copy-title')).toHaveText('Home Assistant URL');
+  await expect(page.locator('#rtsp-copy-output')).toHaveValue('');
+  await page.locator('#rtsp-copy-form input[name=password]').fill('Te@st#1:x/y%z');
+  const expected = /^rtsp:\/\/homeassistant:Te@st%231:x%2Fy%25z@[^/]+:554\/stream#video=h264$/;
+  await expect(page.locator('#rtsp-copy-output')).toHaveValue(expected);
+  // Copy URL: clipboard gets it, dialog stays open with the URL visible + selected.
+  await page.locator('#rtsp-copy-form button[type=submit]').click();
+  await expect(page.locator('#rtsp-copy-status')).toContainText('Copied');
+  await expect(page.locator('#rtsp-copy-dialog')).toBeVisible();
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toMatch(expected);
+  expect(await page.evaluate(() => {
+    const o = document.getElementById('rtsp-copy-output');
+    return o.selectionStart === 0 && o.selectionEnd === o.value.length;
+  })).toBe(true);
+  // A password containing '@' keeps it readable.
+  await page.locator('#rtsp-copy-form input[name=password]').fill('Example12@Z');
+  await expect(page.locator('#rtsp-copy-output')).toHaveValue(/^rtsp:\/\/homeassistant:Example12@Z@[^/]+:554\/stream#video=h264$/);
+  await page.locator('#rtsp-copy-dialog [data-command=close-dialog]').click();
+  // Password typed in the RTSP form is reused: URL shown immediately.
+  await page.locator('#rtsp-form input[name=password]').fill('Typed#Pass1');
+  await page.locator('[data-command=copy-rtsp][data-target=rtsp-url]').click();
+  await expect(page.locator('#rtsp-copy-output')).toHaveValue(/:Typed%23Pass1@[^/]+:554\/stream$/);
+  await page.locator('#rtsp-copy-dialog [data-command=close-dialog]').click();
+  await page.locator('#rtsp-form input[name=password]').fill('');
+  await page.locator('.rtsp-steps summary').click();
+  await expect(page.locator('.rtsp-steps')).toContainText('Generic Camera');
+});
+
+
+test('confirmations use the in-app dialog, never a native browser prompt', async ({ page }) => {
+  page.on('dialog', (dialog) => { throw new Error(`native ${dialog.type()} dialog shown: ${dialog.message()}`); });
+  const restarts: string[] = [];
+  page.on('request', (request) => { if (request.url().includes('/device/restart')) restarts.push(request.method()); });
+  await signIn(page);
+  await page.locator('.nav-item[data-page=settings]').click();
+
+  // Cancel: dialog closes, nothing is sent.
+  await page.locator('[data-command=restart]').click();
+  await expect(page.locator('#confirm-dialog')).toBeVisible();
+  await expect(page.locator('#confirm-title')).toHaveText('Restart VisionCam Pro?');
+  await expect(page.locator('#confirm-cancel')).toBeFocused();
+  await expect(page.locator('#confirm-ok')).toHaveClass(/button-danger/);
+  await page.locator('#confirm-cancel').click();
+  await expect(page.locator('#confirm-dialog')).toBeHidden();
+
+  // Escape also cancels.
+  await page.locator('[data-command=restart]').click();
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#confirm-dialog')).toBeHidden();
+  expect(restarts).toEqual([]);
+
+  // Confirm: exactly one request.
+  await page.locator('[data-command=restart]').click();
+  await page.locator('#confirm-ok').click();
+  await expect(page.locator('#confirm-dialog')).toBeHidden();
+  await expect.poll(() => restarts.length).toBe(1);
+
+  // Deleting a recording asks first; Cancel keeps it.
+  const deletes: string[] = [];
+  page.on('request', (request) => { if (request.method() === 'DELETE') deletes.push(request.url()); });
+  await page.locator('.nav-item[data-page=recordings]').click();
+  await page.locator('[data-action=delete-recording]').first().click();
+  await expect(page.locator('#confirm-title')).toHaveText('Delete this recording?');
+  await page.locator('#confirm-cancel').click();
+  expect(deletes).toEqual([]);
+});
+
+test('RTSP URLs are generated even when another integrations request fails, and after saving', async ({ page }) => {
+  await page.route('**/integrations/network-storage/queue', (route) => route.abort('timedout'));
+  await signIn(page);
+  await page.locator('.nav-item[data-page=integrations]').click();
+  await expect(page.locator('#rtsp-url')).toHaveText(/^rtsp:\/\/homeassistant:PASSWORD@[^/]+:554\/stream$/);
+  await expect(page.locator('#rtsp-ha-url')).toHaveText(/:554\/stream#video=h264$/);
+  await expect(page.locator('#rtsp-form input[name=username]')).toHaveValue('homeassistant');
+
+  // After Save the URLs come from the PUT reply, even if every later GET fails.
+  await page.route('**/integrations/rtsp', (route) =>
+    route.request().method() === 'GET' ? route.abort('timedout') : route.continue());
+  await page.locator('#rtsp-form button[type=submit]').click();
+  await expect(page.locator('#toast')).toContainText('Settings saved');
+  await expect(page.locator('#rtsp-url')).toHaveText(/^rtsp:\/\/homeassistant:PASSWORD@[^/]+:554\/stream$/);
+  await page.waitForTimeout(4000);   // delayed refresh fails twice: URLs must stay
+  await expect(page.locator('#rtsp-url')).toHaveText(/^rtsp:\/\/homeassistant:PASSWORD@/);
+});

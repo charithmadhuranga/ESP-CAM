@@ -702,6 +702,42 @@ playback timing, timelapse, upload, WebDAV, HA discovery, and every
 | Config | Key/value file + Preferences, save + reboot | NVS authoritative, versioned, live apply |
 | Auto-format SD | Exposed as a parameter | Never (SPEC §2.3) |
 
+## RTSP server (owner decision D7) — 2026-11-23
+
+- **Studied:** RFC 2326 (RTSP 1.0), RFC 2435 (RTP payload format for JPEG),
+  RFC 2617 (HTTP Digest); the behaviour of the clients that will connect:
+  ffmpeg/PyAV (Home Assistant Generic Camera validation and HLS fallback),
+  go2rtc 1.9.15 (Home Assistant's built-in WebRTC path) and VLC. R1's
+  `rtsp.cpp` was listed by file name only (SPEC §1A) and not read.
+- **What it does / limits / failure modes:**
+  - The ESP32 can only produce JPEG, so the stream is MJPEG (RTP payload
+    type 26). Each frame is split into RFC 2435 fragments with in-band
+    quantization tables (Q=255) and the standard Huffman tables implied.
+    Only baseline 4:2:2/4:2:0 JPEGs up to 2040 px are valid; anything else
+    is skipped, not sent malformed.
+  - Home Assistant hands generic cameras to go2rtc as `ffmpeg:<url>`. With
+    no codec parameter go2rtc passes MJPEG through, and **WebRTC cannot
+    carry MJPEG**: measured with HA's own go2rtc binary, the as-is stream
+    gave a 0×0 video element while `#video=h264` played 640×480 live. HA
+    concatenates the user's URL after `ffmpeg:`, so a URL ending in
+    `#video=h264` selects transcoding; the camera ignores the URL path, so
+    PyAV still opens the same URL (verified inside the HA container).
+  - Over Wi-Fi, UDP RTP loses packets and needs per-client UDP ports; TCP
+    interleaving needs no extra sockets. ffmpeg tries UDP first and falls
+    back to TCP on `461 Unsupported Transport` (verified).
+- **Decision:** **adopt the standards, reject R1 code.** Clean-room
+  RTSP server: TCP-interleaved RTP only, Digest auth (no Basic: AGENTS rule
+  35) with a dedicated credential stored as HA1 only, disabled until
+  configured, at most two sessions, each an ordinary frame-manager
+  subscriber (lease, copy, release; drop-oldest), with session buffers in
+  PSRAM.
+- **Reason:** gives Home Assistant/NVR/VLC a standard pull stream without
+  H.264 hardware, without exposing the admin password, and without any path
+  by which a viewer can stall capture or recording.
+- **Divergence from R1:** no source read, copied or translated.
+- **Evidence:** `docs/HARDWARE.md` §7.2 and TEST_PLAN 10.1.x, all measured on
+  the board on 2026-11-23.
+
 ## Live MJPEG and flash control — 2026-11-22
 
 - **Studied:** SPEC §6.3 and §2.3; the pinned ESP-IDF `esp_http_server`

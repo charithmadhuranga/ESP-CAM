@@ -94,10 +94,33 @@ def embed_assets(source_dir, target_dir):
 
     manifest_entries = []
 
+    # Cache-busting: every asset URL referenced from an HTML page gets
+    # "?v=<first 12 hex of its SHA-256>". The page itself is served
+    # no-cache, so after a firmware update browsers see new URLs and can
+    # never keep running a stale app.js (they previously could, for up to
+    # a year, because assets were cached max-age=31536000 under fixed URLs).
+    # The firmware ignores the query string when looking an asset up.
+    asset_versions = {}
+    for asset_path in assets:
+        if asset_path.suffix.lower() == '.html':
+            continue
+        rel = '/' + str(asset_path.relative_to(source_dir)).replace('\\', '/')
+        with open(asset_path, 'rb') as f:
+            asset_versions[rel] = sha256(f.read())[:12]
+
+    def versioned_html(html: bytes) -> bytes:
+        text = html.decode('utf-8')
+        for rel, ver in asset_versions.items():
+            for attr in ('src', 'href'):
+                text = text.replace(f'{attr}="{rel}"', f'{attr}="{rel}?v={ver}"')
+        return text.encode('utf-8')
+
     for asset_path in assets:
         # Read raw file
         with open(asset_path, 'rb') as f:
             raw_data = f.read()
+        if asset_path.suffix.lower() == '.html':
+            raw_data = versioned_html(raw_data)
         
         raw_size = len(raw_data)
         

@@ -465,3 +465,38 @@ the same network: `/auth/login` 200 with both cookies, unauthenticated
 and the web UI loaded in Chromium through the forced first-login screen
 (no page errors). The previous note about hotspot client isolation no longer
 applies — HTTP from the workstation works.
+
+### 7.2 RTSP stream and Home Assistant (owner decision D7)
+
+**Enable it:** Integrations → **RTSP stream**. Tick *Enable RTSP server*,
+keep port 554, set a username and an 8–63 character password (this is a
+separate credential, not the admin account), then save. The card shows both
+URLs. `PASSWORD` is a placeholder; the device never displays the stored
+password.
+
+- VLC / NVR / ffmpeg: `rtsp://USER:PASSWORD@<camera-ip>:554/stream`
+- Home Assistant: the same URL followed by `#video=h264`
+
+**Home Assistant:** Settings → Devices & services → Add integration →
+**Generic Camera**. Leave *Still image URL* empty, set *Stream source* to the
+Home Assistant URL above, *RTSP transport* = **TCP**, and *Authentication* =
+**digest**. The stream is MJPEG, and HA's live view (WebRTC via its built-in
+go2rtc) only plays H.264, so the `#video=h264` suffix makes go2rtc transcode
+on the HA host. Without it HA shows snapshots instead of live video.
+
+**2026-11-23 hardware check** (camera on a phone hotspot, RTT 140–290 ms):
+- no credentials or a wrong password → `401 Unauthorized` (Digest
+  challenge); enabling without a password is rejected by the API;
+- ffprobe with default transport → UDP SETUP gets `461`, falls back to TCP,
+  reports `mjpeg 640x480`;
+- 60 s pull: 593 frames (≈10 fps), ffmpeg full decode 0 errors;
+- RTSP + web live view together for 20 s: 248 + 210 frames, no disconnects;
+  a recording made at the same time had 203 frames / 16 s / 12 fps;
+- HA's go2rtc 1.9.15 binary: `ffmpeg:<url>` → WebRTC video 0×0 (MJPEG not
+  carried); `ffmpeg:<url>#video=h264` → WebRTC 640×480 playing;
+- PyAV inside the HA container opened the `#video=h264` URL: mjpeg
+  640×480, 20 packets in 2.1 s;
+- settings survive a reboot; internal heap ≈ 34 KB free idle, ≈ 30 KB
+  while streaming.
+- **UNVERIFIED:** adding the Generic Camera through the HA UI (needs the
+  owner's HA login).

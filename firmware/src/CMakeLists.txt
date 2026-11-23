@@ -35,6 +35,7 @@ idf_component_register(
         "core/resource_monitor.cpp"
         "core/ring_log.cpp"
         "core/serial_console.cpp"
+        "rtsp/rtsp_server.cpp"
         "network/network_manager.cpp"
         "network/wifi_credentials.cpp"
         "camera/camera_manager.cpp"

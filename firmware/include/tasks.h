@@ -134,6 +134,16 @@
 #define VC_PRIO_CONSOLE           1
 #define VC_STACK_CONSOLE          3072
 
+// --- RTSP server (rtsp/rtsp_server.cpp, owner decision D7) ----------------
+// Listener blocks in select(); one session task per client (max
+// kRtspMaxClients = 2). Same priority as the HTTP live stream: below capture
+// (6) and the recorder (5), so RTSP viewers can never starve recording.
+// Session buffers (request, RTP packet, JPEG copy) live in PSRAM; the stacks
+// only hold small locals (largest: Digest parsing ~1.2 KB).
+#define VC_PRIO_RTSP              4
+#define VC_STACK_RTSP_LISTEN      3072
+#define VC_STACK_RTSP_SESSION     4096
+
 // --- shared limits ---
 // Maximum concurrent inference requests in the bounded queue.
 #define VC_MAX_AI_QUEUE         4

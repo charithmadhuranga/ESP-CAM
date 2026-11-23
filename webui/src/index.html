@@ -229,6 +229,30 @@
             <div class="integration-status"><span>Home Assistant</span><span id="ha-live-status">—</span><button class="button button-small button-secondary" type="button" data-command="ha-republish">Republish discovery</button></div>
             <p id="mqtt-connection-detail" class="muted small-note">Connection and publish counters appear when the device responds.</p>
           </article>
+          <article class="panel" id="rtsp-panel"><div class="panel-heading"><div><p class="eyebrow">RTSP · MJPEG</p><h3>RTSP stream</h3><p class="muted small-note">Live camera for Home Assistant, VLC or an NVR. Separate login from the admin account.</p></div><span id="rtsp-live-status" class="status-chip" data-state="muted">—</span></div>
+            <form id="rtsp-form" class="form-grid">
+              <label class="check-label"><input name="enabled" type="checkbox"> Enable RTSP server</label>
+              <label>Port<input name="port" type="number" min="1" max="65535"></label>
+              <label>Username<input name="username" autocomplete="off" maxlength="32" pattern="[A-Za-z0-9._\-]{1,32}" placeholder="e.g. homeassistant"></label>
+              <label>Password <span class="muted">(write-only, 8–63 characters)</span><input name="password" type="password" autocomplete="new-password" minlength="8" maxlength="63" placeholder="Not configured"></label>
+              <p id="rtsp-password-hint" class="small-note warning-text" hidden>Set a username and password before enabling RTSP.</p>
+              <div class="form-actions"><button class="button button-primary" type="submit">Save RTSP settings</button></div>
+            </form>
+            <div class="integration-status"><span>VLC / NVR URL</span><code id="rtsp-url" class="rtsp-url">—</code><button class="button button-small button-secondary" type="button" data-command="copy-rtsp" data-target="rtsp-url">Copy</button></div>
+            <div class="integration-status"><span>Home Assistant URL</span><code id="rtsp-ha-url" class="rtsp-url">—</code><button class="button button-small button-secondary" type="button" data-command="copy-rtsp" data-target="rtsp-ha-url">Copy</button></div>
+            <p class="muted small-note"><strong>Copy</strong> asks for the RTSP password and puts it into the copied URL (the device never shows or stores it in plain text). Digest authentication · MJPEG over RTP/TCP · up to 2 viewers.</p>
+            <details class="task-details rtsp-steps">
+              <summary>Add this camera to Home Assistant</summary>
+              <ol>
+                <li>Home Assistant → Settings → Devices &amp; services → <strong>Add integration</strong> → <strong>Generic Camera</strong>.</li>
+                <li>Leave <em>Still image URL</em> empty.</li>
+                <li><em>Stream source</em>: press <strong>Copy</strong> next to the <strong>Home Assistant URL</strong>, enter the RTSP password, and paste.</li>
+                <li><em>RTSP transport</em>: <strong>TCP</strong> · <em>Authentication</em>: <strong>digest</strong>.</li>
+                <li>Submit. Live view needs the <code>#video=h264</code> ending: the camera sends MJPEG and Home Assistant's built-in go2rtc converts it to H.264 for the browser.</li>
+              </ol>
+            </details>
+            <p id="rtsp-detail" class="muted small-note">Session counters appear when the device responds.</p>
+          </article>
           <article class="panel"><div class="panel-heading"><div><p class="eyebrow">HTTP UPLOAD</p><h3>Network storage</h3></div><span id="network-live-status" class="status-chip" data-state="muted">—</span></div>
             <form id="network-form" class="form-grid">
               <label class="check-label"><input name="enabled" type="checkbox"> Enable network storage</label>
@@ -257,6 +281,19 @@
 
   <dialog id="media-dialog" class="modal"><div class="modal-heading"><div><p class="eyebrow">SNAPSHOT</p><h2 id="media-preview-id">Preview</h2></div><button class="button button-small button-secondary" type="button" data-command="close-dialog">Close</button></div><img id="media-preview" class="modal-image" alt="Selected snapshot"></dialog>
   <dialog id="playback-dialog" class="modal"><div class="modal-heading"><div><p class="eyebrow">MJPEG PLAYBACK</p><h2 id="playback-title">Recording</h2></div><button class="button button-small button-secondary" type="button" data-command="close-dialog">Close</button></div><p id="playback-status" class="muted" role="status" aria-live="polite">Playback is ready.</p><div class="playback-frame"><img id="playback-image" alt="Recording playback" hidden></div></dialog>
+  <dialog id="rtsp-copy-dialog" class="modal modal-narrow"><div class="modal-heading"><div><p class="eyebrow">RTSP</p><h2 id="rtsp-copy-title">RTSP URL</h2></div><button class="button button-small button-secondary" type="button" data-command="close-dialog">Close</button></div>
+    <form id="rtsp-copy-form" class="form-stack">
+      <label>RTSP password <span class="muted">(used only to build the URL — not saved)</span><input name="password" type="password" autocomplete="off" required maxlength="63"></label>
+      <label>Generated URL <span class="muted">(contains your password — click to select, then Ctrl+C)</span><textarea id="rtsp-copy-output" class="rtsp-copy-output" rows="3" readonly placeholder="Type the RTSP password to generate the URL"></textarea></label>
+      <button class="button button-primary" type="submit">Copy URL</button>
+      <p id="rtsp-copy-status" class="small-note muted" role="status" aria-live="polite"></p>
+    </form>
+  </dialog>
+  <dialog id="confirm-dialog" class="modal modal-narrow" aria-labelledby="confirm-title" aria-describedby="confirm-message">
+    <div class="modal-heading"><div><p id="confirm-eyebrow" class="eyebrow">CONFIRM</p><h2 id="confirm-title">Are you sure?</h2></div></div>
+    <p id="confirm-message" class="muted confirm-message"></p>
+    <div class="form-actions confirm-actions"><button id="confirm-cancel" class="button button-secondary" type="button">Cancel</button><button id="confirm-ok" class="button button-primary" type="button">Confirm</button></div>
+  </dialog>
   <dialog id="details-dialog" class="modal"><div class="modal-heading"><div><p class="eyebrow">MEDIA METADATA</p><h2>Details</h2></div><button class="button button-small button-secondary" type="button" data-command="close-dialog">Close</button></div><pre id="details-output" class="preview-output"></pre></dialog>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
   <script src="/app.js" defer></script>

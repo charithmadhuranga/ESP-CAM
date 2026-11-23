@@ -31,6 +31,7 @@
 #include "ring_log.h"
 #include "sd_bringup.h"
 #include "sd_storage_backend.h"
+#include "rtsp_server.h"
 #include "serial_console.h"
 #include "storage_manager.h"
 #include "http_upload_storage_backend.h"   // Phase 8: network storage backend
@@ -251,6 +252,12 @@ extern "C" void app_main(void) {
         ESP_LOGI(TAG, "web server running");
     } else {
         ESP_LOGE(TAG, "web server start FAILED — no HTTP API");
+    }
+
+    // RTSP server (owner decision D7). Disabled until credentials are set
+    // in Integrations; failure leaves every other feature running.
+    if (visioncam::rtspServerInit() != ESP_OK) {
+        ESP_LOGW(TAG, "RTSP server unavailable");
     }
 
     // Serial provisioning console (wifi<TAB>ssid<TAB>pass). Not fatal.

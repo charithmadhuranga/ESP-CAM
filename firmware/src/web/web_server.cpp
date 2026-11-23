@@ -43,6 +43,7 @@
 #include "web_assets_manifest.h"
 #include "recording_manager.h"
 #include "playback.h"
+#include "rtsp_server.h"
 #include "motion_manager.h"
 // #include "timelapse_manager.h"  (descoped with Phase 5/6 — see CMakeLists.txt)
 // #include "ai_manager.h"  (descoped with Phase 5/6 — see CMakeLists.txt)
@@ -404,12 +405,35 @@ esp_err_t replyUnauthenticated(httpd_req_t* req, uint32_t rid) {
 // gzip-compressed bytes with Content-Encoding: gzip. Unknown URIs fall
 // through to index.html (SPA fallback for client-side routing).
 static esp_err_t assetHandler(httpd_req_t* req) {
+    // req->uri includes any query string; index.html references assets as
+    // "/app.js?v=<hash>" (cache-busting, tools/embed_web_assets), so match
+    // on the path part only.
     const char* uri = req->uri;
+    const char* q = std::strchr(uri, '?');
+    const size_t path_len = q ? static_cast<size_t>(q - uri) : std::strlen(uri);
     for (size_t i = 0; i < web_assets_count; ++i) {
-        if (std::strcmp(uri, web_assets[i].url) == 0) {
+        if (std::strlen(web_assets[i].url) == path_len &&
+            std::strncmp(uri, web_assets[i].url, path_len) == 0) {
+            // Asset URLs are not fingerprinted, so a long max-age kept the
+            // OLD app.js in browsers after a firmware update (new HTML, old
+            // script -> missing/broken UI). Revalidate every load instead,
+            // with the build-time content hash as ETag: an unchanged asset
+            // costs one 304, a changed one is fetched immediately.
+            char etag[80];
+            std::snprintf(etag, sizeof(etag), "\"%s\"", web_assets[i].hash);
+            char inm[80] = {};
+            if (httpd_req_get_hdr_value_str(req, "If-None-Match", inm,
+                                            sizeof(inm)) == ESP_OK &&
+                std::strcmp(inm, etag) == 0) {
+                httpd_resp_set_status(req, "304 Not Modified");
+                httpd_resp_set_hdr(req, "ETag", etag);
+                httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+                return httpd_resp_send(req, nullptr, 0);
+            }
             httpd_resp_set_type(req, web_assets[i].mime);
             httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
-            httpd_resp_set_hdr(req, "Cache-Control", "public, max-age=31536000");
+            httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+            httpd_resp_set_hdr(req, "ETag", etag);
             char len_buf[16];
             std::snprintf(len_buf, sizeof(len_buf), "%u",
                           static_cast<unsigned>(web_assets[i].comp_size));
@@ -1929,7 +1953,8 @@ struct MediaJob {
 static MediaJob s_media_job;                        // guarded by s_media_busy
 static std::atomic<bool> s_media_busy{false};
 static TaskHandle_t s_media_worker = nullptr;
-// Internal DMA-capable RAM, allocated once at server start: the SDMMC host
+// Internal DMA-capable RAM, allocated per transfer and freed after it (idle
+// internal heap is scarce - ~26 KB free with every feature running): the SDMMC host
 // cannot DMA into PSRAM, and a PSRAM destination made the driver allocate a
 // same-size internal bounce buffer per read, which failed on hardware
 // ("allocate_dma_buf: not enough mem") and stalled downloads mid-file.
@@ -2037,11 +2062,18 @@ static void mediaWorkerTask(void*) {
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
         if (!s_media_busy.load()) continue;
-        if (s_media_job.kind == MediaJobKind::Download) {
+        s_media_buf = static_cast<uint8_t*>(heap_caps_malloc(
+            kMediaChunkBytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+        if (s_media_buf == nullptr) {
+            httpReplyError(s_media_job.req, s_media_job.rid, ErrCode::PlaybackBusy,
+                           "not enough memory for a transfer right now");
+        } else if (s_media_job.kind == MediaJobKind::Download) {
             recordingDownloadBody(s_media_job);
         } else {
             recordingPlayBody(s_media_job);
         }
+        heap_caps_free(s_media_buf);
+        s_media_buf = nullptr;
         const esp_err_t err = httpd_req_async_handler_complete(s_media_job.req);
         if (err != ESP_OK) {
             ESP_LOGE(TAG, "media async request cleanup failed: %s",
@@ -2090,7 +2122,7 @@ static esp_err_t mediaSubmit(httpd_req_t* req, MediaJobKind kind) {
         }
     }
 
-    if (s_media_worker == nullptr || s_media_buf == nullptr) {
+    if (s_media_worker == nullptr) {
         return httpReplyError(req, rid, ErrCode::Internal,
                               "media worker unavailable");
     }
@@ -2680,7 +2712,7 @@ esp_err_t webServerStart() {
     config.ctrl_port = 32768;
     config.stack_size = kHttpServerStack;
     config.max_open_sockets = kHttpMaxOpenSockets;
-    config.max_uri_handlers = 48;   // Phase 1-6 routes + catch-all
+    config.max_uri_handlers = 56;   // 48 registered routes + headroom
     config.lru_purge_enable = kHttpLruPurge;
     // The dispatcher's DEFAULT matcher is httpd_uri_match_simple(), an EXACT
     // length-and-prefix compare — a registered "/*" therefore never matches
@@ -2701,11 +2733,7 @@ esp_err_t webServerStart() {
         ESP_LOGE(TAG, "httpd_start failed: %s", esp_err_to_name(err));
         return err;
     }
-    if (s_media_buf == nullptr) {
-        s_media_buf = static_cast<uint8_t*>(heap_caps_malloc(
-            kMediaChunkBytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
-    }
-    if (s_media_worker == nullptr && s_media_buf != nullptr &&
+    if (s_media_worker == nullptr &&
         xTaskCreate(mediaWorkerTask, "vc_media", VC_STACK_PLAYBACK, nullptr,
                     VC_PRIO_PLAYBACK, &s_media_worker) != pdPASS) {
         // Not fatal: download/playback answer "media worker unavailable".
@@ -2789,6 +2817,97 @@ static esp_err_t mqttIntegrationGetHandler(httpd_req_t* req) {
 // --- PUT /integrations/mqtt --- (SPEC 6.9; SPEC 7 update process)
 // Partial overlay: only keys present in the body change. Password is
 // write-only — sending "" keeps the stored one.
+// --- GET /integrations/rtsp ---------------------------------------------------
+// RTSP server config + live status (owner decision D7). The password is
+// write-only: only `password_set` is ever returned.
+static esp_err_t rtspIntegrationGetHandler(httpd_req_t* req) {
+    const uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    RtspConfig cfg{};
+    RtspStatus st{};
+    if (visioncam::rtspServerGetConfig(&cfg) != ESP_OK ||
+        visioncam::rtspServerStatus(&st) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::Internal, "RTSP unavailable");
+    }
+    char payload[512];
+    std::snprintf(payload, sizeof(payload),
+                  "{\"enabled\":%s,\"port\":%u,\"username\":\"%s\","
+                  "\"password_set\":%s,\"path\":\"/stream\",\"codec\":\"MJPEG\","
+                  "\"transport\":\"RTP/AVP/TCP\",\"max_clients\":%u,"
+                  "\"status\":{\"running\":%s,\"clients\":%u,\"sessions_total\":%u,"
+                  "\"auth_failures\":%u,\"frames_sent\":%u,\"frames_dropped\":%u,"
+                  "\"last_error\":\"%s\"},\"schema_version\":%u}",
+                  cfg.enabled ? "true" : "false", static_cast<unsigned>(cfg.port),
+                  cfg.username, cfg.password_set ? "true" : "false",
+                  static_cast<unsigned>(kRtspMaxClients),
+                  st.running ? "true" : "false", static_cast<unsigned>(st.clients),
+                  static_cast<unsigned>(st.sessions_total),
+                  static_cast<unsigned>(st.auth_failures),
+                  static_cast<unsigned>(st.frames_sent),
+                  static_cast<unsigned>(st.frames_dropped), st.last_error,
+                  static_cast<unsigned>(kRtspConfigSchema));
+    return httpReplyOk(req, rid, payload);
+}
+
+// --- PUT /integrations/rtsp ---------------------------------------------------
+// {enabled, port, username, password?}. Validated by rtspServerSetConfig
+// before anything is persisted; an empty/missing password keeps the stored
+// HA1 (but a username change requires the password again).
+static esp_err_t rtspIntegrationPutHandler(httpd_req_t* req) {
+    const uint32_t rid = httpNextRequestId();
+    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    if (requireCsrf(req) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::CsrfInvalid,
+                              "CSRF token missing or invalid");
+    }
+    char body[384] = {};
+    size_t blen = 0;
+    if (readJsonBody(req, body, sizeof(body), blen) != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "invalid JSON body");
+    }
+    RtspConfig cur{};
+    visioncam::rtspServerGetConfig(&cur);
+    bool enabled = cur.enabled;
+    uint32_t port = cur.port;
+    char username[64] = {};
+    char password[80] = {};
+    std::snprintf(username, sizeof(username), "%s", cur.username);
+    char val[96] = {};
+    if (jsonScalar(body, "\"enabled\"", val, sizeof(val))) {
+        enabled = std::strcmp(val, "true") == 0 || std::strcmp(val, "1") == 0;
+    }
+    val[0] = '\0';
+    if (jsonScalar(body, "\"port\"", val, sizeof(val)) &&
+        (!parseU32Strict(val, port) || port < 1 || port > 65535)) {
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "port must be 1..65535");
+    }
+    jsonScalar(body, "\"username\"", username, sizeof(username));
+    jsonScalar(body, "\"password\"", password, sizeof(password));
+
+    const esp_err_t err = visioncam::rtspServerSetConfig(
+        enabled, static_cast<uint16_t>(port), username, password);
+    // Never keep the plaintext around longer than needed.
+    volatile char* wipe = password;
+    for (size_t i = 0; i < sizeof(password); ++i) wipe[i] = 0;
+    if (err == ESP_ERR_INVALID_ARG) {
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "username must be 1-32 of A-Z a-z 0-9 . _ - and "
+                              "password 8-63 printable characters");
+    }
+    if (err == ESP_ERR_INVALID_STATE) {
+        return httpReplyError(req, rid, ErrCode::ValidationFailed,
+                              "enter the RTSP password: it is required the first "
+                              "time RTSP is enabled and whenever the username changes");
+    }
+    if (err != ESP_OK) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "RTSP settings could not be saved");
+    }
+    return rtspIntegrationGetHandler(req);
+}
+
 static esp_err_t mqttIntegrationPutHandler(httpd_req_t* req) {
     uint32_t rid = httpNextRequestId();
     if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
@@ -3262,6 +3381,8 @@ static const httpd_uri_t s_routes[] = {
     {"/motion/config", HTTP_PUT, motionConfigPutHandler, nullptr},
     {"/motion/status", HTTP_GET, motionStatusHandler, nullptr},
     // Integrations (Phase 7, SPEC 6.9)
+    {"/integrations/rtsp", HTTP_GET, rtspIntegrationGetHandler, nullptr},
+    {"/integrations/rtsp", HTTP_PUT, rtspIntegrationPutHandler, nullptr},
     {"/integrations/mqtt", HTTP_GET, mqttIntegrationGetHandler, nullptr},
     {"/integrations/mqtt", HTTP_PUT, mqttIntegrationPutHandler, nullptr},
     {"/integrations/mqtt/test", HTTP_POST, mqttIntegrationTestHandler,

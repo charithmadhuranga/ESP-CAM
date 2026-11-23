@@ -162,6 +162,11 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === 'PUT' && url.pathname === '/integrations/rtsp') {
+    state.writes++;
+    jsonResponse(res, envelope({ enabled: true, port: 554, username: 'homeassistant', password_set: true, path: '/stream', codec: 'MJPEG', transport: 'RTP/AVP/TCP', max_clients: 2, status: { running: false, clients: 0, sessions_total: 3, auth_failures: 0, frames_sent: 120, frames_dropped: 0, last_error: '' }, schema_version: 1 }));
+    return;
+  }
   if (req.method !== 'GET') {
     state.writes++;
     jsonResponse(res, envelope({ saved: true, deleted: 0, restarting: true }));
@@ -260,6 +265,7 @@ const server = http.createServer(async (req, res) => {
     };
   }
   else if (url.pathname === '/integrations/mqtt') data = { enabled: false, status: { state: 'Disabled', connected: false } };
+  else if (url.pathname === '/integrations/rtsp') data = { enabled: true, port: 554, username: 'homeassistant', password_set: true, path: '/stream', codec: 'MJPEG', transport: 'RTP/AVP/TCP', max_clients: 2, status: { running: true, clients: 1, sessions_total: 3, auth_failures: 0, frames_sent: 120, frames_dropped: 0, last_error: '' }, schema_version: 1 };
   else if (url.pathname === '/integrations/home-assistant/status') data = { enabled: false, connected: false, discovery_published: false, state: 'Disabled' };
   else if (url.pathname === '/integrations/network-storage') data = { enabled: false, available: false, state: 'Disabled', auth_token_configured: false };
   else if (url.pathname === '/integrations/network-storage/queue') data = { queue_depth: 0, uploads_ok: 0, uploads_failed: 0, queue_dropped: 0 };

@@ -8,6 +8,22 @@ tagged once Phase 9 release criteria pass.
 
 ### Added
 
+- **RTSP live stream for Home Assistant, VLC and NVRs (2026-11-23, owner
+  decision D7).** Clean-room RTSP 1.0 server (`firmware/src/rtsp/`):
+  MJPEG over RTP (RFC 2435) interleaved on TCP, Digest authentication with
+  a dedicated RTSP credential (only the HA1 hash is stored), disabled until
+  configured, up to 2 viewers, each a normal frame-manager subscriber with
+  PSRAM buffers. New API `GET/PUT /integrations/rtsp` and an RTSP card on
+  the Integrations page: status chip, enable/port/username/write-only
+  password, copy buttons for the VLC and Home Assistant URLs, and built-in
+  Home Assistant setup steps. Copy builds the real URL: it asks for the RTSP
+  password (or uses the one just typed), percent-encodes the credentials so
+  passwords containing `@ : / # %` work, and never stores or displays it;
+  verified on the board with the copied URLs in ffmpeg and in Home
+  Assistant's PyAV. For Home Assistant live view, append `#video=h264` so HA's go2rtc
+  transcodes (MJPEG cannot travel over WebRTC). Setup:
+  `docs/HARDWARE.md` §7.2. Costs ~10 KB flash and ~7 KB internal RAM (task
+  stacks).
 - **Serial Wi-Fi provisioning (2026-11-23).** UART0 console command
   `wifi<TAB>ssid<TAB>pass` saves validated credentials to NVS and reboots
   into station mode, so a board can join a network over USB without
@@ -17,6 +33,26 @@ tagged once Phase 9 release criteria pass.
 
 ### Fixed
 
+- **Home Assistant MQTT discovery never worked (2026-11-23).** The MQTT
+  queue item held a `char payload[96]`, so every message was cut to 95
+  bytes. All eight discovery configs reached the broker as truncated JSON,
+  and Home Assistant logged "Unable to parse JSON discovery payload". The
+  state object was truncated too. Fixed:
+  - discovery configs are built in a PSRAM buffer and handed to esp-mqtt's
+    outbox directly; queued messages hold up to 256 B and an oversized
+    payload is refused, never truncated. The queue now lives in PSRAM;
+  - configs now match Home Assistant's schemas: binary sensors render
+    `ON`/`OFF`, sensors have units and state class, and the button and switch
+    have `command_topic`s (previously missing, so Home Assistant rejected them);
+  - the firmware subscribes to `<base>/<id>/cmd/+`: `snapshot` (`PRESS`)
+    takes a snapshot and `flash_led` (`ON`/`OFF`) switches the flash LED.
+    Both run on the MQTT worker task, never in the client callback;
+  - discovery is republished when Home Assistant sends `online` on
+    `<prefix>/status`, and the state includes the real Wi-Fi RSSI and flash
+    LED state.
+  Verified against Mosquitto 2 + Home Assistant: the device and all 8
+  entities are registered, the flash LED toggles from MQTT, and a snapshot
+  command adds a media item.
 - **Recorded videos were unplayable (2026-11-23).** Players reported an
   unrecognised format, and in-browser playback always failed. Causes, all
   fixed and verified on the board:
@@ -43,6 +79,49 @@ tagged once Phase 9 release criteria pass.
   PSRAM and `SPIRAM_MALLOC_ALWAYSINTERNAL` is 4096 (`sdkconfig.defaults`).
   Recordings made before this fix were written corrupt and stay unplayable.
   New host test: `test/host/run_avi_test.sh` (ffprobe/ffmpeg validated).
+- **RTSP URLs stayed empty ("—") (2026-11-23).** The RTSP card was filled
+  only after four other Integrations requests succeeded together; over a
+  slow link one unrelated timeout (e.g. the network-storage queue) left the
+  URLs and username blank, and Save reloaded the same way. The RTSP card now
+  loads independently (one retry, then an explicit "could not load" state),
+  renders the URLs straight from the Save reply, and an RTSP save no longer
+  reloads the other cards. Reproduced and verified with Playwright on the
+  board; regression test added.
+- **RTSP Copy buttons did not copy (2026-11-23).** Browsers allow a copy
+  only inside a fresh click, and on the device's plain-HTTP page only via
+  `execCommand`. The password `prompt()` let that window expire while the
+  user typed, so the copy was silently refused. Copy now opens an in-app
+  dialog that shows the generated URL (password percent-encoded) live as
+  the password is typed, so it can always be copied by hand; its own
+  "Copy URL" button also tries the clipboard inside that click and then
+  leaves the URL selected for Ctrl+C, because some desktop setups accept the
+  copy request without the OS clipboard receiving it. The password stays
+  readable in the URL: only `# / ? %` and whitespace are percent-encoded;
+  `@` and `:` stay literal (ffmpeg/PyAV, go2rtc and HA's yarl split at the
+  last `@`). Verified on the board: the displayed URL for a password
+  containing `@` (e.g. `Example12@Z`) opens in Home Assistant's PyAV.
+- **Native browser dialogs replaced (2026-11-23).** All five
+  `window.confirm()` calls (delete media, delete recording, run retention,
+  rebuild indexes, restart) now use one in-app confirmation dialog: titled,
+  explains the consequence, red action button for destructive actions,
+  focus starts on Cancel, Esc cancels. The web UI has no `alert`,
+  `confirm` or `prompt` left; an E2E test fails if any native dialog
+  appears.
+- **Stale web UI after firmware updates (2026-11-23).** Static assets were
+  served with `Cache-Control: max-age=31536000` from unversioned URLs, so
+  browsers kept the old `app.js` for up to a year after a flash (new
+  features such as the RTSP card did not appear or did not work). Assets
+  now use `no-cache` with the build-time content hash as `ETag`; an unchanged
+  asset costs one `304 Not Modified`. Because browsers that had already
+  cached the old script would keep it anyway, `tools/embed_web_assets`
+  also rewrites `index.html` to reference `/app.js?v=<hash>` (same for the
+  stylesheets) and the firmware ignores the query when serving, so every
+  update changes the URLs. This was why RTSP "Save" did nothing in an
+  already-open browser: the stale script had no RTSP form handler. Verified
+  on the board.
+- **Internal RAM headroom (2026-11-23).** The recording download/playback
+  worker now allocates its 8 KB DMA buffer per transfer instead of
+  permanently (idle internal heap ≈ 34 KB instead of ≈ 26 KB).
 - **HTTP connection limits (2026-11-23).** `CONFIG_LWIP_MAX_SOCKETS` raised
   to 16 and the HTTP server's `max_open_sockets` from 7 to 10, so browser
   parallel connections plus the live stream no longer cause

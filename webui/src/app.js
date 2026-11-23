@@ -155,6 +155,8 @@ const API = (() => {
     motionConfig: () => request('/motion/config'),
     saveMotionConfig: (config) => request('/motion/config', 'PUT', config),
     motionStatus: () => request('/motion/status'),
+    rtspConfig: () => request('/integrations/rtsp'),
+    saveRtspConfig: (config) => request('/integrations/rtsp', 'PUT', config),
     mqttConfig: () => request('/integrations/mqtt'),
     saveMqttConfig: (config) => request('/integrations/mqtt', 'PUT', config),
     testMqtt: () => request('/integrations/mqtt/test', 'POST', {}),
@@ -689,7 +691,164 @@ const UI = {
     } catch (error) { this.toast(error.message, 'error'); }
   },
 
+  // navigator.clipboard only exists in secure contexts (the device is plain
+  // HTTP on the LAN) and can be denied by permissions, so any failure falls
+  // back to selecting a hidden textarea.
+  copyViaTextarea(text) {
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.setAttribute('readonly', '');
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    // While a modal <dialog> is open everything outside it is inert, and an
+    // inert textarea cannot be selected or copied from.
+    (document.querySelector('dialog[open]') || document.body).append(area);
+    area.select();
+    const ok = document.execCommand('copy');
+    area.remove();
+    return ok;
+  },
+
+  // Keep the password readable: only characters that really break an RTSP
+  // URL are percent-encoded - '#' (would start the #video=h264 fragment),
+  // '/' and '?' (end the authority), '%' (escape char) and whitespace.
+  // '@' and ':' stay literal: ffmpeg/PyAV, go2rtc and HA's yarl all split
+  // the credentials at the LAST '@' and the user at the FIRST ':' (verified
+  // on the board with a password containing '@').
+  rtspUrl(rtsp, password, encode = true) {
+    const enc = (v) => (encode ? String(v).replace(/[#/?%\s]/g, (c) => encodeURIComponent(c)) : v);
+    const user = enc(rtsp.username || 'USER');
+    return `rtsp://${user}:${enc(password)}@${window.location.hostname}:${rtsp.port}${rtsp.path || '/stream'}`;
+  },
+
+  // Copying needs the password, which the device only stores as a hash.
+  // Browsers allow a copy only inside a fresh click (transient activation,
+  // a few seconds), and on the device's plain-HTTP page only through
+  // execCommand. A prompt() before the copy let that window expire while
+  // the user typed, so the copy was silently refused. Now the copy always
+  // runs synchronously inside the click that triggers it:
+  //   - password just typed in the RTSP form -> copy right away;
+  //   - otherwise open a dialog whose own "Copy URL" click does it;
+  //   - if the browser still refuses, show the URL selected for Ctrl+C.
+  rtspCopyUrl(rtsp, password, targetId) {
+    return this.rtspUrl(rtsp, password) + (targetId === 'rtsp-ha-url' ? '#video=h264' : '');
+  },
+
+  // Tries the clipboard synchronously inside the current click. Returns
+  // true when the browser accepted the request; whether the OS clipboard
+  // really received it cannot be observed, so the URL stays visible and
+  // selected for a manual Ctrl+C either way.
+  copySync(text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).catch(() => this.setRtspCopyStatus(false));
+      return true;
+    }
+    try { return this.copyViaTextarea(text); } catch { return false; }
+  },
+
+  rtspCopyTarget() {
+    return this.el('rtsp-copy-dialog').dataset.target || 'rtsp-url';
+  },
+
+  // Rebuilds the visible URL from the typed password (live, as you type).
+  updateRtspCopyOutput() {
+    const password = this.el('rtsp-copy-form').elements.password.value;
+    const out = this.el('rtsp-copy-output');
+    out.value = password && this.rtspInfo
+      ? this.rtspCopyUrl(this.rtspInfo, password, this.rtspCopyTarget()) : '';
+    this.setText('rtsp-copy-status', '');
+  },
+
+  setRtspCopyStatus(ok) {
+    const out = this.el('rtsp-copy-output');
+    out.focus();
+    out.select();
+    this.setText('rtsp-copy-status', ok
+      ? 'Copied to the clipboard. If pasting does not work, the URL above is selected — press Ctrl+C.'
+      : 'Your browser blocked the clipboard. The URL above is selected — press Ctrl+C to copy it.');
+  },
+
+  // Card "Copy" button: always opens the dialog with the generated URL
+  // visible, so it can be copied by hand even when the clipboard is blocked.
+  copyRtspUrl(targetId) {
+    const rtsp = this.rtspInfo;
+    if (!rtsp) {
+      this.toast('RTSP settings are still loading — try again in a moment', 'info');
+      this.loadRtspSafe();
+      return;
+    }
+    if (!rtsp.password_set || !rtsp.username) {
+      this.toast('Save an RTSP username and password first', 'error');
+      return;
+    }
+    const dialog = this.el('rtsp-copy-dialog');
+    dialog.dataset.target = targetId;
+    this.setText('rtsp-copy-title', targetId === 'rtsp-ha-url' ? 'Home Assistant URL' : 'VLC / NVR URL');
+    const form = this.el('rtsp-copy-form');
+    form.reset();
+    // A password just typed in the RTSP form is reused (it is the same one).
+    form.elements.password.value = this.el('rtsp-form').elements.password.value;
+    this.updateRtspCopyOutput();
+    dialog.showModal();
+    if (form.elements.password.value) {
+      const out = this.el('rtsp-copy-output');
+      out.focus();
+      out.select();
+    } else {
+      form.elements.password.focus();
+    }
+  },
+
+  async loadRtsp() {
+    this.renderRtsp(await this.data(API.rtspConfig()));
+  },
+
+  // The RTSP card must not depend on the other Integrations requests: over
+  // a slow link one unrelated timeout used to abort the shared Promise.all
+  // and leave the URLs as "—" (reproduced with Playwright). One retry, then
+  // an explicit "could not load" state instead of an empty card.
+  async loadRtspSafe() {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        await this.loadRtsp();
+        return;
+      } catch (error) {
+        if (attempt === 0) await new Promise((r) => setTimeout(r, 1500));
+        else {
+          this.setStatus('rtsp-live-status', 'Unavailable', 'muted');
+          if (!this.rtspInfo) {
+            this.setText('rtsp-url', 'Could not load RTSP settings — press Reload status');
+            this.setText('rtsp-ha-url', '—');
+          }
+          this.setText('rtsp-detail', `RTSP status unavailable: ${error.message}`);
+        }
+      }
+    }
+  },
+
+  renderRtsp(rtsp) {
+    if (!rtsp) return;
+    this.fillForm('rtsp-form', rtsp);
+    const form = this.el('rtsp-form');
+    form.elements.password.value = '';
+    form.elements.password.placeholder = rtsp.password_set ? 'Configured — leave blank to keep' : 'Not configured';
+    const st = rtsp.status || {};
+    this.setStatus('rtsp-live-status',
+      !rtsp.enabled ? 'Disabled' : st.running ? `Running · ${st.clients} viewer${st.clients === 1 ? '' : 's'}` : 'Starting…',
+      rtsp.enabled && st.running ? 'good' : 'muted');
+    this.el('rtsp-password-hint').hidden = Boolean(rtsp.password_set);
+    this.rtspInfo = rtsp;
+    // Displayed URLs never contain the password (the device only stores a
+    // hash of it); Copy builds the real URL, see copyRtspUrl().
+    const url = this.rtspUrl(rtsp, 'PASSWORD', false);
+    this.setText('rtsp-url', url);
+    this.setText('rtsp-ha-url', `${url}#video=h264`);
+    this.setText('rtsp-detail',
+      `${st.sessions_total || 0} sessions · ${st.frames_sent || 0} frames sent · ${st.frames_dropped || 0} dropped · ${st.auth_failures || 0} failed sign-ins${st.last_error ? ` · ${st.last_error}` : ''}`);
+  },
+
   async loadIntegrations() {
+    const rtsp = this.loadRtspSafe();   // independent of the cards below
     try {
       const [mqtt, ha, netstore, queue] = await Promise.all([
         this.data(API.mqttConfig()), this.data(API.haStatus()),
@@ -712,6 +871,7 @@ const UI = {
       this.el('network-form').elements.auth_token.placeholder =
         netstore.auth_token_configured ? 'Configured — leave blank to keep' : 'Optional token';
     } catch (error) { this.toast(error.message, 'error'); }
+    await rtsp;
   },
 
   fillForm(formId, values) {
@@ -796,17 +956,51 @@ const UI = {
         this.el('playback-image').src = `${API.recordingPlayUrl(id)}&t=${Date.now()}`;
         this.el('playback-dialog').showModal();
       } else if (action === 'delete-media') {
-        if (!window.confirm(`Delete media ${id}? This cannot be undone.`)) return;
+        if (!(await this.confirmDialog({
+          eyebrow: 'MEDIA LIBRARY', title: 'Delete this media?', danger: true, confirmLabel: 'Delete',
+          message: `${id} will be removed from the SD card. This cannot be undone.`
+        }))) return;
         await this.data(API.deleteMedia(id));
         this.toast('Media deleted', 'success');
         await this.loadMedia();
       } else if (action === 'delete-recording') {
-        if (!window.confirm(`Delete recording ${id}? This cannot be undone.`)) return;
+        if (!(await this.confirmDialog({
+          eyebrow: 'RECORDINGS', title: 'Delete this recording?', danger: true, confirmLabel: 'Delete',
+          message: `${id} will be removed from the SD card. This cannot be undone.`
+        }))) return;
         await this.data(API.deleteRecording(id));
         this.toast('Recording deleted', 'success');
         await this.loadRecordings();
       }
     } catch (error) { this.toast(error.message, 'error'); }
+  },
+
+  // In-app replacement for window.confirm(): same look as the rest of the
+  // UI, keyboard accessible (Esc = cancel, focus starts on Cancel so Enter
+  // cannot trigger a destructive action by accident). Resolves true/false.
+  confirmDialog({ title, message, confirmLabel = 'Confirm', eyebrow = 'CONFIRM', danger = false }) {
+    const dialog = this.el('confirm-dialog');
+    const ok = this.el('confirm-ok');
+    const cancel = this.el('confirm-cancel');
+    this.setText('confirm-eyebrow', eyebrow);
+    this.setText('confirm-title', title);
+    this.setText('confirm-message', message);
+    ok.textContent = confirmLabel;
+    ok.className = `button ${danger ? 'button-danger' : 'button-primary'}`;
+    return new Promise((resolve) => {
+      const finish = (value) => {
+        ok.onclick = null;
+        cancel.onclick = null;
+        dialog.oncancel = null;
+        if (dialog.open) dialog.close();
+        resolve(value);
+      };
+      ok.onclick = () => finish(true);
+      cancel.onclick = () => finish(false);
+      dialog.oncancel = (event) => { event.preventDefault(); finish(false); };
+      dialog.showModal();
+      cancel.focus();
+    });
   },
 
   showDetails(data) {
@@ -921,6 +1115,14 @@ const UI = {
   async onFormSubmit(event) {
     const form = event.target;
     event.preventDefault();
+    if (form.id === 'rtsp-copy-form') {
+      // Synchronous on purpose: the copy must happen inside this click.
+      this.updateRtspCopyOutput();
+      const url = this.el('rtsp-copy-output').value;
+      if (!url) return;
+      this.setRtspCopyStatus(this.copySync(url));
+      return;
+    }
     if (form.id === 'login-form') {
       const result = await API.login(form.elements.username.value, form.elements.password.value);
       if (!result.ok) {
@@ -964,16 +1166,32 @@ const UI = {
       'motion-form': [API.saveMotionConfig, ['sample_rate_idle_hz', 'sample_rate_rec_hz', 'threshold', 'min_changed_ratio', 'cooldown_ms', 'min_frames', 'settle_frames']],
       'retention-form': [API.saveRetention, ['max_used_percent', 'retention_days_manual', 'retention_days_motion', 'retention_days_detection', 'retention_days_timelapse']],
       'mqtt-form': [API.saveMqttConfig, ['keepalive_s', 'timeout_ms']],
+      'rtsp-form': [API.saveRtspConfig, ['port']],
       'network-form': [API.saveNetworkStorage, ['retry_count', 'retry_interval_ms', 'upload_queue_limit']]
     };
     const config = actions[form.id];
     if (!config) return;
-    await this.saveForm(form, config[0], config[1]);
+    const saved = await this.saveForm(form, config[0], config[1]);
+    // The PUT reply carries the full RTSP config: show the URLs from it
+    // immediately, even if the follow-up reload is slow or fails.
+    if (form.id === 'rtsp-form' && saved && saved.username !== undefined && saved.port) {
+      this.renderRtsp(saved);
+    }
+    // An RTSP save refreshes only the RTSP card (rendered from the PUT reply
+    // above, then re-read once the listener has restarted): reloading every
+    // card let an unrelated failure replace "Settings saved" with an error.
     if (form.id === 'mqtt-form' || form.id === 'network-form') await this.loadIntegrations();
+    // The RTSP listener restarts asynchronously after a save; refresh its
+    // status once it has had time to (re)bind.
+    if (form.id === 'rtsp-form') setTimeout(() => this.loadRtspSafe(), 1500);
   },
 
   bind() {
     document.addEventListener('submit', (event) => this.onFormSubmit(event));
+    // RTSP copy dialog: regenerate the URL as the password is typed, and
+    // select the whole URL on click for a manual Ctrl+C.
+    this.el('rtsp-copy-form').elements.password.addEventListener('input', () => this.updateRtspCopyOutput());
+    this.el('rtsp-copy-output').addEventListener('click', (event) => event.target.select());
     this.el('playback-image').addEventListener('load', () => {
       this.setText('playback-status', 'Recording is playing.');
     });
@@ -1023,15 +1241,19 @@ const UI = {
       } else if (command === 'metrics') this.loadMetrics();
       else if (command === 'retention-preview') this.previewRetention();
       else if (command === 'retention-run') {
-        if (window.confirm('Run retention now? Eligible media may be deleted.')) {
-          this.testAction(API.runRetention, (result) => `${result.deleted} files deleted`)
-            .then(() => this.loadStoragePage());
-        }
+        this.confirmDialog({
+          eyebrow: 'STORAGE', title: 'Run retention now?', danger: true, confirmLabel: 'Run retention',
+          message: 'Media older than its retention limit, or beyond the storage cap, will be deleted from the SD card.'
+        }).then((yes) => yes && this.testAction(API.runRetention, (result) => `${result.deleted} files deleted`)
+          .then(() => this.loadStoragePage()));
       } else if (command === 'rebuild-index') {
-        if (window.confirm('Rebuild media indexes from the SD card?')) {
-          this.testAction(API.rebuildIndex, () => 'Media indexes rebuilt')
-            .then(() => this.loadStoragePage());
-        }
+        this.confirmDialog({
+          eyebrow: 'STORAGE', title: 'Rebuild media indexes?', confirmLabel: 'Rebuild',
+          message: 'The camera rescans the SD card and rewrites its media index. Nothing is deleted; this can take a little while.'
+        }).then((yes) => yes && this.testAction(API.rebuildIndex, () => 'Media indexes rebuilt')
+          .then(() => this.loadStoragePage()));
+      } else if (command === 'copy-rtsp') {
+        this.copyRtspUrl(button.dataset.target);
       } else if (command === 'mqtt-test') this.testAction(API.testMqtt, () => 'MQTT broker test succeeded');
       else if (command === 'mqtt-reconnect') this.testAction(API.reconnectMqtt, (r) => r.reconnected ? 'MQTT reconnected' : 'Reconnect requested; broker unavailable');
       else if (command === 'mqtt-publish') this.testAction(API.testPublish, () => 'Test message published');
@@ -1041,9 +1263,10 @@ const UI = {
         this.streamRetryCount = 0;
         void this.startStream();
       } else if (command === 'restart') {
-        if (window.confirm('Restart VisionCam Pro now? Active streams will disconnect.')) {
-          this.testAction(API.restart, () => 'Device restarting');
-        }
+        this.confirmDialog({
+          eyebrow: 'DEVICE', title: 'Restart VisionCam Pro?', danger: true, confirmLabel: 'Restart',
+          message: 'Live view, RTSP viewers and any recording in progress will stop until the camera is back online (about 20 seconds).'
+        }).then((yes) => yes && this.testAction(API.restart, () => 'Device restarting'));
       } else if (command === 'close-dialog') event.target.closest('dialog')?.close();
       else if (command === 'menu') this.el('sidebar').classList.toggle('open');
       else if (command === 'refresh-settings') this.loadSettings();

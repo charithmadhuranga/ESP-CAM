@@ -285,6 +285,19 @@ Exit gate: "Authenticated live MJPEG on phone and laptop, snapshot saved, no una
 | WIFI.4 | Successful setup closes AP, restarts, persists credentials, and joins station network | CODE / MOCK E2E PASS; HW PARTIAL | Success path switches to STA and restarts after response; serial provisioning verified `GOT_IP 10.151.183.4` (RSSI -55 dBm). Physical `/wifi/config` AP shutdown path remains unverified. |
 | WIFI.5 | Configured station boot does not advertise setup AP | RUN PASS | After flashing, serial reported `GOT_IP 10.151.183.4`; workstation scan did not see `VisionCam-XXXXXX` |
 
+## RTSP (owner decision D7)
+
+| # | Test | Status | Evidence |
+|---|---|---|---|
+| 10.1.1 | RTSP disabled by default; enabling without a password is rejected | **HW PASS 2026-11-23** | fresh `GET /integrations/rtsp` → enabled false; PUT enable without password → validation error |
+| 10.1.2 | No/wrong credentials → 401 Digest challenge | **HW PASS 2026-11-23** | ffprobe: `DESCRIBE failed: 401 Unauthorized` for both |
+| 10.1.3 | UDP SETUP → 461, client falls back to TCP | **HW PASS 2026-11-23** | ffprobe default transport: `SETUP failed: 461`, then `mjpeg 640x480` |
+| 10.1.4 | 60 s stream decodes cleanly | **HW PASS 2026-11-23** | 593 frames (≈10 fps), ffmpeg decode 0 errors |
+| 10.1.5 | RTSP never starves recording or live view | **HW PASS 2026-11-23** | RTSP 248 + web live 210 frames / 20 s concurrently; recording 203 frames / 16 s / 12 fps during RTSP + live view |
+| 10.1.6 | Config persists across reboot; password write-only | **HW PASS 2026-11-23** | after reboot: enabled, username kept, `password_set` true; UI shows `PASSWORD` placeholder (Playwright test) |
+| 10.1.7 | Home Assistant live view path | **PARTIAL** | HA's go2rtc 1.9.15: as-is 0×0, `#video=h264` 640×480 live; HA PyAV opens the URL. Adding the Generic Camera in the HA UI: **UNVERIFIED** |
+| 10.1.8 | Integrations UI renders RTSP status and URLs | **MOCK E2E PASS** | `webui/tests/e2e.spec.ts` "integrations page shows RTSP status…" |
+
 ## Later phases
 
 Not started. Every row stays `TODO` until its phase runs; see
