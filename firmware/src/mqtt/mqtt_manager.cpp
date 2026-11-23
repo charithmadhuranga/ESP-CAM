@@ -20,6 +20,7 @@
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_wifi.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
@@ -30,6 +31,8 @@
 #include "mqtt5_client.h"
 #include "nvs_flash.h"
 #include "nvs.h"
+#include "sd_bringup.h"
+#include "snapshot_manager.h"
 #include "storage_manager.h"
 #include "tasks.h"
 #include "wall_clock.h"
@@ -82,9 +85,14 @@ static std::atomic<bool> g_recording_active_flag{false};
 static char g_last_will_topic[192] = {};
 
 // --- Outbound queue --------------------------------------------------------
+// Payload was char[96]: every message (including the ~220 B state object)
+// was silently cut to 95 bytes, so Home Assistant rejected all discovery
+// configs as invalid JSON. Discovery configs (~450-600 B) no longer use this
+// queue at all (see haPublishEntity); everything queued must fit
+// kMqttPayloadMax and is refused - never truncated - if it does not.
 struct MqttMsg {
-    char topic[kMqttPayloadMax];   // topic <= 191 B (large, but bounded)
-    char payload[96];              // state payloads are small by design
+    char topic[192];
+    char payload[kMqttPayloadMax];
     uint8_t qos;                   // 0 = telemetry, 1 = event
     bool retain;
 };
@@ -127,29 +135,36 @@ static void enqueue(const char* topic, const char* payload, uint8_t qos,
         g_status.dropped++;
         return;
     }
+    const size_t tlen = std::strlen(topic);
+    const size_t plen = std::strlen(payload);
+    if (tlen >= sizeof(MqttMsg::topic) || plen >= sizeof(MqttMsg::payload)) {
+        // A cut-off JSON payload is worse than none: refuse it loudly.
+        ESP_LOGE(TAG, "mqtt message too large (topic %u B, payload %u B) - dropped",
+                 static_cast<unsigned>(tlen), static_cast<unsigned>(plen));
+        g_status.dropped++;
+        return;
+    }
     MqttMsg msg{};
-    std::strncpy(msg.topic, topic, sizeof(msg.topic) - 1);
-    std::strncpy(msg.payload, payload, sizeof(msg.payload) - 1);
+    std::memcpy(msg.topic, topic, tlen + 1);
+    std::memcpy(msg.payload, payload, plen + 1);
     msg.qos = qos;
     msg.retain = retain;
     if (xQueueSend(g_queue, &msg, 0) == pdTRUE) return;
 
-    // Full: drop the oldest TELEMETRY and retry once.
-    MqttMsg oldest{};
+    // Full: drop the oldest TELEMETRY (qos 0) message, keep events, retry.
+    MqttMsg probe{};
+    bool dropped_one = false;
     for (int i = 0; i < static_cast<int>(kMqttQueue); ++i) {
-        MqttMsg probe{};
         if (xQueueReceive(g_queue, &probe, 0) != pdTRUE) break;
-        if (probe.qos == 0 && oldest.topic[0] == '\0') {
-            oldest = probe;      // this is the one we sacrifice
-        } else {
-            xQueueSend(g_queue, &probe, 0);   // keep the event
+        if (!dropped_one && probe.qos == 0) {
+            dropped_one = true;
+            continue;
         }
+        xQueueSend(g_queue, &probe, 0);
     }
-    if (oldest.topic[0] != '\0') {
-        g_status.dropped++;
-        if (xQueueSend(g_queue, &msg, 0) != pdTRUE) g_status.dropped++;
-    } else {
-        g_status.dropped++;      // nothing droppable: the event is lost
+    g_status.dropped++;
+    if (!dropped_one || xQueueSend(g_queue, &msg, 0) != pdTRUE) {
+        g_status.dropped++;  // nothing droppable: this message is lost
     }
 }
 
@@ -166,69 +181,153 @@ static void publishState(const char* subtopic, const char* value,
 // an availability topic so HA shows the device unavailable on a broker
 // outage instead of stale data.
 
-static void haPublishOne(const char* component, const char* entity,
-                         const char* name, const char* value_template,
-                         const char* device_class, const char* icon) {
-    char topic[256] = {};
-    std::snprintf(topic, sizeof(topic), "%s/%s/%s_%s/config",
-                  g_config.ha_prefix.c_str(), component,
-                  mqttManagerDeviceId(), entity);
+enum class HaKind : uint8_t { BinarySensor, Sensor, Button, Switch };
 
-    // Optional keys are pre-built into their own buffers so the payload is
-    // a single well-formed snprintf — no placeholders, no post-editing.
-    char cls[64] = {};
-    char ico[64] = {};
-    if (device_class && device_class[0]) {
-        std::snprintf(cls, sizeof(cls), "\"device_class\":\"%s\",",
-                      device_class);
+struct HaEntity {
+    HaKind kind;
+    const char* entity;        // object id suffix, stable
+    const char* name;
+    const char* state_key;     // key in the state JSON (nullptr for button)
+    const char* device_class;  // optional
+    const char* icon;          // optional
+    const char* unit;          // sensor only, optional
+    bool diagnostic;
+};
+
+static const char* haComponent(HaKind k) {
+    switch (k) {
+        case HaKind::BinarySensor: return "binary_sensor";
+        case HaKind::Sensor:       return "sensor";
+        case HaKind::Button:       return "button";
+        case HaKind::Switch:       return "switch";
     }
-    if (icon && icon[0]) {
-        std::snprintf(ico, sizeof(ico), "\"icon\":\"%s\",", icon);
-    }
-    // 512 B: the device block alone is ~190 B and every value is a bounded
-    // literal or a bounded string, so this can never be sized from input.
-    char payload[512] = {};
-    std::snprintf(payload, sizeof(payload),
-                  "{\"name\":\"%s\","
-                  "\"uniq_id\":\"visioncam_%s_%s\","
-                  "\"availability_topic\":\"%s/%s/availability\","
-                  "\"state_topic\":\"%s/%s/state\","
-                  "%s%s"
-                  "\"value_template\":\"{{ value_json.%s }}\","
-                  "\"device\":{\"identifiers\":[\"visioncam_%s\"],"
-                  "\"name\":\"VisionCam Pro\",\"manufacturer\":\"VisionCam\","
-                  "\"model\":\"ESP32-CAM\",\"sw_version\":\"%s\"}}",
-                  name, mqttManagerDeviceId(), entity,
-                  g_config.base_topic.c_str(), mqttManagerDeviceId(),
-                  g_config.base_topic.c_str(), mqttManagerDeviceId(),
-                  cls, ico,
-                  (value_template && value_template[0]) ? value_template : "",
-                  mqttManagerDeviceId(), "0.1.0-phase1");
-    enqueue(topic, payload, 1, /*retain=*/true);
+    return "sensor";
 }
 
-// Publish the full entity set. Called on connect (birth) and when HA
-// announces itself online — never on a plain loop.
+// Builds one discovery config and hands it straight to esp-mqtt's outbox
+// (esp_mqtt_client_enqueue copies it; thread-safe, non-blocking). Configs
+// are ~450-600 B, too large for the bounded telemetry queue, and the
+// buffer comes from PSRAM so no caller's task stack has to hold it.
+constexpr size_t kHaPayloadMax = 768;
+
+static void haPublishEntity(const HaEntity& e) {
+    if (g_client == nullptr) return;
+    const char* dev = mqttManagerDeviceId();
+    const char* base = g_config.base_topic.c_str();
+
+    char topic[192];
+    std::snprintf(topic, sizeof(topic), "%s/%s/%s_%s/config",
+                  g_config.ha_prefix.c_str(), haComponent(e.kind), dev,
+                  e.entity);
+
+    char* p = static_cast<char*>(
+        heap_caps_malloc(kHaPayloadMax, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (p == nullptr) {
+        g_status.dropped++;
+        return;
+    }
+    size_t n = 0;
+    bool ok = true;
+    auto add = [&](const char* fmt, auto... args) {
+        if (!ok) return;
+        const int w = std::snprintf(p + n, kHaPayloadMax - n, fmt, args...);
+        if (w < 0 || static_cast<size_t>(w) >= kHaPayloadMax - n) {
+            ok = false;
+            return;
+        }
+        n += static_cast<size_t>(w);
+    };
+
+    add("{\"name\":\"%s\",\"unique_id\":\"visioncam_%s_%s\","
+        "\"object_id\":\"visioncam_%s_%s\","
+        "\"availability_topic\":\"%s/%s/availability\","
+        "\"payload_available\":\"online\",\"payload_not_available\":\"offline\"",
+        e.name, dev, e.entity, dev, e.entity, base, dev);
+    if (e.kind != HaKind::Button) {
+        add(",\"state_topic\":\"%s/%s/state\"", base, dev);
+    }
+    switch (e.kind) {
+        case HaKind::BinarySensor:
+            // The state JSON carries real booleans; HA compares the
+            // rendered template with payload_on/off (default ON/OFF).
+            add(",\"value_template\":\"{{ 'ON' if value_json.%s else 'OFF' }}\"",
+                e.state_key);
+            break;
+        case HaKind::Sensor:
+            add(",\"value_template\":\"{{ value_json.%s }}\","
+                "\"state_class\":\"measurement\"", e.state_key);
+            if (e.unit) add(",\"unit_of_measurement\":\"%s\"", e.unit);
+            break;
+        case HaKind::Button:
+            add(",\"command_topic\":\"%s/%s/cmd/%s\",\"payload_press\":\"PRESS\"",
+                base, dev, e.entity);
+            break;
+        case HaKind::Switch:
+            add(",\"command_topic\":\"%s/%s/cmd/%s\","
+                "\"value_template\":\"{{ 'ON' if value_json.%s else 'OFF' }}\","
+                "\"payload_on\":\"ON\",\"payload_off\":\"OFF\"",
+                base, dev, e.entity, e.state_key);
+            break;
+    }
+    if (e.device_class) add(",\"device_class\":\"%s\"", e.device_class);
+    if (e.icon) add(",\"icon\":\"%s\"", e.icon);
+    if (e.diagnostic) add(",\"entity_category\":\"diagnostic\"");
+    add(",\"device\":{\"identifiers\":[\"visioncam_%s\"],"
+        "\"name\":\"VisionCam Pro %s\",\"manufacturer\":\"VisionCam\","
+        "\"model\":\"ESP32-CAM (AI-Thinker)\",\"sw_version\":\"%s\"}}",
+        dev, dev, "0.1.0-phase1");
+
+    if (!ok) {
+        ESP_LOGE(TAG, "HA discovery config for %s exceeds %u B - not sent",
+                 e.entity, static_cast<unsigned>(kHaPayloadMax));
+        g_status.dropped++;
+    } else if (esp_mqtt_client_enqueue(g_client, topic, p, static_cast<int>(n),
+                                       1, /*retain=*/1, /*store=*/true) < 0) {
+        g_status.dropped++;
+    } else {
+        g_status.published++;
+    }
+    heap_caps_free(p);
+}
+
+static const HaEntity kHaEntities[] = {
+    {HaKind::BinarySensor, "motion", "Motion", "motion_detected", "motion",
+     nullptr, nullptr, false},
+    {HaKind::BinarySensor, "camera", "Camera", "camera_online", "connectivity",
+     "mdi:camera", nullptr, true},
+    {HaKind::BinarySensor, "recording", "Recording", "recording_active",
+     "running", "mdi:record-rec", nullptr, false},
+    {HaKind::BinarySensor, "sd", "SD card", "sd_mounted", nullptr,
+     "mdi:micro-sd", nullptr, true},
+    {HaKind::Sensor, "storage_used", "Storage used", "storage_used_pct",
+     nullptr, "mdi:harddisk", "%", true},
+    {HaKind::Sensor, "wifi_rssi", "Wi-Fi signal", "wifi_rssi",
+     "signal_strength", nullptr, "dBm", true},
+    {HaKind::Button, "snapshot", "Take snapshot", nullptr, nullptr,
+     "mdi:camera-plus", nullptr, false},
+    {HaKind::Switch, "flash_led", "Flash LED", "flash_led", nullptr,
+     "mdi:flashlight", nullptr, false},
+};
+
+// Publish the full entity set. Called on connect and whenever Home
+// Assistant announces itself online on <ha_prefix>/status.
 static void haPublishDiscovery() {
     if (!g_config.ha_discovery) return;
-    haPublishOne("binary_sensor", "motion", "Motion detected",
-                 "motion_detected", "motion", "mdi:run");
-    haPublishOne("binary_sensor", "camera", "Camera online",
-                 "camera_online", "connectivity", "mdi:camera");
-    haPublishOne("binary_sensor", "recording", "Recording active",
-                 "recording_active", nullptr, "mdi:record-rec");
-    haPublishOne("binary_sensor", "sd", "SD mounted",
-                 "sd_mounted", nullptr, "mdi:micro-sd");
-    haPublishOne("sensor", "storage_used", "Storage used", "storage_used_pct",
-                 nullptr, "mdi:harddisk");
-    haPublishOne("sensor", "wifi_rssi", "Wi-Fi RSSI", "wifi_rssi",
-                 "signal_strength", "mdi:wifi");
-    haPublishOne("button", "snapshot", "Take snapshot", nullptr, nullptr,
-                 "mdi:camera-plus");
-    haPublishOne("switch", "flash_led", "Flash LED", "flash_led", nullptr,
-                 "mdi:led-on");
+    for (const HaEntity& e : kHaEntities) haPublishEntity(e);
     g_status.ha_discovery_published = true;
 }
+
+static int wifiRssi() {
+    int rssi = 0;
+    if (esp_wifi_sta_get_rssi(&rssi) != ESP_OK) return 0;
+    return rssi;
+}
+
+// Commands from Home Assistant are flagged by the esp-mqtt event handler
+// and executed by the worker task, so the MQTT client task never blocks on
+// the camera or the SD card.
+static std::atomic<bool> g_cmd_snapshot{false};
+static std::atomic<int> g_cmd_flash{-1};   // -1 none, 0 off, 1 on
 
 // The device state object — one JSON blob HA reads as the sensor set.
 static void publishFullState() {
@@ -244,14 +343,16 @@ static void publishFullState() {
                   "{\"camera_online\":true,\"sd_mounted\":%s,"
                   "\"motion_detected\":%s,\"recording_active\":%s,"
                   "\"storage_used_pct\":%u,\"storage_free_bytes\":%llu,"
-                  "\"storage_media\":%u,\"uptime_s\":%u,\"flash_led\":false}",
+                  "\"storage_media\":%u,\"uptime_s\":%u,\"flash_led\":%s,"
+                  "\"wifi_rssi\":%d}",
                   st.mounted ? "true" : "false",
                   g_motion_active_flag ? "true" : "false",
                   g_recording_active_flag ? "true" : "false",
                   static_cast<unsigned int>(pct),
                   static_cast<unsigned long long>(st.free_bytes),
                   static_cast<unsigned int>(st.media_count),
-                  static_cast<unsigned int>(uptimeMs() / 1000u));
+                  static_cast<unsigned int>(uptimeMs() / 1000u),
+                  sdFlashLedEnabled() ? "true" : "false", wifiRssi());
     publishState("state", payload, 1, /*retain=*/true);
 }
 
@@ -307,6 +408,28 @@ static void mqttEventHandler(void* args, esp_event_base_t base,
 static char g_conn_uri[192] = {};
 static char g_conn_user[64] = {};
 static char g_conn_pass[128] = {};
+
+// Executes Home Assistant commands in the worker (priority 1) context.
+static void runPendingCommands() {
+    bool changed = false;
+    if (g_cmd_snapshot.exchange(false)) {
+        char id[32] = {};
+        const esp_err_t err = snapshotCaptureManual(id, sizeof(id));
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "HA snapshot command failed: %s", esp_err_to_name(err));
+        }
+        changed = true;  // media count changed
+    }
+    const int flash = g_cmd_flash.exchange(-1);
+    if (flash >= 0) {
+        const esp_err_t err = sdFlashLedSet(flash == 1);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "HA flash command failed: %s", esp_err_to_name(err));
+        }
+        changed = true;
+    }
+    if (changed) publishFullState();
+}
 
 static void mqttWorkerTask(void* /*param*/) {
     uint32_t backoff_ms = 1000;
@@ -416,6 +539,7 @@ static void mqttWorkerTask(void* /*param*/) {
         }
 
         if (g_connected.load()) {
+            runPendingCommands();
             // Idle; the queue wakes us every 250 ms so latency stays low.
             vTaskDelay(pdMS_TO_TICKS(250));
             continue;
@@ -434,6 +558,46 @@ static void mqttWorkerTask(void* /*param*/) {
 
 // ---- esp-mqtt glue ----------------------------------------------------------
 
+// Incoming topics: <base>/<id>/cmd/{snapshot,flash_led} and <ha>/status.
+// Topic/data are NOT NUL-terminated; copy into bounded buffers. Only
+// complete (non-fragmented) messages are considered - commands are tiny.
+static void handleIncoming(const esp_mqtt_event_t* event) {
+    if (event->topic_len <= 0 || event->current_data_offset != 0 ||
+        event->data_len != event->total_data_len) {
+        return;
+    }
+    char topic[192];
+    char data[16];
+    if (static_cast<size_t>(event->topic_len) >= sizeof(topic)) return;
+    std::memcpy(topic, event->topic, event->topic_len);
+    topic[event->topic_len] = '\0';
+    const size_t dlen = std::min(static_cast<size_t>(event->data_len),
+                                 sizeof(data) - 1);
+    std::memcpy(data, event->data, dlen);
+    data[dlen] = '\0';
+
+    char expect[192];
+    std::snprintf(expect, sizeof(expect), "%s/status", g_config.ha_prefix.c_str());
+    if (std::strcmp(topic, expect) == 0) {
+        if (std::strcmp(data, "online") == 0) {
+            haPublishDiscovery();   // HA restarted: re-announce
+            publishFullState();
+        }
+        return;
+    }
+    std::snprintf(expect, sizeof(expect), "%s/%s/cmd/",
+                  g_config.base_topic.c_str(), mqttManagerDeviceId());
+    const size_t plen = std::strlen(expect);
+    if (std::strncmp(topic, expect, plen) != 0) return;
+    const char* cmd = topic + plen;
+    if (std::strcmp(cmd, "snapshot") == 0) {
+        g_cmd_snapshot.store(true);
+    } else if (std::strcmp(cmd, "flash_led") == 0) {
+        if (std::strcmp(data, "ON") == 0) g_cmd_flash.store(1);
+        else if (std::strcmp(data, "OFF") == 0) g_cmd_flash.store(0);
+    }
+}
+
 // esp-mqtt event handler (called from the MQTT task, not a camera task).
 static void mqttEventHandler(void* /*args*/, esp_event_base_t /*base*/,
                              int32_t /*id*/, void* data) {
@@ -447,8 +611,22 @@ static void mqttEventHandler(void* /*args*/, esp_event_base_t /*base*/,
             g_status.last_error.clear();
             // Availability retained, then discovery + a full state read.
             publishState("availability", "online", 1, true);
+            {
+                char sub[192];
+                std::snprintf(sub, sizeof(sub), "%s/%s/cmd/+",
+                              g_config.base_topic.c_str(), mqttManagerDeviceId());
+                esp_mqtt_client_subscribe(event->client, sub, 1);
+                if (g_config.ha_discovery) {
+                    std::snprintf(sub, sizeof(sub), "%s/status",
+                                  g_config.ha_prefix.c_str());
+                    esp_mqtt_client_subscribe(event->client, sub, 1);
+                }
+            }
             haPublishDiscovery();
             publishFullState();
+            break;
+        case MQTT_EVENT_DATA:
+            handleIncoming(event);
             break;
         case MQTT_EVENT_DISCONNECTED:
             g_connected = false;
@@ -641,7 +819,9 @@ esp_err_t mqttManagerInit() {
         }
     }
 
-    g_queue = xQueueCreate(kMqttQueue, sizeof(MqttMsg));
+    // ~11 KB of message slots: keep them out of scarce internal RAM.
+    g_queue = xQueueCreateWithCaps(kMqttQueue, sizeof(MqttMsg),
+                                   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (g_queue == nullptr) return ESP_ERR_NO_MEM;
 
     g_status.enabled = g_config.enabled;
@@ -653,7 +833,7 @@ esp_err_t mqttManagerInit() {
     if (g_task == nullptr &&
         xTaskCreate(mqttWorkerTask, "vc_mqtt", VC_STACK_MQTT, nullptr,
                     VC_PRIO_MQTT, &g_task) != pdPASS) {
-        vQueueDelete(g_queue);
+        vQueueDeleteWithCaps(g_queue);
         g_queue = nullptr;
         return ESP_ERR_NO_MEM;
     }
@@ -682,7 +862,7 @@ esp_err_t mqttManagerShutdown() {
         g_task = nullptr;
     }
     if (g_queue != nullptr) {
-        vQueueDelete(g_queue);
+        vQueueDeleteWithCaps(g_queue);
         g_queue = nullptr;
     }
     return ESP_OK;
