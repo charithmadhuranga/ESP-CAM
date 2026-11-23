@@ -102,3 +102,17 @@ CONFIG_FREERTOS_USE_TRACE_FACILITY=y
 # holding one, the old limit caused ERR_CONNECTION_RESET under API polling.
 # kHttpMaxOpenSockets (web_server.h) = 10 stays below the new limit of 13.
 CONFIG_LWIP_MAX_SOCKETS=16
+
+# --- Internal RAM budget -----------------------------------------------------
+# Measured 2026-11-23: with Wi-Fi up, internal heap fell to ~31 KB free
+# (resource monitor HEAP LOW), and recording download/playback failed on
+# hardware - lwIP send() returned EAGAIN until send_wait_timeout, and SDMMC
+# could not allocate its DMA bounce buffer ("allocate_dma_buf: not enough
+# mem"). PSRAM has ~2.9 MB free, so move what can safely live there:
+#  - Wi-Fi/lwIP dynamic buffers (the standard ESP32-CAM setting);
+#  - mbedTLS allocations (MQTT/HTTPS integrations; auth's PBKDF2 is tiny);
+#  - plain malloc() >= 4 KB (was 16 KB). DMA users (camera, SDMMC, our media
+#    buffer) request MALLOC_CAP_DMA/INTERNAL explicitly and are unaffected.
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=4096

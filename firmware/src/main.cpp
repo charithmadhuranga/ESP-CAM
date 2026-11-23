@@ -36,6 +36,7 @@
 #include "http_upload_storage_backend.h"   // Phase 8: network storage backend
 #include "snapshot_manager.h"
 #include "recording_manager.h"
+#include "playback.h"
 #include "motion_manager.h"
 #include "mqtt_manager.h"     // Phase 7: integrations worker (fail-soft)
 // timelapse_manager.h / ai_manager.h are intentionally NOT included:
@@ -350,6 +351,11 @@ extern "C" void app_main(void) {
             ESP_LOGE(TAG, "recording manager init FAILED: %s", esp_err_to_name(recErr));
         } else {
             ESP_LOGI(TAG, "recording manager OK");
+            // Playback was never initialised, so every ?action=play request
+            // failed with "playback start failed".
+            if (visioncam::playbackManagerInit() != ESP_OK) {
+                ESP_LOGE(TAG, "playback manager init FAILED");
+            }
         }
     } else {
         ESP_LOGW(TAG, "recording manager skipped — storage unavailable");

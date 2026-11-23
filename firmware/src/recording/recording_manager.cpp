@@ -20,6 +20,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 
@@ -72,17 +73,34 @@ static char g_cur_final_path[128] = {};
 static FILE* g_cur_file = nullptr;
 static uint32_t g_cur_start_time = 0;
 static uint32_t g_cur_frame_count = 0;
-static uint32_t g_cur_movi_size = 0;
 static uint32_t g_cur_width = 0;
 static uint32_t g_cur_height = 0;
 static uint32_t g_cur_category = 0;   // 0=continuous, 1=manual, 2=event
 static bool g_cur_event_marked = false;
+static uint64_t g_cur_first_frame_us = 0;  // esp_timer, first frame written
+static uint64_t g_cur_last_frame_us = 0;   // esp_timer, last frame written
+static uint32_t g_cur_movi_payload = 0;    // bytes of 00dc chunks written
+static uint32_t g_cur_max_frame = 0;       // largest JPEG in this segment
+// idx1 chunk (8 B header + one 16 B entry per frame), PSRAM, bounded by
+// kAviMaxFramesPerSegment (rotation forces a new segment at the cap).
 static uint8_t* g_cur_idx1_psram = nullptr;
-static uint32_t g_cur_idx1_count = 0;
 
-// Staging buffer for the writer task (8 KB, sector-aligned):
-static uint8_t g_cur_stage[kAviStageBytes];
-static uint32_t g_cur_stage_offset = 0;
+// Per-frame JPEG copy (PSRAM) so the lease is released before any SD I/O
+// (frame_manager.h copy pattern). Grown on demand, bounded by
+// kRecFrameMaxBytes; a larger frame is dropped and counted.
+constexpr uint32_t kRecFrameMaxBytes = 400 * 1024;  // > UXGA JPEG capacity
+static uint8_t* g_frame_buf = nullptr;
+static uint32_t g_frame_buf_cap = 0;
+static uint32_t g_frames_dropped_oversize = 0;
+
+// Serializes segment open/write/close between the writer task and the
+// HTTP/API callers (start/stop), so a stop can never close the file while
+// a frame write is in flight.
+static SemaphoreHandle_t g_seg_mutex = nullptr;
+struct SegLock {
+    SegLock() { xSemaphoreTake(g_seg_mutex, portMAX_DELAY); }
+    ~SegLock() { xSemaphoreGive(g_seg_mutex); }
+};
 
 // Recording index (in-memory cache, bounded):
 static RecordingInfo g_rec_index[kRecordingMaxSegments] = {};
@@ -281,6 +299,10 @@ static esp_err_t loadRecordingIndex() {
                     jsonU32Field(line, "width", &info.width) &&
                     jsonU32Field(line, "height", &info.height) &&
                     jsonU32Field(line, "fps", &info.fps);
+                // Every row that names an ID reserves it - including rows
+                // ignored below - so a new recording can never reuse the
+                // ID (and file name) of one already on the card.
+                if (id_value >= g_rec_next_id) g_rec_next_id = id_value + 1;
                 uint32_t file_size = 0;
                 if (valid && storageStatFile(info.path, &file_size, nullptr) ==
                                  ESP_OK &&
@@ -292,8 +314,6 @@ static esp_err_t loadRecordingIndex() {
                     info.recovered = recovered != nullptr;
                     info.event_marked = event_marked != nullptr;
                     addRecordingIndexEntry(info);
-                    if (id_value >= g_rec_next_id)
-                        g_rec_next_id = id_value + 1;
                 } else {
                     ESP_LOGW(TAG, "ignoring invalid/stale recording index row");
                 }
@@ -312,7 +332,11 @@ static esp_err_t loadRecordingIndex() {
 
 // ---- Segment file operations ---------------------------------------------
 
-static esp_err_t segmentOpen(const char* rec_id, uint32_t category,
+// rec_id is in/out: if a file for the requested ID already exists on the
+// card (e.g. left by an earlier boot whose index row was lost), the next
+// free ID is allocated into the buffer instead (bounded attempts).
+static esp_err_t segmentOpen(char* rec_id, size_t rec_id_cap,
+                             uint32_t category,
                              bool event_marked, uint32_t width,
                              uint32_t height, uint32_t start_time) {
     if (g_cur_file != nullptr) return ESP_ERR_INVALID_STATE;
@@ -329,59 +353,71 @@ static esp_err_t segmentOpen(const char* rec_id, uint32_t category,
     std::snprintf(date_dir, sizeof(date_dir), "%04d/%02d/%02d",
                   tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
 
-    int n = std::snprintf(g_cur_temp_path, sizeof(g_cur_temp_path),
-                          "%s/%s/%s.tmp", cat_dir, date_dir, rec_id);
-    if (n < 0 || static_cast<size_t>(n) >= sizeof(g_cur_temp_path))
-        return ESP_ERR_INVALID_SIZE;
+    constexpr int kMaxIdAttempts = 32;
+    for (int attempt = 0;; ++attempt) {
+        int n = std::snprintf(g_cur_temp_path, sizeof(g_cur_temp_path),
+                              "%s/%s/%s.tmp", cat_dir, date_dir, rec_id);
+        if (n < 0 || static_cast<size_t>(n) >= sizeof(g_cur_temp_path))
+            return ESP_ERR_INVALID_SIZE;
+        n = std::snprintf(g_cur_final_path, sizeof(g_cur_final_path),
+                          "%s/%s/%s.avi", cat_dir, date_dir, rec_id);
+        if (n < 0 || static_cast<size_t>(n) >= sizeof(g_cur_final_path))
+            return ESP_ERR_INVALID_SIZE;
+        uint32_t sz = 0;
+        const bool taken =
+            storageStatFile(g_cur_final_path, &sz, nullptr) == ESP_OK ||
+            storageStatFile(g_cur_temp_path, &sz, nullptr) == ESP_OK;
+        if (!taken) break;
+        ESP_LOGW(TAG, "segment open: %s already on card - skipping ID", rec_id);
+        if (attempt + 1 >= kMaxIdAttempts) return ESP_ERR_INVALID_STATE;
+        const esp_err_t id_err = allocateRecordingId(rec_id, rec_id_cap);
+        if (id_err != ESP_OK) return id_err;
+    }
 
-    n = std::snprintf(g_cur_final_path, sizeof(g_cur_final_path),
-                      "%s/%s/%s.avi", cat_dir, date_dir, rec_id);
-    if (n < 0 || static_cast<size_t>(n) >= sizeof(g_cur_final_path))
-        return ESP_ERR_INVALID_SIZE;
-
-    // Write provisional header (reserves space at offset 0):
+    // Provisional header (sizes 0); rebuilt in full at close.
+    AviStreamInfo avi{};
+    avi.width = width;
+    avi.height = height;
+    avi.nominal_fps = g_config.capture_fps;
     uint8_t header[kAviHeaderBytes];
-    size_t hdr_len = aviBuildHeader(width, height, g_config.capture_fps,
-                                    header, sizeof(header));
-    if (hdr_len == 0) return ESP_ERR_INVALID_SIZE;
+    if (aviBuildHeader(avi, header, sizeof(header)) != kAviHeaderBytes)
+        return ESP_ERR_INVALID_SIZE;
 
-    // Allocate PSRAM index buffer:
     g_cur_idx1_psram = static_cast<uint8_t*>(
         heap_caps_malloc(kAviIndexMaxBytes, MALLOC_CAP_SPIRAM));
     if (g_cur_idx1_psram == nullptr) return ESP_ERR_NO_MEM;
-    // Write idx1 header (8 bytes) at start of PSRAM buffer:
-    std::memcpy(g_cur_idx1_psram, "idx1", 4);
-    std::uint32_t zero = 0;
-    std::memcpy(g_cur_idx1_psram + 4, &zero, 4);  // size patched at close
 
-    // Write temp file with provisional header:
-    esp_err_t err = storageWriteFile(g_cur_temp_path, header, hdr_len);
+    esp_err_t err = storageWriteFile(g_cur_temp_path, header, sizeof(header));
     if (err != ESP_OK) {
         heap_caps_free(g_cur_idx1_psram);
         g_cur_idx1_psram = nullptr;
         return err;
     }
 
-    // Open file for appending (after the header):
-    g_cur_file = std::fopen(g_cur_temp_path, "a");
-    if (g_cur_file == nullptr) {
+    // "r+b", NOT "a": append mode makes every write land at EOF, which
+    // silently turned the header rewrite at close into an append.
+    g_cur_file = std::fopen(g_cur_temp_path, "r+b");
+    if (g_cur_file == nullptr ||
+        std::fseek(g_cur_file, 0, SEEK_END) != 0) {
+        if (g_cur_file != nullptr) std::fclose(g_cur_file);
+        g_cur_file = nullptr;
         heap_caps_free(g_cur_idx1_psram);
         g_cur_idx1_psram = nullptr;
         return ESP_ERR_NOT_FOUND;
     }
-    std::fseek(g_cur_file, static_cast<long>(hdr_len), SEEK_SET);
 
     std::strncpy(g_cur_rec_id, rec_id, sizeof(g_cur_rec_id) - 1);
     g_cur_rec_id[sizeof(g_cur_rec_id) - 1] = '\0';
     g_cur_start_time = start_time;
     g_cur_frame_count = 0;
-    g_cur_movi_size = hdr_len;  // include header size
     g_cur_width = width;
     g_cur_height = height;
     g_cur_category = category;
     g_cur_event_marked = event_marked;
-    g_cur_idx1_count = 0;
-    g_cur_stage_offset = 0;
+    g_cur_first_frame_us = 0;
+    g_cur_last_frame_us = 0;
+    g_cur_movi_payload = 0;
+    g_cur_max_frame = 0;
 
     // Record in index as "writing":
     RecordingInfo info{};
@@ -403,113 +439,137 @@ static esp_err_t segmentOpen(const char* rec_id, uint32_t category,
     return ESP_OK;
 }
 
-static esp_err_t segmentWriteChunk(const uint8_t* data, uint32_t len,
-                                   uint32_t /*offset_in_movi*/) {
+// Appends one JPEG as one '00dc' chunk and records its idx1 entry.
+static esp_err_t segmentWriteFrame(const uint8_t* jpeg, uint32_t len,
+                                   uint64_t ts_us) {
     if (g_cur_file == nullptr) return ESP_ERR_INVALID_STATE;
+    if (g_cur_frame_count >= kAviMaxFramesPerSegment)
+        return ESP_ERR_INVALID_SIZE;
 
-    // Build 00dc chunk:
-    uint8_t chunk[kChunkHeaderBytes + kAviStageBytes];
-    size_t chunk_len =
-        aviBuild00dcChunk(data, len, chunk, sizeof(chunk));
-    if (chunk_len == 0) return ESP_ERR_INVALID_SIZE;
-
-    if (std::fwrite(chunk, 1, chunk_len, g_cur_file) != chunk_len)
-        return ESP_ERR_INVALID_STATE;
-
-    g_cur_movi_size += chunk_len;
-
-    // Update idx1 entry in PSRAM:
-    if (g_cur_idx1_count < kAviMaxFramesPerSegment) {
-        uint8_t* entry =
-            g_cur_idx1_psram + 8 + g_cur_idx1_count * kIdxEntryBytes;
-        aviBuildIdxEntry(data, g_cur_movi_size - chunk_len, len, entry);
-        g_cur_idx1_count++;
+    uint8_t ch[kChunkHeaderBytes];
+    aviBuildFrameChunkHeader(len, ch);
+    const uint8_t pad = 0;
+    const bool needs_pad = aviPadEven(len) != len;
+    if (std::fwrite(ch, 1, sizeof(ch), g_cur_file) != sizeof(ch) ||
+        std::fwrite(jpeg, 1, len, g_cur_file) != len ||
+        (needs_pad && std::fwrite(&pad, 1, 1, g_cur_file) != 1)) {
+        return ESP_FAIL;
     }
 
+    aviBuildIdxEntry(4 + g_cur_movi_payload, len,
+                     g_cur_idx1_psram + kChunkHeaderBytes +
+                         g_cur_frame_count * kIdxEntryBytes);
+    g_cur_movi_payload += kChunkHeaderBytes + aviPadEven(len);
+    if (len > g_cur_max_frame) g_cur_max_frame = len;
+    if (g_cur_frame_count == 0) g_cur_first_frame_us = ts_us;
+    g_cur_last_frame_us = ts_us;
     g_cur_frame_count++;
     return ESP_OK;
 }
 
+// Drops the current segment's index row (it never became a playable file).
+static void removeCurrentIndexRow() {
+    for (uint32_t i = 0; i < g_rec_index_count; i++) {
+        if (std::strcmp(g_rec_index[i].recording_id, g_cur_rec_id) == 0) {
+            g_rec_index[i] = g_rec_index[g_rec_index_count - 1];
+            std::memset(&g_rec_index[g_rec_index_count - 1], 0,
+                        sizeof(g_rec_index[0]));
+            g_rec_index_count--;
+            break;
+        }
+    }
+}
+
+// Releases the per-segment state after the file is closed (or abandoned).
+static void segmentReset() {
+    g_cur_rec_id[0] = '\0';
+    g_cur_temp_path[0] = '\0';
+    g_cur_final_path[0] = '\0';
+    heap_caps_free(g_cur_idx1_psram);
+    g_cur_idx1_psram = nullptr;
+    g_cur_frame_count = 0;
+    g_cur_movi_payload = 0;
+    g_cur_max_frame = 0;
+}
+
 static esp_err_t segmentClose() {
     if (g_cur_file == nullptr) {
-        ESP_LOGE(TAG, "segment close: g_cur_file is null");
+        ESP_LOGE(TAG, "segment close: no open segment");
         return ESP_ERR_INVALID_STATE;
     }
-    ESP_LOGI(TAG, "segment close: starting, frames=%u movi_size=%u",
-             g_cur_frame_count, g_cur_movi_size);
 
-    // Finalize header:
-    uint32_t now = wallClockNow();
-    uint32_t duration = (now >= g_cur_start_time) ? (now - g_cur_start_time) : 0;
-    uint32_t measured_fps = (duration > 0)
-        ? (g_cur_frame_count * 1000u / duration)
+    // Duration from frame timestamps (ms precision). The span between the
+    // first and last frame covers frames-1 intervals; add one average
+    // interval so frames / duration is the true rate.
+    const uint32_t frames = g_cur_frame_count;
+    uint32_t duration_ms = 0;
+    if (frames > 1 && g_cur_last_frame_us > g_cur_first_frame_us) {
+        const uint64_t span_ms =
+            (g_cur_last_frame_us - g_cur_first_frame_us) / 1000u;
+        duration_ms = static_cast<uint32_t>(span_ms + span_ms / (frames - 1));
+    }
+    const uint32_t fps = (duration_ms > 0)
+        ? static_cast<uint32_t>((frames * 1000ull + duration_ms / 2) / duration_ms)
         : g_config.capture_fps;
 
-    AviHeaderFields fields{};
-    fields.dwMicroSecPerFrame = measured_fps ? (1000000u / measured_fps) : 0;
-    fields.dwTotalFrames = g_cur_frame_count;
-    fields.dwWidth = g_cur_width;
-    fields.dwHeight = g_cur_height;
-    fields.dwRate = measured_fps;
-    fields.dwLength = g_cur_frame_count;
-    fields.dwSuggestedBufferSize = g_cur_width * g_cur_height;
+    AviStreamInfo avi{};
+    avi.width = g_cur_width;
+    avi.height = g_cur_height;
+    avi.frames = frames;
+    avi.duration_ms = duration_ms;
+    avi.nominal_fps = g_config.capture_fps;
+    avi.max_frame_bytes = g_cur_max_frame;
+    avi.movi_payload_bytes = g_cur_movi_payload;
+    uint8_t header[kAviHeaderBytes];
+    aviBuildHeader(avi, header, sizeof(header));
+    aviBuildIdx1Header(frames, g_cur_idx1_psram);
+    const size_t idx1_len = kChunkHeaderBytes + frames * kIdxEntryBytes;
+    const uint32_t file_bytes = aviFileBytes(g_cur_movi_payload, frames);
 
-    uint8_t header_patch[kAviHeaderBytes];
-    // Patch idx1 size in PSRAM buffer:
-    std::uint32_t idx1_size = g_cur_idx1_count * kIdxEntryBytes;
-    std::memcpy(g_cur_idx1_psram + 4, &idx1_size, 4);
-    size_t hdr_size = aviFinalizeHeader(fields, g_cur_movi_size,
-                                        header_patch, sizeof(header_patch),
-                                        g_cur_idx1_psram, kAviIndexMaxBytes);
-    if (hdr_size == 0) {
-        std::fclose(g_cur_file);
-        g_cur_file = nullptr;
-        return ESP_ERR_INVALID_SIZE;
-    }
-
-    // Rewrite header at offset 0:
-    std::fseek(g_cur_file, 0, SEEK_SET);
-    if (std::fwrite(header_patch, 1, hdr_size, g_cur_file) != hdr_size) {
-        ESP_LOGE(TAG, "segment close: header write failed");
-        std::fclose(g_cur_file);
-        g_cur_file = nullptr;
-        return ESP_ERR_INVALID_STATE;
-    }
-    ESP_LOGI(TAG, "segment close: header written (%u bytes)", hdr_size);
-
-    // Append idx1 index:
-    if (std::fwrite(g_cur_idx1_psram, 1, 8 + idx1_size, g_cur_file) !=
-        8 + idx1_size) {
-        ESP_LOGE(TAG, "segment close: idx1 write failed");
-        std::fclose(g_cur_file);
-        g_cur_file = nullptr;
-        return ESP_ERR_INVALID_STATE;
-    }
-    ESP_LOGI(TAG, "segment close: idx1 written (%u bytes)", 8 + idx1_size);
-
-    if (std::fclose(g_cur_file) != 0) {
-        ESP_LOGE(TAG, "segment close: fclose failed");
-        g_cur_file = nullptr;
-        return ESP_ERR_INVALID_STATE;
-    }
+    // idx1 at EOF, then the final header at offset 0.
+    bool ok = std::fseek(g_cur_file, 0, SEEK_END) == 0 &&
+              std::fwrite(g_cur_idx1_psram, 1, idx1_len, g_cur_file) == idx1_len &&
+              std::fseek(g_cur_file, 0, SEEK_SET) == 0 &&
+              std::fwrite(header, 1, sizeof(header), g_cur_file) == sizeof(header);
+    if (std::fclose(g_cur_file) != 0) ok = false;
     g_cur_file = nullptr;
-    ESP_LOGI(TAG, "segment close: fclose OK");
+    if (!ok) {
+        ESP_LOGE(TAG, "segment close: finalize write failed (%s left as .tmp)",
+                 g_cur_rec_id);
+        removeCurrentIndexRow();
+        persistRecordingIndex();
+        segmentReset();
+        return ESP_FAIL;
+    }
 
-    esp_err_t rename_err =
-        storageRenameFile(g_cur_temp_path, g_cur_final_path);
+    if (frames == 0) {
+        // Nothing captured: do not publish an empty, unplayable recording.
+        storageRemoveFile(g_cur_temp_path);
+        removeCurrentIndexRow();
+        ESP_LOGW(TAG, "segment close: %s had no frames - discarded",
+                 g_cur_rec_id);
+        segmentReset();
+        return persistRecordingIndex();
+    }
+
+    esp_err_t rename_err = storageRenameFile(g_cur_temp_path, g_cur_final_path);
     if (rename_err != ESP_OK) {
         ESP_LOGE(TAG, "segment close: failed to finalize recording file");
+        removeCurrentIndexRow();
+        persistRecordingIndex();
+        segmentReset();
         return rename_err;
     }
 
-    // Record in index as "ready":
+    const uint32_t duration_s = (duration_ms + 500u) / 1000u;
     for (uint32_t i = 0; i < g_rec_index_count; i++) {
         if (std::strcmp(g_rec_index[i].recording_id, g_cur_rec_id) == 0) {
-            g_rec_index[i].duration_s = duration;
-            g_rec_index[i].frame_count = g_cur_frame_count;
-            g_rec_index[i].size_bytes =
-                g_cur_movi_size + 8 + idx1_size;
-            g_rec_index[i].fps = measured_fps;
+            g_rec_index[i].duration_s = duration_s;
+            g_rec_index[i].frame_count = frames;
+            g_rec_index[i].size_bytes = file_bytes;
+            g_rec_index[i].fps = fps;
+            g_rec_index[i].width = g_cur_width;
+            g_rec_index[i].height = g_cur_height;
             std::strncpy(g_rec_index[i].status, "ready",
                          sizeof(g_rec_index[i].status) - 1);
             break;
@@ -521,94 +581,93 @@ static esp_err_t segmentClose() {
                  esp_err_to_name(index_err));
     }
 
-    ESP_LOGI(TAG, "segment close: %s (%u frames, %u bytes, %u fps, %u s)",
-             g_cur_rec_id, g_cur_frame_count,
-             static_cast<unsigned int>(g_cur_movi_size + 8 +
-                                       idx1_size),
-             measured_fps, duration);
-
-    // Reset current segment:
-    g_cur_rec_id[0] = '\0';
-    g_cur_temp_path[0] = '\0';
-    g_cur_final_path[0] = '\0';
-    heap_caps_free(g_cur_idx1_psram);
-    g_cur_idx1_psram = nullptr;
-    g_cur_movi_size = 0;
-    g_cur_idx1_count = 0;
-    g_cur_stage_offset = 0;
-
+    ESP_LOGI(TAG, "segment close: %s (%u frames, %u B, %u fps, %u ms, %ux%u)",
+             g_cur_rec_id, static_cast<unsigned>(frames),
+             static_cast<unsigned>(file_bytes), static_cast<unsigned>(fps),
+             static_cast<unsigned>(duration_ms),
+             static_cast<unsigned>(g_cur_width),
+             static_cast<unsigned>(g_cur_height));
+    segmentReset();
     return index_err;
 }
 
 // ---- Writer task ---------------------------------------------------------
 
+// Grows the PSRAM frame copy buffer to hold `need` bytes (bounded).
+static bool frameBufReserve(uint32_t need) {
+    if (need <= g_frame_buf_cap) return true;
+    if (need > kRecFrameMaxBytes) return false;
+    const uint32_t cap = std::min<uint32_t>((need + 16383u) & ~16383u,
+                                            kRecFrameMaxBytes);
+    uint8_t* p = static_cast<uint8_t*>(
+        heap_caps_malloc(cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (p == nullptr) return false;
+    heap_caps_free(g_frame_buf);
+    g_frame_buf = p;
+    g_frame_buf_cap = cap;
+    return true;
+}
+
 static void writerTask(void* /*param*/) {
     FrameLease lease{};
 
     while (true) {
-        // If not recording, park:
         if (g_state != RecordingState::Recording) {
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
+        if (!frameAcquire(g_sub_id, lease, 100)) continue;
 
-        // Acquire a frame lease (block up to 100 ms):
-        if (!frameAcquire(g_sub_id, lease, 100)) {
+        // Copy out and release the lease before any SD I/O (rule 9).
+        const uint32_t len = lease.len;
+        const uint64_t ts_us = lease.ts_us;
+        const uint16_t fw = lease.width;
+        const uint16_t fh = lease.height;
+        bool have_frame = false;
+        if (len > 0 && frameBufReserve(len)) {
+            have_frame = frameLeaseCopyTo(lease, g_frame_buf, g_frame_buf_cap) == ESP_OK;
+        } else if (len > 0) {
+            g_frames_dropped_oversize++;
+        }
+        frameRelease(lease);
+        if (!have_frame) continue;
+
+        SegLock lock;
+        if (g_state != RecordingState::Recording || g_cur_file == nullptr)
+            continue;  // stopped while we were copying
+
+        // Header dimensions come from the frames actually recorded, not
+        // the configured frame size (live view may have changed it).
+        if (g_cur_frame_count == 0 && fw > 0 && fh > 0) {
+            g_cur_width = fw;
+            g_cur_height = fh;
+        }
+
+        if (segmentWriteFrame(g_frame_buf, len, ts_us) != ESP_OK) {
+            ESP_LOGE(TAG, "frame write failed - closing segment");
+            segmentClose();
+            g_state = RecordingState::Idle;
             continue;
         }
 
-        // Copy JPEG to staging buffer, then release lease immediately:
-        if (lease.len > 0 && lease.len <= kAviStageBytes) {
-            // If staging buffer doesn't have room, flush first:
-            if (g_cur_stage_offset + lease.len > kAviStageBytes) {
-                if (g_cur_file != nullptr && g_cur_stage_offset > 0) {
-                    segmentWriteChunk(g_cur_stage, g_cur_stage_offset,
-                                      g_cur_movi_size);
-                }
-                g_cur_stage_offset = 0;
-            }
-            if (g_cur_file != nullptr) {
-                std::memcpy(g_cur_stage + g_cur_stage_offset, lease.data,
-                            lease.len);
-                g_cur_stage_offset += lease.len;
-            }
-        }
+        const uint32_t now = wallClockNow();
+        const uint32_t elapsed =
+            (now >= g_cur_start_time) ? (now - g_cur_start_time) : 0;
+        const bool rotate =
+            (g_config.segment_duration_s > 0 &&
+             elapsed >= g_config.segment_duration_s) ||
+            g_cur_frame_count >= kAviMaxFramesPerSegment;
+        if (!rotate) continue;
 
-        // Release lease immediately (never hold across I/O):
-        frameRelease(lease);
-
-        // Check if segment should rotate:
-        if (g_cur_file != nullptr) {
-            uint32_t now = wallClockNow();
-            uint32_t duration =
-                (now >= g_cur_start_time) ? (now - g_cur_start_time) : 0;
-            bool rotate = false;
-
-            // Duration cap:
-            if (g_config.segment_duration_s > 0 &&
-                duration >= g_config.segment_duration_s) {
-                rotate = true;
-            }
-            // Frame cap:
-            if (g_cur_frame_count >= kAviMaxFramesPerSegment) {
-                rotate = true;
-            }
-
-            if (rotate) {
-                segmentClose();
-                g_cur_stage_offset = 0;
-                // Re-open a new segment if continuous recording enabled:
-                if (g_config.enabled &&
-                    g_state == RecordingState::Recording) {
-                    char new_id[24] = {};
-                    if (allocateRecordingId(new_id, sizeof(new_id)) ==
-                        ESP_OK) {
-                        segmentOpen(new_id, g_cur_category, g_cur_event_marked,
-                                    g_cur_width, g_cur_height,
-                                    wallClockNow());
-                    }
-                }
-            }
+        // Segment boundary: close and keep recording into a new segment
+        // until the caller stops (manual/event) or forever (continuous).
+        segmentClose();
+        char new_id[24] = {};
+        if (allocateRecordingId(new_id, sizeof(new_id)) != ESP_OK ||
+            segmentOpen(new_id, sizeof(new_id), g_cur_category, g_cur_event_marked,
+                        g_cur_width, g_cur_height, wallClockNow()) != ESP_OK) {
+            ESP_LOGE(TAG, "segment rotate: could not open next segment");
+            g_state = RecordingState::Idle;
         }
     }
 }
@@ -653,6 +712,9 @@ esp_err_t recordingManagerInit(const RecordingConfig* config) {
     err = frameManagerSubscribe(&g_sub_id, "recorder");
     if (err != ESP_OK) return err;
 
+    if (g_seg_mutex == nullptr) g_seg_mutex = xSemaphoreCreateMutex();
+    if (g_seg_mutex == nullptr) return ESP_ERR_NO_MEM;
+
     // Create writer task:
     if (xTaskCreate(writerTask, "vc_writer", VC_STACK_WRITER, nullptr,
                     VC_PRIO_WRITER, &g_writer_task) != pdPASS) {
@@ -695,12 +757,17 @@ esp_err_t recordingManagerShutdown() {
         heap_caps_free(g_cur_idx1_psram);
         g_cur_idx1_psram = nullptr;
     }
+    heap_caps_free(g_frame_buf);
+    g_frame_buf = nullptr;
+    g_frame_buf_cap = 0;
     return ESP_OK;
 }
 
 esp_err_t recordingManagerStartManual(char* out_id, size_t out_cap) {
-    if (g_state != RecordingState::Idle) return ESP_ERR_INVALID_STATE;
     if (out_id == nullptr || out_cap < 24) return ESP_ERR_INVALID_ARG;
+    if (g_seg_mutex == nullptr) return ESP_ERR_INVALID_STATE;
+    SegLock lock;
+    if (g_state != RecordingState::Idle) return ESP_ERR_INVALID_STATE;
 
     esp_err_t err = allocateRecordingId(out_id, out_cap);
     if (err != ESP_OK) return err;
@@ -708,7 +775,7 @@ esp_err_t recordingManagerStartManual(char* out_id, size_t out_cap) {
     uint32_t now = wallClockNow();
     uint32_t w, h;
     framesizeToDimensions(g_config.frame_size, &w, &h);
-    err = segmentOpen(out_id, 1, false,   // category=manual, not event-marked
+    err = segmentOpen(out_id, out_cap, 1, false,   // manual, not event-marked
                       w, h, now);
     if (err != ESP_OK) return err;
 
@@ -717,10 +784,12 @@ esp_err_t recordingManagerStartManual(char* out_id, size_t out_cap) {
 }
 
 esp_err_t recordingManagerStop() {
+    if (g_seg_mutex == nullptr) return ESP_ERR_INVALID_STATE;
+    SegLock lock;
     if (g_state != RecordingState::Recording) return ESP_ERR_INVALID_STATE;
-    esp_err_t err = segmentClose();
     g_state = RecordingState::Idle;
-    return err;
+    if (g_cur_file == nullptr) return ESP_OK;  // already closed by the writer
+    return segmentClose();
 }
 
 esp_err_t recordingManagerState(RecordingState* out) {

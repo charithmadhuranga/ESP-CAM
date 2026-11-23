@@ -17,6 +17,32 @@ tagged once Phase 9 release criteria pass.
 
 ### Fixed
 
+- **Recorded videos were unplayable (2026-11-23).** Players reported an
+  unrecognised format, and in-browser playback always failed. Causes, all
+  fixed and verified on the board:
+  - the AVI header was patched at wrong offsets (biCompression overwritten
+    with the frame height, dwStreams = fps, strl/movi LIST sizes never set)
+    — the header is now rebuilt in full from final values;
+  - the segment file was opened in append mode, so the final header was
+    appended at EOF instead of written at offset 0;
+  - frames larger than 8 KB (most VGA frames) were silently dropped and
+    smaller ones were packed several per `00dc` chunk — now one JPEG per
+    chunk, copied through a bounded PSRAM buffer;
+  - fps was computed from wall-clock seconds (1000x too high) — now from
+    frame timestamps;
+  - `playbackManagerInit()` was never called, so `?action=play` always
+    failed;
+  - recording IDs restarted at 1 when the index had a stale row, colliding
+    with existing files (close failed, recording stuck "writing");
+  - download/playback ran inside the httpd task, freezing the UI for the
+    whole transfer — both now run on a `vc_media` async worker (one at a
+    time, 503 when busy), and the `Content-Disposition` header no longer
+    points at a destroyed temporary.
+  Internal RAM was down to ~31 KB free, which made SDMMC DMA bounce buffers
+  and lwIP sends fail mid-transfer; Wi-Fi/lwIP and mbedTLS buffers now use
+  PSRAM and `SPIRAM_MALLOC_ALWAYSINTERNAL` is 4096 (`sdkconfig.defaults`).
+  Recordings made before this fix were written corrupt and stay unplayable.
+  New host test: `test/host/run_avi_test.sh` (ffprobe/ffmpeg validated).
 - **HTTP connection limits (2026-11-23).** `CONFIG_LWIP_MAX_SOCKETS` raised
   to 16 and the HTTP server's `max_open_sockets` from 7 to 10, so browser
   parallel connections plus the live stream no longer cause

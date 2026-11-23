@@ -27,6 +27,7 @@
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "lwip/sockets.h"
 
 #include "auth.h"
 #include "camera_manager.h"
@@ -1908,141 +1909,216 @@ static esp_err_t recordingMetadataHandler(httpd_req_t* req) {
     return httpReplyOk(req, rid, payload);
 }
 
-// --- GET /recordings/{id}/download --- download AVI bytes
-static esp_err_t recordingDownloadHandler(httpd_req_t* req) {
-    uint32_t rid = httpNextRequestId();
+// --- Recording download + playback (async media worker) -------------------
+// Both stream a whole file for seconds to minutes. Running that inside the
+// httpd task blocked every other request (the UI froze during playback), so
+// the handlers only validate, then hand the request to one persistent
+// worker via httpd_req_async_handler_begin - the live-stream pattern.
+// Bounded: one job at a time (AGENTS rule 12); a second request while a
+// transfer runs gets 503 PlaybackBusy instead of queueing.
+
+enum class MediaJobKind : uint8_t { Download, Play };
+struct MediaJob {
+    MediaJobKind kind = MediaJobKind::Download;
+    httpd_req_t* req = nullptr;
+    uint32_t rid = 0;
+    char id[32] = {};
+    uint32_t start_frame = 0;
+    uint32_t start_ms = 0;
+};
+static MediaJob s_media_job;                        // guarded by s_media_busy
+static std::atomic<bool> s_media_busy{false};
+static TaskHandle_t s_media_worker = nullptr;
+// Internal DMA-capable RAM, allocated once at server start: the SDMMC host
+// cannot DMA into PSRAM, and a PSRAM destination made the driver allocate a
+// same-size internal bounce buffer per read, which failed on hardware
+// ("allocate_dma_buf: not enough mem") and stalled downloads mid-file.
+constexpr size_t kMediaChunkBytes = 8 * 1024;
+static uint8_t* s_media_buf = nullptr;
+
+// A transfer that fails after headers were sent cannot report an error;
+// close the connection so the browser sees a failed download instead of
+// waiting on a keep-alive socket that will never finish the body.
+static void mediaAbortConnection(httpd_req_t* req) {
+    const int fd = httpd_req_to_sockfd(req);
+    if (fd >= 0) httpd_sess_trigger_close(req->handle, fd);
+}
+
+// Small writes (chunk-size line, CRLF) otherwise wait on Nagle + the
+// client's delayed ACK, which capped downloads at ~19 KB/s on hardware.
+static void mediaSetNoDelay(httpd_req_t* req) {
+    const int fd = httpd_req_to_sockfd(req);
+    if (fd < 0) return;
+    int one = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+}
+
+static void recordingDownloadBody(const MediaJob& job) {
+    httpd_req_t* req = job.req;
+    RecordingInfo info{};
+    if (visioncam::recordingManagerLookup(job.id, &info) != ESP_OK ||
+        info.size_bytes == 0) {
+        httpReplyError(req, job.rid, ErrCode::NotFound, "recording not found");
+        return;
+    }
+    visioncam::StorageReadHandle reader{};
+    if (visioncam::storageOpenReadFile(info.path, &reader) != ESP_OK) {
+        httpReplyError(req, job.rid, ErrCode::NotFound,
+                       "recording file not found");
+        return;
+    }
+
+    // Header values must outlive the first send (httpd keeps the pointer).
+    char disposition[96];
+    std::snprintf(disposition, sizeof(disposition),
+                  "attachment; filename=\"%s.avi\"", info.recording_id);
+    httpd_resp_set_type(req, "video/x-msvideo");
+    httpd_resp_set_hdr(req, "Content-Disposition", disposition);
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    mediaSetNoDelay(req);
+
+    uint32_t remaining = info.size_bytes;
+    bool ok = true;
+    while (remaining > 0) {
+        size_t got = 0;
+        const size_t want = std::min<size_t>(remaining, kMediaChunkBytes);
+        if (visioncam::storageReadOpenFile(&reader, s_media_buf, want, &got) !=
+                ESP_OK || got == 0 || got > remaining) {
+            ESP_LOGE(TAG, "recording download: read failed before EOF");
+            ok = false;
+            break;
+        }
+        if (httpd_resp_send_chunk(req, reinterpret_cast<const char*>(s_media_buf),
+                                  static_cast<ssize_t>(got)) != ESP_OK) {
+            ok = false;  // client went away
+            break;
+        }
+        remaining -= static_cast<uint32_t>(got);
+    }
+
+    if (visioncam::storageCloseReadFile(&reader) != ESP_OK)
+        ESP_LOGE(TAG, "recording download: failed to close file");
+    if (ok) {
+        httpd_resp_send_chunk(req, nullptr, 0);
+    } else {
+        mediaAbortConnection(req);
+    }
+}
+
+static void recordingPlayBody(const MediaJob& job) {
+    httpd_req_t* req = job.req;
+    const esp_err_t err = visioncam::playbackStreamStart(
+        req, job.id, job.start_frame, job.start_ms);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "playback start failed for %s: %s", job.id,
+                 esp_err_to_name(err));
+        httpReplyError(req, job.rid,
+                       err == ESP_ERR_NOT_FOUND ? ErrCode::NotFound
+                                                : ErrCode::Internal,
+                       "playback start failed");
+        return;
+    }
+    mediaSetNoDelay(req);
+    for (;;) {
+        const PlaybackResult result = visioncam::playbackStreamFrame(req);
+        if (result == PlaybackResult::Stopped) break;
+        if (result != PlaybackResult::Ok) {
+            ESP_LOGW(TAG, "playback stream ended early (%s)", job.id);
+            visioncam::playbackStreamEnd(req);
+            mediaAbortConnection(req);  // client gone or read error
+            return;
+        }
+    }
+    visioncam::playbackStreamEnd(req);
+    httpd_resp_send_chunk(req, nullptr, 0);
+}
+
+static void mediaWorkerTask(void*) {
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (!s_media_busy.load()) continue;
+        if (s_media_job.kind == MediaJobKind::Download) {
+            recordingDownloadBody(s_media_job);
+        } else {
+            recordingPlayBody(s_media_job);
+        }
+        const esp_err_t err = httpd_req_async_handler_complete(s_media_job.req);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "media async request cleanup failed: %s",
+                     esp_err_to_name(err));
+        }
+        s_media_job = MediaJob{};
+        s_media_busy.store(false);
+    }
+}
+
+// Validates in the httpd task, then hands the request to the worker.
+static esp_err_t mediaSubmit(httpd_req_t* req, MediaJobKind kind) {
+    const uint32_t rid = httpNextRequestId();
     if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
     char qs[128] = {};
-    size_t qs_size = sizeof(qs);
-    if (httpd_req_get_url_query_str(req, qs, qs_size) != ESP_OK)
+    if (httpd_req_get_url_query_str(req, qs, sizeof(qs)) != ESP_OK)
         qs[0] = '\0';
-    char rec_id[32] = {};
-    httpd_query_key_value(qs, "id", rec_id, sizeof(rec_id));
-    if (rec_id[0] == '\0') {
+    MediaJob job{};
+    job.kind = kind;
+    job.rid = rid;
+    httpd_query_key_value(qs, "id", job.id, sizeof(job.id));
+    if (job.id[0] == '\0') {
         return httpReplyError(req, rid, ErrCode::ValidationFailed,
                               "recording id required");
     }
     RecordingInfo info{};
-    if (visioncam::recordingManagerLookup(rec_id, &info) != ESP_OK) {
+    if (visioncam::recordingManagerLookup(job.id, &info) != ESP_OK) {
         return httpReplyError(req, rid, ErrCode::NotFound,
                               "recording not found");
     }
-    if (info.size_bytes == 0) {
+    if (std::strcmp(info.status, "ready") != 0 || info.size_bytes == 0 ||
+        (kind == MediaJobKind::Play && info.frame_count == 0)) {
         return httpReplyError(req, rid, ErrCode::NotFound,
-                              "recording file is empty");
+                              "recording not available");
     }
-
-    visioncam::StorageReadHandle reader{};
-    esp_err_t rerr = visioncam::storageOpenReadFile(info.path, &reader);
-    if (rerr != ESP_OK) {
-        return httpReplyError(req, rid, ErrCode::NotFound,
-                              "recording file not found");
-    }
-
-    uint8_t chunk[4096];
-    uint32_t remaining = info.size_bytes;
-    size_t got = 0;
-    rerr = visioncam::storageReadOpenFile(
-        &reader, chunk, std::min(static_cast<size_t>(remaining), sizeof(chunk)),
-        &got);
-    if (rerr != ESP_OK || got == 0 || got > remaining) {
-        const esp_err_t close_err = visioncam::storageCloseReadFile(&reader);
-        if (close_err != ESP_OK)
-            ESP_LOGE(TAG, "recording download: failed to close file");
-        return httpReplyError(req, rid, ErrCode::NotFound,
-                              "recording file could not be read");
-    }
-
-    httpd_resp_set_type(req, "video/x-msvideo");
-    httpd_resp_set_hdr(req, "Content-Disposition",
-                       std::string("attachment; filename=\"")
-                           .append(info.recording_id)
-                           .append(".avi\"")
-                           .c_str());
-    while (true) {
-        if (httpd_resp_send_chunk(req, reinterpret_cast<const char*>(chunk),
-                                  got) != ESP_OK) {
-            const esp_err_t close_err =
-                visioncam::storageCloseReadFile(&reader);
-            if (close_err != ESP_OK)
-                ESP_LOGE(TAG, "recording download: failed to close file");
-            return ESP_FAIL;
-        }
-        remaining -= static_cast<uint32_t>(got);
-        if (remaining == 0) break;
-
-        got = 0;
-        rerr = visioncam::storageReadOpenFile(
-            &reader, chunk,
-            std::min(static_cast<size_t>(remaining), sizeof(chunk)), &got);
-        if (rerr != ESP_OK || got == 0 || got > remaining) {
-            ESP_LOGE(TAG, "recording download: read failed before EOF");
-            const esp_err_t close_err =
-                visioncam::storageCloseReadFile(&reader);
-            if (close_err != ESP_OK)
-                ESP_LOGE(TAG, "recording download: failed to close file");
-            return ESP_FAIL;
+    if (kind == MediaJobKind::Play) {
+        char val[16] = {};
+        if (httpd_query_key_value(qs, "start_frame", val, sizeof(val)) == ESP_OK)
+            job.start_frame = static_cast<uint32_t>(std::atoi(val));
+        val[0] = '\0';
+        if (httpd_query_key_value(qs, "start_ms", val, sizeof(val)) == ESP_OK)
+            job.start_ms = static_cast<uint32_t>(std::atoi(val));
+        if (visioncam::playbackCanStart(job.id) == PlaybackResult::Busy) {
+            return httpReplyError(req, rid, ErrCode::PlaybackBusy,
+                                  "playback busy");
         }
     }
 
-    rerr = visioncam::storageCloseReadFile(&reader);
-    if (rerr != ESP_OK) {
-        ESP_LOGE(TAG, "recording download: failed to close file");
-        return ESP_FAIL;
+    if (s_media_worker == nullptr || s_media_buf == nullptr) {
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "media worker unavailable");
     }
-    return httpd_resp_send_chunk(req, nullptr, 0);
+    bool expected = false;
+    if (!s_media_busy.compare_exchange_strong(expected, true)) {
+        return httpReplyError(req, rid, ErrCode::PlaybackBusy,
+                              "another download or playback is running");
+    }
+    httpd_req_t* async_req = nullptr;
+    if (httpd_req_async_handler_begin(req, &async_req) != ESP_OK) {
+        s_media_busy.store(false);
+        return httpReplyError(req, rid, ErrCode::Internal,
+                              "could not start media transfer");
+    }
+    job.req = async_req;
+    s_media_job = job;
+    xTaskNotifyGive(s_media_worker);
+    return ESP_OK;
 }
 
-// --- GET /recordings/{id}/play --- server-side MJPEG replay
-static esp_err_t recordingPlayHandler(httpd_req_t* req) {
-    uint32_t rid = httpNextRequestId();
-    if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
-    char qs[128] = {};
-    size_t qs_size = sizeof(qs);
-    if (httpd_req_get_url_query_str(req, qs, qs_size) != ESP_OK)
-        qs[0] = '\0';
-    char rec_id[32] = {};
-    httpd_query_key_value(qs, "id", rec_id, sizeof(rec_id));
-    if (rec_id[0] == '\0') {
-        return httpReplyError(req, rid, ErrCode::ValidationFailed,
-                              "recording id required");
-    }
-    // Check if playback can start (throughput share, etc.):
-    PlaybackResult pr = visioncam::playbackCanStart(rec_id);
-    if (pr == PlaybackResult::Busy) {
-        return httpReplyError(req, rid, ErrCode::PlaybackBusy,
-                              "playback busy - recording has priority");
-    }
-    if (pr != PlaybackResult::Ok) {
-        return httpReplyError(req, rid, ErrCode::NotFound,
-                              "recording not available for playback");
-    }
-    uint32_t start_frame = 0, start_ms = 0;
-    char val[16] = {};
-    if (httpd_query_key_value(qs, "start_frame", val, sizeof(val)) == ESP_OK)
-        start_frame = static_cast<uint32_t>(std::atoi(val));
-    val[0] = '\0';
-    if (httpd_query_key_value(qs, "start_ms", val, sizeof(val)) == ESP_OK)
-        start_ms = static_cast<uint32_t>(std::atoi(val));
+// --- GET /recordings?action=download&id= --- AVI file
+static esp_err_t recordingDownloadHandler(httpd_req_t* req) {
+    return mediaSubmit(req, MediaJobKind::Download);
+}
 
-    esp_err_t err = visioncam::playbackStreamStart(req, rec_id,
-                                                   start_frame, start_ms);
-    if (err != ESP_OK) {
-        return httpReplyError(req, rid, ErrCode::Internal,
-                              "playback start failed");
-    }
-    // Stream frames until done:
-    while (true) {
-        PlaybackResult result = visioncam::playbackStreamFrame(req);
-        if (result == PlaybackResult::Stopped) break;
-        if (result != PlaybackResult::Ok) {
-            visioncam::playbackStreamEnd(req);
-            ESP_LOGE(TAG, "playback stream failed");
-            return ESP_FAIL;
-        }
-    }
-    visioncam::playbackStreamEnd(req);
-    return httpd_resp_send_chunk(req, nullptr, 0);
+// --- GET /recordings?action=play&id= --- server-side MJPEG replay
+static esp_err_t recordingPlayHandler(httpd_req_t* req) {
+    return mediaSubmit(req, MediaJobKind::Play);
 }
 
 // --- DELETE /recordings/{id} ---
@@ -2624,6 +2700,17 @@ esp_err_t webServerStart() {
         s_server = nullptr;
         ESP_LOGE(TAG, "httpd_start failed: %s", esp_err_to_name(err));
         return err;
+    }
+    if (s_media_buf == nullptr) {
+        s_media_buf = static_cast<uint8_t*>(heap_caps_malloc(
+            kMediaChunkBytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+    }
+    if (s_media_worker == nullptr && s_media_buf != nullptr &&
+        xTaskCreate(mediaWorkerTask, "vc_media", VC_STACK_PLAYBACK, nullptr,
+                    VC_PRIO_PLAYBACK, &s_media_worker) != pdPASS) {
+        // Not fatal: download/playback answer "media worker unavailable".
+        ESP_LOGE(TAG, "could not create media worker");
+        s_media_worker = nullptr;
     }
     if (s_live_stream_worker == nullptr) {
         const BaseType_t task_created =

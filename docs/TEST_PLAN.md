@@ -160,24 +160,25 @@ Exit gate: "Authenticated live MJPEG on phone and laptop, snapshot saved, no una
 | 3.1.8 | POST /recording/start while already recording → error | RUN PASS | Code returns `ESP_ERR_INVALID_STATE` when state != Idle |
 | 3.2.1 | GET /recordings returns paginated list | RUN PASS | HTTP tested — `{"has_more":false,"count":1,...}`, 200 with cookie |
 | 3.2.2 | GET /recordings?action=metadata&id=... returns recording metadata | RUN PASS | Code path implemented; HTTP endpoint registered |
-| 3.2.3 | GET /recordings?action=download&id=... streams the full AVI | CODE BUILD PASS; MOCK E2E PASS; HW UNVERIFIED | Storage-manager reader sends the indexed size in bounded 4 KB chunks (no 8 MiB cap); Playwright verifies an attachment larger than 8 MiB is complete |
-| 3.2.4 | GET /recordings?action=play&id=... returns MJPEG stream | CODE BUILD PASS; MOCK E2E PASS; HW UNVERIFIED | Correct multipart boundary and first `00dc` offset; MJPEG data is read in fixed 8 KB blocks |
+| 3.2.3 | GET /recordings?action=download&id=... streams the full AVI | **HW PASS 2026-11-23** | 2,308,292 B rec-00000003 downloaded twice, byte-identical (81–143 KB/s over phone hotspot, RTT 140–290 ms); `Content-Disposition: attachment; filename="rec-00000003.avi"`; runs on the `vc_media` async worker, 8 KB DMA-capable buffer |
+| 3.2.4 | GET /recordings?action=play&id=... returns MJPEG stream | **HW PASS 2026-11-23** | 200/200 frames + end boundary; `/status` answered in 35–160 ms during playback; second transfer while busy → 503 PlaybackBusy |
 | 3.2.5 | Recording ID lookup/index survives a reboot | CODE BUILD PASS; HW UNVERIFIED | Ready segments are atomically finalized and the bounded SD index is validated/reloaded on startup |
 | 3.2.5 | DELETE /recordings?action=delete&id=... with CSRF → 200 | RUN PASS | Code path implemented; HTTP endpoint registered |
 | 3.2.6 | DELETE /recordings without CSRF → 403 | RUN PASS | HTTP tested — 403 without CSRF header |
 | 3.2.7 | Delete active "writing" recording → error | RUN PASS | Code returns `ESP_ERR_INVALID_STATE` for status != "ready" |
-| 3.3.1 | AVI segment written with provisional header at open | RUN PASS | Code writes 232-byte RIFF/AVI header at segment start |
-| 3.3.2 | AVI segment finalized with measured FPS + idx1 at close | RUN PASS | Code patches header + idx1 at close, measured FPS stored |
+| 3.3.1 | AVI segment written with provisional header at open | **HOST PASS + HW PASS 2026-11-23** | 224-byte header (RIFF/hdrl/avih/strl/strh/strf/movi) built by `aviBuildHeader()`; layout asserted in `test/host/avi_writer_test.cpp` |
+| 3.3.2 | AVI segment finalized with measured FPS + idx1 at close | **HOST PASS + HW PASS 2026-11-23** | Header rebuilt from final values (no offset patching), idx1 appended; device clip: ffprobe `mjpeg 640x480`, 200 frames, 15.99 s, ffmpeg full decode 0 errors. `test/host/run_avi_test.sh` validates with ffprobe/ffmpeg |
 | 3.3.3 | Segment rotates at duration cap (60 s default) | RUN PASS | Code checks `duration >= segment_duration_s` in writer task |
 | 3.3.4 | Segment rotates at frame cap (7200 frames) | RUN PASS | Code checks `frame_count >= kAviMaxFramesPerSegment` |
 | 3.3.5 | Temp file (*.tmp) renamed to final on close | RUN PASS | Code uses `storageRenameFile()` after header+idx1 written |
-| 3.3.6 | Writer task never holds frame lease across blocking I/O | RUN PASS | Code copies JPEG to staging buffer, releases lease immediately |
-| 3.4.1 | Playback runs at lower priority than writer (prio 4 vs 5) | RUN PASS | Task constants defined in tasks.h; playback task prio 4 |
+| 3.3.6 | Writer task never holds frame lease across blocking I/O | RUN PASS | Each JPEG is copied into a bounded PSRAM buffer (≤ 400 KB) and the lease released before the SD write; one JPEG per `00dc` chunk (the old 8 KB staging buffer dropped every frame larger than 8 KB) |
+| 3.3.7 | New recording never reuses an ID/file already on the card | **HW PASS 2026-11-23** | Before the fix a stale index row reset the counter to rec-00000001 and close failed (`rename … File exists`); IDs now reserved from every index row and `segmentOpen` skips IDs whose `.avi`/`.tmp` exists |
+| 3.4.1 | Playback/download run off the httpd task | **HW PASS 2026-11-23** | `vc_media` worker (VC_PRIO_PLAYBACK 4, VC_STACK_PLAYBACK) via `httpd_req_async_handler_begin`; one job at a time, second request → 503 |
 | 3.4.2 | Playback returns 503 PLAYBACK_BUSY when throughput exceeded | RUN PASS | Code path implemented; `playbackCanStart()` returns Busy |
 | 3.5.1 | Recordings page builds (vite + tsc clean) | RUN PASS | `npm run build` — JS 348 KB / 107 KB gzip |
 | 3.5.2 | Recording controls show distinct, synchronized start/stop state | MOCK E2E PASS; HW UNVERIFIED | Playwright verifies all page controls, pressed state, danger styling, and recording badge through start/stop transitions |
 | 3.5.3 | Recordings page: paginated list with filters | RUN PASS | UI renders list, filter pills, Load more button |
-| 3.5.4 | Recordings page: playback feedback and full-size download | MOCK E2E PASS; HW UNVERIFIED | Playwright verifies multipart playback feedback and complete AVI attachment; physical AVI compatibility remains unverified |
+| 3.5.4 | Recordings page: playback feedback and full-size download | **HW PASS 2026-11-23** | Headless Chromium against the device: Play → "Recording is playing.", image 640 px wide; Download → `rec-00000003.avi`, ffprobe 200 MJPEG frames; no page errors / 5xx |
 
 ## Phase 4 — Motion and events
 

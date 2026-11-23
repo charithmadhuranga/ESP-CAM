@@ -18,6 +18,7 @@
 #include "avi_writer.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -45,6 +46,7 @@ struct PlaybackSession {
     uint32_t measured_fps = 0;
     uint32_t file_size = 0;
     uint32_t file_offset = 0;
+    int64_t start_us = 0;  // esp_timer at stream start (frame pacing)
     uint8_t read_buf[8192];
 };
 
@@ -123,6 +125,7 @@ esp_err_t playbackStreamStart(httpd_req_t* req, const char* recording_id,
     g_session.total_frames = info.frame_count;
     g_session.frame_index = 0;
     g_session.measured_fps = info.fps;
+    g_session.start_us = esp_timer_get_time();
     g_session.req = req;
     std::strncpy(g_session.recording_id, recording_id,
                  sizeof(g_session.recording_id) - 1);
@@ -165,7 +168,7 @@ PlaybackResult playbackStreamFrame(httpd_req_t* req) {
     const uint32_t size = readLe32(chunk_header + 4);
     g_session.file_offset += sizeof(chunk_header);
     if (fourcc != kFourcc00dc) {
-        const uint32_t padded = aviPad4(size);
+        const uint32_t padded = aviPadEven(size);
         if (padded > g_session.file_size - g_session.file_offset)
             return PlaybackResult::Error;
         g_session.file_offset += padded;
@@ -179,7 +182,7 @@ PlaybackResult playbackStreamFrame(httpd_req_t* req) {
         return PlaybackResult::Error;
     }
 
-    const uint32_t padded = aviPad4(size);
+    const uint32_t padded = aviPadEven(size);
     if (padded > g_session.file_size - g_session.file_offset)
         return PlaybackResult::Error;
 
@@ -230,9 +233,16 @@ PlaybackResult playbackStreamFrame(httpd_req_t* req) {
     g_session.frame_index++;
 
     // Pace at measured FPS:
+    // Pace against a schedule (frame N is due at start + N/fps), not a fixed
+    // sleep after each send: the send time already consumed part of the
+    // frame period, and a fixed sleep made a 16 s clip take 42 s on a slow
+    // link. A late frame is sent immediately; the schedule never runs ahead.
     if (g_session.measured_fps > 0) {
-        uint32_t period_ms = 1000u / g_session.measured_fps;
-        vTaskDelay(pdMS_TO_TICKS(period_ms));
+        const int64_t due_us = g_session.start_us +
+            static_cast<int64_t>(g_session.frame_index) * 1000000 /
+                g_session.measured_fps;
+        const int64_t wait_us = due_us - esp_timer_get_time();
+        if (wait_us > 1000) vTaskDelay(pdMS_TO_TICKS(wait_us / 1000));
     }
 
     return PlaybackResult::Ok;
