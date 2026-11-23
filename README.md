@@ -1,6 +1,12 @@
 <div align="center">
 
-# VisionCam Pro
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/logo-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/images/logo-light.svg">
+    <img src="docs/images/logo-light.svg" alt="VisionCam Pro" width="460">
+  </picture>
+</h1>
 
 **A private, local-first security camera firmware for the AI-Thinker ESP32-CAM**
 
