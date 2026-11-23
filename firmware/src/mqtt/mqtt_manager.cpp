@@ -18,6 +18,7 @@
 #include <atomic>
 #include <cstring>
 
+#include "esp_app_desc.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
@@ -275,7 +276,7 @@ static void haPublishEntity(const HaEntity& e) {
     add(",\"device\":{\"identifiers\":[\"visioncam_%s\"],"
         "\"name\":\"VisionCam Pro %s\",\"manufacturer\":\"VisionCam\","
         "\"model\":\"ESP32-CAM (AI-Thinker)\",\"sw_version\":\"%s\"}}",
-        dev, dev, "0.1.0-phase1");
+        dev, dev, esp_app_get_description()->version);
 
     if (!ok) {
         ESP_LOGE(TAG, "HA discovery config for %s exceeds %u B - not sent",

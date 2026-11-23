@@ -89,6 +89,8 @@ idf_component_register(
         sdmmc
         esp_driver_sdmmc
         esp_driver_gpio
+        # esp_app_format: esp_app_get_description() (firmware version/date)
+        esp_app_format
         # esp_driver_uart: core/serial_console.cpp UART0 RX (Wi-Fi provisioning)
         esp_driver_uart
         esp_wifi

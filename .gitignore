@@ -60,3 +60,6 @@ webui/playwright-report/
 
 # --- OpenCode session artifacts ---
 .opencode/session*.json
+
+# Written by the release workflow from the tag; local builds use git describe
+version.txt

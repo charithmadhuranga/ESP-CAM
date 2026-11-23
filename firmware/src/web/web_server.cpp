@@ -24,6 +24,7 @@
 
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_app_desc.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -902,12 +903,18 @@ static esp_err_t wifiConfigPostHandler(httpd_req_t* req) {
 static esp_err_t deviceHandler(httpd_req_t* req) {
     uint32_t rid = httpNextRequestId();
     if (requireAuth(req) != ESP_OK) return replyUnauthenticated(req, rid);
+    // Version from the image's app descriptor: the release tag for CI
+    // release builds (version.txt), `git describe` for local builds.
+    const esp_app_desc_t* app = esp_app_get_description();
     char payload[300] = {};
     std::snprintf(payload, sizeof(payload),
                   "{\"device_id\":\"visioncam\","
                   "\"device_name\":\"VisionCam Pro\","
-                  "\"firmware_version\":\"0.1.0-phase1\","
-                  "\"schema_version\":1}");
+                  "\"firmware_version\":\"%s\","
+                  "\"build_date\":\"%s\","
+                  "\"idf_version\":\"%s\","
+                  "\"schema_version\":1}",
+                  app->version, app->date, app->idf_ver);
     return httpReplyOk(req, rid, payload);
 }
 

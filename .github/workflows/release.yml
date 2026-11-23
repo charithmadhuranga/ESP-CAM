@@ -1,19 +1,53 @@
 name: Release
 
+# Builds the firmware for a GitHub Release and attaches the binaries to it.
+#
+# Trigger: publishing a release (in the GitHub UI or `gh release create`)
+# for a tag like v0.1.0. It can also be re-run by hand for an existing tag
+# (Actions -> Release -> Run workflow), which replaces the assets.
+#
+# The tag becomes the firmware version: it is written to version.txt, which
+# ESP-IDF embeds in the image's app descriptor. /device and the Home
+# Assistant device card show it.
+
 on:
-  push:
-    tags:
-      - 'v*'
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to (re)build, e.g. v0.1.0"
+        required: true
+
+permissions:
+  contents: write   # upload release assets
 
 env:
+  # Pinned exactly per AGENTS rule 24; matches platformio.ini.
   PLATFORMIO_PLATFORM: platformio/espressif32@8.0.0
   PLATFORMIO_FRAMEWORK: platformio/framework-espidf@4.60100.0
+  ESPTOOL_VERSION: "4.8.1"
 
 jobs:
-  release:
+  firmware:
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
+
+      - name: Derive version from tag
+        id: ver
+        run: |
+          VERSION="${TAG#v}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag '$TAG' is not a version like v0.1.0"; exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          # ESP-IDF reads version.txt into esp_app_desc_t.version
+          echo "$VERSION" > version.txt
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -30,23 +64,88 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pio-release-
 
-      - name: Install PlatformIO
-        run: pipx install platformio
+      - name: Install PlatformIO and esptool
+        run: |
+          pipx install platformio
+          pip install "esptool==${ESPTOOL_VERSION}"
 
-      - name: Build firmware (pio run)
+      - name: Build firmware
         run: pio run -e esp32cam
 
-      - name: Create GitHub Release and attach binaries
-        uses: softprops/action-gh-release@v2
-        with:
-          name: "VisionCam Pro ${{ github.ref_name }}"
-          tag_name: ${{ github.ref_name }}
-          draft: false
-          prerelease: false
-          files: |
-            .pio/build/esp32cam/firmware.bin
-            .pio/build/esp32cam/bootloader.bin
-            .pio/build/esp32cam/partitions.bin
-            .pio/build/esp32cam/firmware.elf
+      - name: Verify the embedded version
+        run: |
+          python3 - <<'PY'
+          import struct, sys
+          d = open(".pio/build/esp32cam/firmware.bin", "rb").read()
+          i = d.find(struct.pack("<I", 0xABCD5432))   # esp_app_desc_t magic
+          got = d[i + 16:i + 48].split(b"\0")[0].decode()
+          want = open("version.txt").read().strip()
+          print(f"app descriptor version: {got}")
+          sys.exit(0 if got == want else f"expected {want}")
+          PY
+
+      - name: Package release assets
+        run: |
+          set -euo pipefail
+          V="${{ steps.ver.outputs.version }}"
+          B=.pio/build/esp32cam
+          D=dist
+          mkdir -p "$D"
+          N="visioncam-pro-${V}-esp32cam"
+
+          # One-file image for a new board / factory reset (flash at 0x0).
+          esptool.py --chip esp32 merge_bin -o "$D/${N}-factory.bin" \
+            --flash_mode keep --flash_freq keep --flash_size keep \
+            0x1000   "$B/bootloader.bin" \
+            0x8000   "$B/partitions.bin" \
+            0x320000 "$B/ota_data_initial.bin" \
+            0x20000  "$B/firmware.bin"
+
+          # Individual images (upgrade = app only, keeps settings).
+          cp "$B/firmware.bin"         "$D/${N}-app.bin"
+          cp "$B/bootloader.bin"       "$D/${N}-bootloader.bin"
+          cp "$B/partitions.bin"       "$D/${N}-partitions.bin"
+          cp "$B/ota_data_initial.bin" "$D/${N}-ota_data_initial.bin"
+          cp "$B/firmware.elf"         "$D/${N}.elf"
+
+          cat > "$D/FLASHING.md" <<EOF
+          # VisionCam Pro ${V} - flashing (AI-Thinker ESP32-CAM, 4 MB flash)
+
+          Seat the board on the ESP32-CAM-MB adapter and connect USB.
+          Install esptool: \`pip install esptool\`. Replace the port as needed
+          (Windows: COM3, macOS: /dev/cu.usbserial-*).
+
+          ## New board or factory reset - ERASES all settings
+          (Wi-Fi, admin password, MQTT, RTSP)
+
+              esptool.py --chip esp32 --port /dev/ttyUSB0 --baud 921600 \\
+                write_flash 0x0 ${N}-factory.bin
+
+          ## Upgrade an existing camera - KEEPS settings
+
+              esptool.py --chip esp32 --port /dev/ttyUSB0 --baud 921600 \\
+                write_flash 0x20000 ${N}-app.bin
+
+          ## Individual images (advanced)
+
+          | Offset   | File |
+          |----------|------|
+          | 0x1000   | ${N}-bootloader.bin |
+          | 0x8000   | ${N}-partitions.bin |
+          | 0x320000 | ${N}-ota_data_initial.bin |
+          | 0x20000  | ${N}-app.bin |
+
+          ${N}.elf holds debug symbols for decoding crash backtraces.
+          Verify the downloads with: sha256sum -c SHA256SUMS.txt
+
+          After flashing, open the serial monitor at 115200 baud and follow
+          "First-time setup" in the README.
+          EOF
+
+          (cd "$D" && sha256sum *.bin *.elf > SHA256SUMS.txt)
+          ls -l "$D"
+
+      - name: Upload assets to the release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" dist/* --clobber

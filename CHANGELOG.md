@@ -1,12 +1,26 @@
 # Changelog
 
 All notable changes to VisionCam Pro are recorded here.
-Format follows [Keep a Changelog](https://keepachangelog.com/); versions are
-tagged once Phase 9 release criteria pass.
+Format follows [Keep a Changelog](https://keepachangelog.com/) and
+[Semantic Versioning](https://semver.org/). 0.x releases are early releases
+made before the Phase 9 hardening criteria (owner decision D9); 1.0.0 is
+tagged once they pass. Prebuilt firmware for every release is attached to its
+[GitHub Release](https://github.com/charithmadhuranga/ESP-CAM/releases).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-23
+
+First release: phases 0-4 and 7 plus RTSP, verified on hardware.
+
 ### Added
+
+- **Release builds (2026-11-23).** Publishing a GitHub Release for a tag
+  `vX.Y.Z` runs `.github/workflows/release.yml`: builds the firmware with
+  the tag as its version (`version.txt` into the app descriptor; shown in
+  `/device` and the Home Assistant device card), verifies it, and attaches a
+  one-file factory image, the individual images, the `.elf`, `FLASHING.md`
+  and `SHA256SUMS.txt`. The hardcoded `0.1.0-phase1` version string is gone.
 
 - **Licence: MIT (2026-11-23, owner decision D8).** `LICENSE` added at the
   repository root (© 2026 Proto Vision Lab); README badge and licence

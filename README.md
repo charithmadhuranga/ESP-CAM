@@ -22,6 +22,7 @@ Live view · RTSP · Snapshots · AVI recording · Motion detection · Home Assi
 ![RTSP](https://img.shields.io/badge/RTSP-MJPEG%20%2F%20RTP-555555)
 ![Flash](https://img.shields.io/badge/app%20slot-82.6%25%20of%201.5%20MB-4F9CF9)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/charithmadhuranga/ESP-CAM?label=release&color=4F9CF9)](https://github.com/charithmadhuranga/ESP-CAM/releases/latest)
 
 <img src="docs/images/live-view.png" alt="VisionCam Pro live view" width="900">
 
@@ -158,6 +159,28 @@ More detail: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 ---
 
 ## Build and flash guide
+
+### Quick start: flash a release (no toolchain needed)
+
+Every [GitHub Release](https://github.com/charithmadhuranga/ESP-CAM/releases)
+has prebuilt binaries, built by CI from the release tag:
+
+| Asset | Use |
+|---|---|
+| `visioncam-pro-<ver>-esp32cam-factory.bin` | **New board or factory reset:** one file at `0x0`. **Erases all settings.** |
+| `visioncam-pro-<ver>-esp32cam-app.bin` | **Upgrade:** app only at `0x20000`. **Keeps settings.** |
+| bootloader / partitions / ota_data_initial `.bin` | Individual images for advanced use |
+| `.elf` · `FLASHING.md` · `SHA256SUMS.txt` | Debug symbols · instructions · checksums |
+
+```bash
+pip install esptool
+# New board / factory reset (erases Wi-Fi, passwords, MQTT and RTSP settings):
+esptool.py --chip esp32 --port /dev/ttyUSB0 --baud 921600 write_flash 0x0 visioncam-pro-0.1.0-esp32cam-factory.bin
+# Upgrade, keeping settings:
+esptool.py --chip esp32 --port /dev/ttyUSB0 --baud 921600 write_flash 0x20000 visioncam-pro-0.1.0-esp32cam-app.bin
+```
+
+To build from source instead, follow the steps below.
 
 ### 1. Prerequisites
 
@@ -415,7 +438,10 @@ and [`docs/TEST_PLAN.md`](docs/TEST_PLAN.md).
 | Hardware | [`docs/TEST_PLAN.md`](docs/TEST_PLAN.md) | Per-phase rows marked `HW PASS`, `RUN PASS` or `UNVERIFIED` |
 
 GitHub Actions runs the web UI, AVI host-test and firmware build jobs on every
-push ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
+push ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)). Publishing a
+GitHub Release runs [`.github/workflows/release.yml`](.github/workflows/release.yml),
+which builds the firmware with the tag as its version and attaches the
+binaries to the release.
 
 ---
 
