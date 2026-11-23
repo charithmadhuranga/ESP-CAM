@@ -1,0 +1,17 @@
+Setting up a new camera takes just a few minutes.
+
+With no saved network, the camera starts its own setup access point. Join it, open the setup page, and enter your Wi-Fi name and password.
+
+You can also set Wi-Fi over USB. Send one line on the serial port with the network name and password, separated by tabs, and the camera saves them and reboots.
+
+The password is never echoed back, and the logs only ever show its length.
+
+On first sign-in, you must replace the default admin password before anything else works.
+
+Passwords are stored as salted PBKDF2 hashes. Sessions live only in RAM, in an HTTP-only cookie, and every change request also needs a CSRF token.
+
+Every stream, snapshot, recording, and settings endpoint requires sign-in. RTSP has its own login, and the camera stores only a hash of that password.
+
+To connect Home Assistant, open Integrations, enable RTSP, and press Copy. Type the RTSP password, and the camera builds the ready-to-paste stream address without saving it.
+
+And keep the camera on your local network. It is built to be private by default, not to be exposed directly to the internet.

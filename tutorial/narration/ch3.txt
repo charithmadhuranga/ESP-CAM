@@ -1,0 +1,17 @@
+Now let's follow the video from the sensor to your screen. Live view is an authenticated MJPEG stream in the browser, pushed by a dedicated worker, so the rest of the interface stays responsive.
+
+For other apps, the camera also runs an RTSP server. VLC, a network video recorder, or Home Assistant can pull the same live stream, sent as Motion JPEG over RTP.
+
+RTSP uses digest authentication with its own username and password, and allows two viewers at a time. Each viewer is just another frame subscriber, so it can never slow down recording.
+
+On the test board, RTSP delivered ten to twelve frames per second at six forty by four eighty, even with the browser live view running at the same time.
+
+Snapshots grab a single frame on demand and save it to the card under its own ID.
+
+Recording writes standard AVI files with Motion JPEG inside. Each file starts with a header, then holds one chunk per frame, and ends with an index.
+
+When a segment closes, the header is rebuilt with the real frame count and frame rate, and the index is written. Because the format is standard, a downloaded recording opens in VLC or any common video player.
+
+Playback and downloads run on their own media worker, so the interface never freezes, and recordings stream back frame by frame at their recorded rate.
+
+A sixteen second test clip produced two hundred frames at twelve and a half frames per second, and decoded with zero errors.

@@ -1,0 +1,11 @@
+Meet VisionCam Pro. It turns an inexpensive ESP32-CAM board into a private, local-first security camera.
+
+It streams live video to your browser and over RTSP, takes snapshots, records clips to a micro SD card, and detects motion, all from a web page served by the camera itself.
+
+It also plugs into Home Assistant, where it appears automatically as a device with sensors, a snapshot button, a flash switch, and a live camera feed.
+
+The key promise is simple. The camera keeps capturing, recording, and managing its own media even when the internet, the cloud, or your smart home server is down.
+
+In the next few minutes, we will look at the hardware, the architecture inside the firmware, how video reaches your screen, how the camera joins Home Assistant, and how to set it up securely.
+
+Let's start with the board.

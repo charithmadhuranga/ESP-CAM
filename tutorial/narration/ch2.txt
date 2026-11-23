@@ -1,0 +1,17 @@
+Inside, the firmware is a set of small modules. Each one runs as its own FreeRTOS task with a fixed priority.
+
+At the center is the frame manager. It is the only code allowed to touch the camera driver's frame buffers.
+
+The capture task grabs JPEG frames at the highest application priority, and the frame manager shares each frame with up to eight subscribers.
+
+Live view, RTSP viewers, the recorder, motion detection, and snapshots are all subscribers. Each one takes a lease on a frame, copies it, and releases it right away.
+
+Every subscriber has a queue only two frames deep. If a consumer falls behind, its oldest frame is replaced by the newest one, so a slow viewer can never stall the camera.
+
+Storage follows the same idea. Only the storage manager touches the file system, and media is always addressed by opaque IDs, never by raw file paths.
+
+Modules talk through a typed event bus. When motion starts, an event is published, and the recorder, the web interface, and the MQTT integration can react without depending on each other.
+
+Memory is planned just as carefully. Wi-Fi and network buffers live in the external PSRAM, which keeps the small internal memory free for the camera and the SD card.
+
+Every queue and buffer has a fixed size. Under memory pressure, features degrade safely instead of crashing.

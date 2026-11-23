@@ -1,0 +1,15 @@
+The target is the AI-Thinker ESP32-CAM. It pairs the original ESP32 chip with an OV2640 camera sensor, four megabytes of external PSRAM, and a micro SD card slot.
+
+Programming happens over the ESP32-CAM-MB adapter, which gives the board a USB serial port.
+
+The firmware is built with PlatformIO on native ESP-IDF version six point one. There is no Arduino layer, and every version is pinned, so builds are reproducible.
+
+The four megabyte flash chip is divided by a partition table. Two app slots of one and a half megabytes each leave room for safe over-the-air updates later.
+
+A small NVS area stores settings and credentials, and a raw storage partition is reserved for future models.
+
+With every feature included, the firmware fills about eighty three percent of one app slot, which still leaves room to grow.
+
+The SD card runs in one-bit mode. That keeps the flash LED pin, which this board shares with the card, out of the data path.
+
+On every boot, the firmware checks PSRAM, starts the camera, mounts the card, runs a quick read and write self-test, and then brings up Wi-Fi and the web server.

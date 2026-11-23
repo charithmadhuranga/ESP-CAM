@@ -1,0 +1,17 @@
+Media lands on the SD card in folders by type and date. An index file lets the camera list it without scanning the card or loading everything into memory.
+
+A retention manager removes media once it passes its age limit and keeps the card below eighty five percent full. By default, manual recordings are kept for thirty days and motion clips for seven.
+
+Motion detection decodes frames into a small ninety six by ninety six grayscale image and compares it, block by block, with the previous sample. When enough blocks change, a motion started event fires.
+
+For smart homes, an optional MQTT worker publishes the camera's state and announces it to Home Assistant through MQTT discovery.
+
+Home Assistant then shows a VisionCam device with eight entities: motion, recording, camera and SD status, storage use, Wi-Fi signal, a take snapshot button, and a flash LED switch.
+
+The button and the switch work both ways. Home Assistant sends a command, and the camera takes the snapshot or turns the light on and off.
+
+For live video, add the RTSP stream as a Generic Camera. Home Assistant's built-in go2rtc converts the Motion JPEG to H.264, because browsers cannot play Motion JPEG over WebRTC.
+
+The MQTT worker runs at the lowest priority, with a bounded queue and reconnect back-off, so a missing broker never slows down capture or recording.
+
+On-device AI and timelapse are designed as optional modules, and are compiled out of the current build until they are validated on the hardware.

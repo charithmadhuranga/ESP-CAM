@@ -1,0 +1,5 @@
+That's VisionCam Pro: a local-first camera that keeps working when everything around it goes offline.
+
+You have seen the hardware, the frame manager at its heart, the video path from sensor to screen, RTSP and Home Assistant, and how to set it up securely.
+
+The source code, documentation, and test plan are all in the project repository. Thanks for watching.
