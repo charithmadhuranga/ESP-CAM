@@ -1,0 +1,85 @@
+VisionCam Pro: Build a Local-First ESP32-CAM Security Camera (RTSP, Home Assistant, SD Recording)
+
+Turn a cheap AI-Thinker ESP32-CAM into a standalone security camera that keeps working without the internet or the cloud. VisionCam Pro is free, open-source (MIT) firmware built with native ESP-IDF and PlatformIO. It has a React web UI, records AVI clips to microSD, detects motion, streams over RTSP and integrates with Home Assistant over MQTT.
+
+In this video we cover the hardware and wiring, the firmware architecture, the video and RTSP pipeline, storage and motion detection, Home Assistant integration, and first-time setup and security.
+
+🔗 LINKS
+▶ Source code (GitHub): https://github.com/charithmadhuranga/ESP-CAM
+▶ Firmware download (latest release): https://github.com/charithmadhuranga/ESP-CAM/releases/latest
+▶ Build and flash guide: https://github.com/charithmadhuranga/ESP-CAM#build-and-flash-guide
+
+⏱ TIMELINE
+0:00 Introduction
+0:56 Chapter 1: Hardware & firmware foundation
+2:13 Chapter 2: Architecture
+3:41 Chapter 3: Video path & RTSP
+5:17 Chapter 4: Storage, motion & Home Assistant
+6:58 Chapter 5: Setup & security
+8:14 Wrap-up
+
+📚 TOPICS COVERED
+Introduction
+ • What VisionCam Pro does: live view, recording, playback, motion, RTSP, Home Assistant
+ • Why local-first: capture keeps running with no internet, cloud or broker
+
+Chapter 1: Hardware & firmware foundation
+ • AI-Thinker ESP32-CAM (original ESP32, OV2640, PSRAM, microSD)
+ • Wiring diagram: ESP32-CAM-MB USB adapter
+ • Toolchain: PlatformIO + native ESP-IDF (no Arduino layer)
+ • Flash partition map with two OTA slots
+ • Internal pin map: camera bus, SD card in 1-bit mode, GPIO4 flash LED
+ • Boot sequence
+
+Chapter 2: Architecture
+ • FreeRTOS task priorities
+ • Frame manager: the sole owner of camera buffers (lease, copy, release)
+ • Bounded queues that drop frames instead of blocking
+ • Storage manager and opaque media IDs
+ • Event bus
+ • Internal RAM vs PSRAM
+
+Chapter 3: Video path & RTSP
+ • Authenticated MJPEG live view in the browser
+ • RTSP server for VLC, Home Assistant, go2rtc and NVRs
+ • Measured frame rates
+ • Snapshots
+ • AVI recording that survives power loss (temp file, header rebuild, index, rename)
+ • In-browser playback
+
+Chapter 4: Storage, motion & Home Assistant
+ • SD card layout and retention policy
+ • Block-based motion detection
+ • MQTT discovery: a Home Assistant device with 8 entities
+ • Commands from Home Assistant (snapshot button, flash LED switch)
+ • Live video in Home Assistant via RTSP
+ • Why a missing broker never slows capture
+ • Roadmap
+
+Chapter 5: Setup & security
+ • First-boot Wi-Fi setup hotspot
+ • Wiring diagram: USB-serial adapter (5V, GND, TX, RX, IO0 for flashing)
+ • Wi-Fi setup over the serial console
+ • Sign-in, sessions and protected endpoints
+ • RTSP credentials
+ • Keep it on your local network only
+
+🛠 HARDWARE USED
+ • AI-Thinker ESP32-CAM (OV2640, 4 MB flash, PSRAM)
+ • ESP32-CAM-MB USB adapter (or any 3.3 V USB-serial adapter)
+ • microSD card (FAT32)
+ • 5 V power supply
+
+⚠ Note: Keep the camera on your local network. Do not expose it directly to the internet.
+
+🎵 MUSIC
+Music by https://www.bensound.com/free-music-for-videos
+License code: 8WNFFJKVNYEQKD5E
+Artist: Benjamin Tissot
+
+📄 LICENSE
+VisionCam Pro firmware is released under the MIT License.
+
+👍 If this helped, please like the video, subscribe for more ESP32 and smart-home builds, and tell us in the comments what you would like to see next!
+
+#ESP32CAM #ESP32 #HomeAssistant #SecurityCamera #ESPIDF #PlatformIO #RTSP #MQTT #DIYElectronics #SmartHome #OpenSource #IoT #Microcontroller #HomeAutomation #ProtoVisionLab

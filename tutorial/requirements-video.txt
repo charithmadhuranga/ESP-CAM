@@ -1,0 +1,5 @@
+# Video pipeline (tutorial/video). Pinned: Pillow >= 11.3 breaks Manim 0.19
+# image rendering ("Invalid mode for data type").
+manim==0.19.0
+pillow==11.2.1
+faster-whisper==1.2.1

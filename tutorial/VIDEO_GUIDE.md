@@ -1,7 +1,7 @@
 # VisionCam Pro — Tutorial Video Guide
 
 A short explainer series about the VisionCam Pro ESP32-CAM firmware: seven
-chapter videos plus one combined video, about **8½ minutes** in total. Each
+chapter videos plus one combined video, about **9½ minutes** in total (plus a ~10 s end screen). Each
 chapter is a narration track with Manim motion graphics synced to it:
 diagrams, animated charts and step pipelines, built with the
 `youtube-video-creator-skill` pipeline.
@@ -20,8 +20,8 @@ chapters, so the series still has seven parts.
 | 3 | `narration/ch3.txt` | Video path: live view, RTSP, recording | 9 | 251 | ~1:40 |
 | 4 | `narration/ch4.txt` | Storage, motion & Home Assistant | 9 | 249 | ~1:39 |
 | 5 | `narration/ch5.txt` | Setup & security | 9 | 192 | ~1:16 |
-| 6 | `narration/end.txt` | Wrap-up | 3 | 60 | ~0:24 |
-| | | **Total** | 53 | ~1310 | **~8:40** |
+| 6 | `narration/end.txt` | Wrap-up & call to action | 7 | 146 | ~0:58 |
+| | | **Total** | 57 | ~1395 | **~9:18** |
 
 Estimates assume 150 words per minute. The real timing comes from your
 recordings: every visual beat is scheduled from the actual mp3 length.
@@ -149,13 +149,20 @@ recordings: every visual beat is scheduled from the actual mp3 length.
 | [7,8) | `code` | Mock of the Copy dialog: "RTSP password ••••••••" → "Generated URL `rtsp://homeassistant:••••@<camera-ip>:554/stream#video=h264`" → "Copy URL". The URL types itself in as the dots appear. |
 | [8,9) | `statement` | "Local network only", sub "private by default — never expose it to the internet". |
 
-### End
+### End — wrap-up and call to action
+
+A standard YouTube outro: recap, then like / subscribe / comment prompts, each
+with its own short beat so the animation lands on the spoken word.
 
 | paras | beat | visual & animation |
 |---|---|---|
 | [0,1) | `statement` | "VisionCam Pro", sub "keeps working when everything else is offline". |
 | [1,2) | `bullets` | Hardware ✓ · Frame manager ✓ · Video path & RTSP ✓ · Home Assistant ✓ · Secure setup ✓. |
-| [2,3) | `outro` | "Source, docs & test plan in the repository", then "Thanks for watching". 0.6 s fade tail. |
+| [2,3) | `grid` | Three cards: "MIT · free & open source", "⬇ Firmware download", "📖 Flashing guide", plus an arrow pointing down with "links in the description". |
+| [3,4) | `statement` | 👍 A thumbs-up icon pops in with a gentle bounce, then "Like the video" and the sub "it helps the channel". |
+| [4,5) | `statement` | A red **SUBSCRIBE** button scales in, then a 🔔 bell swings once with a "notifications on" tag. Hold for the whole sentence. |
+| [5,6) | `statement` | 💬 A speech bubble types in "Questions? Feature ideas?" with the sub "comment below — we read every one". |
+| [6,7) | `outro` | "Thanks for watching" with "see you in the next video". The logo fades in. Keep a ~10 s end-screen hold after the narration ends, for YouTube's end-screen elements (subscribe button and next-video card); then the 0.6 s fade tail. |
 
 ---
 
@@ -192,13 +199,38 @@ source.
 
 ---
 
-## 6. What happens after you send the audio
+## 6. Building the video
 
-1. Each `.txt` is copied to the pipeline's `.md` form, and the mp3s are
-   checked against the scripts with faster-whisper (≥ 0.93 match).
-2. `build.py schedule` checks that the paragraph ranges above tile every
-   script, and sets each beat's length from the real audio.
-3. DrawCMS diagrams and the `chart` beat type are built, then one chapter is
-   rendered first and its frames inspected before the rest.
-4. Each chapter is muxed with its narration, and everything is concatenated
-   into `final/full.mp4`, plus one mp4 per chapter.
+The pipeline lives in `tutorial/video/` (Manim Community 0.19, pinned in
+`requirements-video.txt`). Run everything from `tutorial/`:
+
+```bash
+uv venv .venv && uv pip install --python .venv/bin/python -r requirements-video.txt
+.venv/bin/python video/align.py              # paragraph timings from the mp3s (whisper)
+.venv/bin/python video/build.py schedule     # check the beat ranges tile every script
+.venv/bin/python video/build.py render -j 7 --force   # 1080p30, chapters in parallel
+.venv/bin/python video/build.py mux --force  # attach narration
+.venv/bin/python video/build.py concat       # final/full.mp4
+```
+
+| File | Role |
+|---|---|
+| `narration/*.txt` + `narration-audio/*.mp3` | scripts and recordings (verified ≥ 0.94 word match) |
+| `narration-audio/*.align.json` | measured start time of every paragraph (`align.py`) |
+| `video/segments.py` | the beat plan above, as data |
+| `video/diagrams.py` | flow-diagram layouts (frame fan-out, RTSP, HA, auth …) |
+| `video/beats.py` | renderers: charts, partition map, wiring diagrams, HA card, CTA |
+| `video/theme.py` | colours sampled from the web UI tokens |
+
+- Beats change when the narrator actually starts a paragraph (whisper word
+  timestamps), and each beat ends on an absolute timestamp, so there is no
+  drift.
+- Each chapter opens with a 2 s chapter card (the intro with a 3 s logo
+  sting). The narration is delayed to match, and the end chapter holds for
+  10 s for YouTube's end-screen elements.
+- Outputs: `final/01-intro.mp4` … `final/07-end.mp4` and `final/full.mp4`
+  (git-ignored).
+- Wiring diagrams: ESP32-CAM on the ESP32-CAM-MB (Ch 1), the internal pin
+  map of camera, SD (1-bit) and flash LED (Ch 1), and a USB-serial adapter
+  wired to 5V/GND/U0R/U0T with the IO0→GND flashing jumper (Ch 5). Pins come
+  from `firmware/include/board_profile.h`.

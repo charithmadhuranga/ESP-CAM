@@ -2,4 +2,12 @@ That's VisionCam Pro: a local-first camera that keeps working when everything ar
 
 You have seen the hardware, the frame manager at its heart, the video path from sensor to screen, RTSP and Home Assistant, and how to set it up securely.
 
-The source code, documentation, and test plan are all in the project repository. Thanks for watching.
+Want to build one yourself? The firmware is free and open source under the MIT license. The download link, the source code, and the flashing guide are all in the description below.
+
+If this video helped you, please give it a like. It really helps the channel and tells us what to make next.
+
+And if you enjoy projects like this, subscribe and turn on notifications, so you don't miss the next one.
+
+Got a question, or an idea for a feature? Leave a comment below. We read every one of them.
+
+Thanks for watching, and see you in the next video.

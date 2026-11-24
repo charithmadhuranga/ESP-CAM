@@ -1,0 +1,245 @@
+"""Content spec for the VisionCam Pro tutorial series.
+
+Each segment pairs one narration script (``narration/<id>.txt``) with its
+recording (``narration-audio/<id>.mp3``). Every beat claims a half-open
+paragraph range ``paras: (start, end)``; the ranges tile the script exactly
+(``build.py schedule`` enforces it). Paragraph start times come from
+``video/align.py`` (whisper word timestamps), so a beat changes when the
+narrator actually starts its paragraph.
+
+``continue: True`` on a beat keeps the previous beat's visual on screen and
+animates only its highlight change (flow diagrams, the partition map).
+
+Beat text is a headline for the narration, never a transcript. All numbers
+come from the firmware source or the hardware tests (see VIDEO_GUIDE.md §5).
+No real credentials appear anywhere: URLs use the placeholder PASSWORD.
+"""
+
+ORDER = ["intro", "ch1", "ch2", "ch3", "ch4", "ch5", "end"]
+
+TOPICS = ["Hardware", "Architecture", "Video path & RTSP",
+          "Storage, motion & Home Assistant", "Setup & security"]
+
+
+def _seg(sid, title, beats, **kw):
+    return {"id": sid, "title": title, "script": f"narration/{sid}.txt",
+            "audio": f"narration-audio/{sid}.mp3", "beats": beats, **kw}
+
+
+SEGMENTS: dict[str, dict] = {
+    # =================================================================== intro
+    "intro": _seg("intro", "Introduction", [
+        {"type": "title", "paras": (0, 1), "logo": True,
+         "eyebrow": "ESP32-CAM firmware",
+         "text": "VisionCam Pro",
+         "sub": "Private  ·  Local-first  ·  No cloud required"},
+        {"type": "grid", "paras": (1, 2), "cols": 3,
+         "heading": "One small board, a complete camera",
+         "items": [("eye", "Live view"), ("broadcast", "RTSP stream"),
+                   ("camera", "Snapshots"), ("play", "Recording to SD"),
+                   ("motion", "Motion detection"), ("home", "Home Assistant")]},
+        {"type": "hacard", "paras": (2, 3)},
+        {"type": "flow", "paras": (3, 4), "diagram": "local-first",
+         "heading": "Keeps working when the network does not",
+         "nodes": ["camera", "sd", "browser"],
+         "edges": ["camera>sd", "camera>browser"],
+         "crossed": ["internet", "cloud", "ha"]},
+        {"type": "bullets", "paras": (4, 6), "heading": "In this video",
+         "numbered": True, "items": TOPICS},
+    ], lead_in=3.0),
+
+    # ===================================================================== ch1
+    "ch1": _seg("ch1", "Hardware & firmware foundation", [
+        {"type": "board", "paras": (0, 1)},
+        {"type": "wiring", "paras": (1, 2), "variant": "mb"},
+        {"type": "grid", "paras": (2, 3), "cols": 4,
+         "heading": "Toolchain",
+         "items": [("chip", "PlatformIO"), ("code", "ESP-IDF 6.1"),
+                   ("cross", "No Arduino layer"), ("lock", "Pinned versions")]},
+        {"type": "stack", "paras": (3, 4), "focus": ["ota_0", "ota_1"]},
+        {"type": "stack", "paras": (4, 5), "focus": ["nvs", "storage"],
+         "continue": True},
+        {"type": "stat", "paras": (5, 6), "value": 82.6, "suffix": "%",
+         "decimals": 1, "gauge": True,
+         "label": "of a 1.5 MB app slot used, with every feature"},
+        {"type": "wiring", "paras": (6, 7), "variant": "pins"},
+        {"type": "pipeline", "paras": (7, 8), "heading": "Boot sequence",
+         "steps": ["PSRAM check", "Camera init", "SD mount",
+                   "SD self-test", "Wi-Fi", "Web server"]},
+    ], number=1, lead_in=2.0),
+
+    # ===================================================================== ch2
+    "ch2": _seg("ch2", "Architecture: the frame manager", [
+        {"type": "chart", "paras": (0, 1),
+         "heading": "FreeRTOS task priorities",
+         "items": [("Capture", 6), ("Recorder", 5), ("Live stream", 4),
+                   ("RTSP", 4), ("Media worker", 4), ("Motion", 4),
+                   ("Event bus", 4), ("Network", 4), ("Monitor", 3),
+                   ("MQTT", 1), ("Serial console", 1)],
+         "max": 6, "caption": "higher runs first  ·  capture always wins"},
+        {"type": "flow", "paras": (1, 2), "diagram": "frame-fanout",
+         "heading": "The frame manager",
+         "nodes": ["camera", "capture", "fm"],
+         "edges": ["camera>capture", "capture>fm"],
+         "tags": [("fm", "sole owner of camera buffers")]},
+        {"type": "flow", "paras": (2, 4), "diagram": "frame-fanout",
+         "continue": True,
+         "nodes": ["capture", "fm", "live", "rtsp", "recorder", "motion",
+                   "snapshot"],
+         "edges": ["capture>fm", "fm>live", "fm>rtsp", "fm>recorder",
+                   "fm>motion", "fm>snapshot"],
+         "pulse": ["fm>live", "fm>rtsp", "fm>recorder", "fm>motion",
+                   "fm>snapshot"],
+         "tags": [("fm", "lease  →  copy  →  release")]},
+        {"type": "queue", "paras": (4, 5)},
+        {"type": "flow", "paras": (5, 6), "diagram": "frame-fanout",
+         "nodes": ["recorder", "snapshot", "storage", "sd"],
+         "edges": ["recorder>storage", "snapshot>storage", "storage>sd"],
+         "pulse": ["recorder>storage", "snapshot>storage", "storage>sd"],
+         "heading": "The storage manager",
+         "tags": [("storage", "media IDs, never paths", "left")]},
+        {"type": "flow", "paras": (6, 7), "diagram": "event-bus",
+         "heading": "Typed event bus",
+         "pulse": ["motion>bus", "bus>recorder", "bus>webui", "bus>mqtt"]},
+        {"type": "memory", "paras": (7, 8)},
+        {"type": "statement", "paras": (8, 9), "icon": "shield",
+         "text": "Every queue is bounded",
+         "sub": "degrade safely, never crash"},
+    ], number=2, lead_in=2.0),
+
+    # ===================================================================== ch3
+    "ch3": _seg("ch3", "Video path: live view, RTSP, recording", [
+        {"type": "screenshot", "paras": (0, 1), "image": "live-view.png",
+         "heading": "Live view  ·  authenticated MJPEG",
+         "caption": "pushed by its own worker task"},
+        {"type": "flow", "paras": (1, 2), "diagram": "rtsp-path",
+         "heading": "Built-in RTSP server",
+         "pulse": ["fm>rtsp", "rtsp>vlc", "rtsp>nvr", "rtsp>ha"],
+         "tags": [("rtsp", "Motion JPEG over RTP  ·  TCP")]},
+        {"type": "grid", "paras": (2, 3), "cols": 4,
+         "heading": "RTSP, safely",
+         "items": [("lock", "Digest auth"), ("user", "Own username + password"),
+                   ("eye", "Up to 3 viewers"),
+                   ("share", "Just another subscriber")]},
+        {"type": "chart", "paras": (3, 4),
+         "heading": "Measured on the test board  (640 × 480)",
+         "items": [("RTSP alone", 9.9), ("RTSP + live view", 12.4),
+                   ("Live view, same time", 11.7)],
+         "max": 15, "decimals": 1, "unit": " fps",
+         "caption": "0 decode errors"},
+        {"type": "flow", "paras": (4, 5), "diagram": "video-path",
+         "heading": "Snapshots",
+         "nodes": ["fm", "snapshot", "storage", "sd"],
+         "edges": ["fm>snapshot", "snapshot>storage", "storage>sd"],
+         "pulse": ["fm>snapshot", "snapshot>storage", "storage>sd"]},
+        {"type": "avi", "paras": (5, 6)},
+        {"type": "pipeline", "paras": (6, 7), "heading": "Closing a segment",
+         "steps": [".tmp file", "Rebuild header", "Write the index",
+                   "Rename .avi", "Opens in VLC"]},
+        {"type": "screenshot", "paras": (7, 8), "image": "playback.png",
+         "heading": "Playback on the media worker",
+         "caption": "own task  ·  paced to the recorded frame rate"},
+        {"type": "stats", "paras": (8, 9), "heading": "Test clip",
+         "items": [(16, "seconds"), (200, "frames"), (12.5, "fps"),
+                   (0, "decode errors")]},
+    ], number=3, lead_in=2.0),
+
+    # ===================================================================== ch4
+    "ch4": _seg("ch4", "Storage, motion & Home Assistant", [
+        {"type": "code", "paras": (0, 1), "heading": "Media on the SD card",
+         "typed": True,
+         "lines": ["/sdcard/",
+                   "├── recording/manual/2026/11/23/",
+                   "│     └── rec-00000003.avi",
+                   "├── snapshot/2026/11/23/snap-00000012.jpg",
+                   "└── system/index/recording-index.jsonl"]},
+        {"type": "chart", "paras": (1, 2), "heading": "Retention (days)",
+         "items": [("Manual", 30), ("Motion", 7), ("Detection", 30),
+                   ("Timelapse", 90)],
+         "max": 90, "caption": "and the card is kept below 85 % full"},
+        {"type": "motion", "paras": (2, 3)},
+        {"type": "flow", "paras": (3, 4), "diagram": "ha-integration",
+         "heading": "MQTT discovery",
+         "nodes": ["bus", "mqtt", "broker", "ha"],
+         "edges": ["bus>mqtt", "mqtt>broker", "broker>ha"],
+         "pulse": ["bus>mqtt", "mqtt>broker", "broker>ha"]},
+        {"type": "grid", "paras": (4, 5), "cols": 4,
+         "heading": "Eight Home Assistant entities", "accent": "ha",
+         "items": [("motion", "Motion"), ("play", "Recording"),
+                   ("camera", "Camera"), ("sd", "SD card"),
+                   ("chart", "Storage used"), ("wifi", "Wi-Fi signal"),
+                   ("button", "Take snapshot"), ("bolt", "Flash LED")]},
+        {"type": "flow", "paras": (5, 6), "diagram": "ha-commands",
+         "heading": "Two-way commands",
+         "pulse": ["ha>broker", "broker>mqtt", "mqtt>snapshot",
+                   "mqtt>flash"]},
+        {"type": "flow", "paras": (6, 7), "diagram": "ha-live",
+         "heading": "Live video in Home Assistant",
+         "pulse": ["cam>go2rtc", "go2rtc>ffmpeg", "ffmpeg>webrtc",
+                   "webrtc>browser"],
+         "crossed_edges": ["go2rtc>bad"]},
+        {"type": "flow", "paras": (7, 8), "diagram": "ha-integration",
+         "heading": "A missing broker never slows capture",
+         "nodes": ["capture", "recorder", "bus", "mqtt"],
+         "edges": ["capture>bus", "bus>recorder", "bus>mqtt"],
+         "offline": ["broker", "ha"],
+         "tags": [("mqtt", "priority 1  ·  bounded queue  ·  back-off",
+                   "up")]},
+        {"type": "grid", "paras": (8, 9), "cols": 2, "dim": True,
+         "heading": "On the roadmap",
+         "items": [("chip", "On-device AI"), ("clock", "Timelapse")],
+         "tag": "compiled out until validated"},
+    ], number=4, lead_in=2.0),
+
+    # ===================================================================== ch5
+    "ch5": _seg("ch5", "Setup & security", [
+        {"type": "statement", "paras": (0, 1), "icon": "clock",
+         "text": "Set up in minutes", "sub": "no app, no account, no cloud"},
+        {"type": "pipeline", "paras": (1, 2), "heading": "First boot",
+         "steps": ["No saved Wi-Fi", "Setup hotspot", "Open setup page",
+                   "Enter Wi-Fi", "Joins your network"]},
+        {"type": "wiring", "paras": (2, 3), "variant": "serial"},
+        {"type": "code", "paras": (3, 4), "heading": "Serial console",
+         "typed": True,
+         "lines": ["> wifi⇥MyNetwork⇥••••••••",
+                   "vc_console: OK wifi credentials saved",
+                   "  (ssid 9 B, pass 8 B) - rebooting to join"]},
+        {"type": "screenshot", "paras": (4, 5), "image": "login.png",
+         "heading": "First sign-in",
+         "caption": "replace the default admin password first"},
+        {"type": "flow", "paras": (5, 6), "diagram": "auth",
+         "heading": "How sign-in is protected",
+         "pulse": ["browser>login", "login>pbkdf2", "pbkdf2>session",
+                   "session>api", "csrf>api"]},
+        {"type": "grid", "paras": (6, 7), "cols": 5,
+         "heading": "Everything needs sign-in",
+         "items": [("eye", "Stream"), ("camera", "Snapshots"),
+                   ("play", "Recordings"), ("gear", "Settings"),
+                   ("broadcast", "RTSP: own login")]},
+        {"type": "screenshot", "paras": (7, 8), "image": "rtsp.png",
+         "heading": "Integrations  →  RTSP  →  Copy",
+         "caption": "the camera builds the URL, it never stores the password",
+         "focus": (0.0, 0.6, 1.0, 0.16)},
+        {"type": "statement", "paras": (8, 9), "icon": "home",
+         "text": "Local network only",
+         "sub": "private by default, never exposed to the internet"},
+    ], number=5, lead_in=2.0),
+
+    # ===================================================================== end
+    "end": _seg("end", "Wrap-up", [
+        {"type": "title", "paras": (0, 1), "logo": True,
+         "eyebrow": "That's", "text": "VisionCam Pro",
+         "sub": "keeps working when everything else goes offline"},
+        {"type": "bullets", "paras": (1, 2), "heading": "You have seen",
+         "check": True, "items": TOPICS},
+        {"type": "grid", "paras": (2, 3), "cols": 3,
+         "heading": "Build your own", "arrow": "links in the description",
+         "items": [("license", "Free & open source"),
+                   ("download", "Firmware download"),
+                   ("book", "Flashing guide")]},
+        {"type": "cta", "paras": (3, 4), "variant": "like"},
+        {"type": "cta", "paras": (4, 5), "variant": "subscribe"},
+        {"type": "cta", "paras": (5, 6), "variant": "comment"},
+        {"type": "endscreen", "paras": (6, 7)},
+    ], tail_hold=10.0),
+}

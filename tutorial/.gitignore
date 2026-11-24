@@ -1,0 +1,5 @@
+.venv/
+manim_build/
+final/concat.txt
+schedule.json
+__pycache__/

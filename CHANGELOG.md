@@ -9,6 +9,17 @@ tagged once they pass. Prebuilt firmware for every release is attached to its
 
 ## [Unreleased]
 
+### Added
+
+- **Tutorial video (2026-11-24).** `tutorial/video/` is a Manim pipeline
+  that builds a 9:15 1080p YouTube tutorial from the narration recordings in
+  `tutorial/narration-audio/`. It includes wiring diagrams (ESP32-CAM-MB,
+  internal pin map, USB-serial), animated architecture and data-flow diagrams,
+  and charts. Visuals are synced to each paragraph using whisper word
+  timestamps (`video/align.py`). Rendered chapters and `full.mp4` are in
+  `tutorial/final/`, and the YouTube description is in
+  `tutorial/description.txt`. Build steps are in `tutorial/VIDEO_GUIDE.md` §6.
+
 ## [0.1.0] - 2026-11-23
 
 First release: phases 0-4 and 7 plus RTSP, verified on hardware.
